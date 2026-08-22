@@ -1,5 +1,7 @@
 # SigilKit Overview
 
+> **✅ STATUS (2026-08-23): IMPLEMENTED & COMMITTED (v0.1.0).** Components 1(core)+4+ERC-7579 module are built and verified — see `../CHANGELOG.md`. Component 2 replaced by the 7579 module; Component 3 dropped. Remaining: audit ("the trail"), deploys, real-wallet harness legs.
+
 **SigilKit** is a proposed open-source (MIT-licensed), audited toolkit of four EVM primitives for "agent-native wallets" — smart-contract + SDK components that wallet products (Coinbase Smart Wallet, Biconomy, Pimlico, ZeroDev) are said to each re-implement from scratch. Defined in a July 2026 technical whitepaper (`D:\SigilKit\SigilKit_Whitepaper.pdf`, v2.0).
 
 > ⚠️ The whitepaper reads as a **grant/marketing document** with several fabricated or stale specifics. See [[Whitepaper Corrections]] before trusting any number in it.
