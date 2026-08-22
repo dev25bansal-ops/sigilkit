@@ -1,0 +1,109 @@
+name: SigilKit CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FOUNDRY_PROFILE: ci
+  NODE_VERSION: "24"
+
+jobs:
+  # 1. Forge unit + fuzz (PR gate)
+  forge-unit:
+    name: Forge unit + fuzz
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { submodules: recursive }
+      - uses: foundry-rs/foundry-toolchain@v1
+        with: { version: nightly }
+      - run: forge build --sizes
+      - run: forge test --no-match-contract '.*Invariant'
+
+  # 2. Forge invariant (PR gate)
+  forge-invariant:
+    name: Forge invariant (INV-1..4)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { submodules: recursive }
+      - uses: foundry-rs/foundry-toolchain@v1
+        with: { version: nightly }
+      - run: forge test --match-contract '.*Invariant' --invariant-runs 256
+
+  # 3. Slither static analysis (PR gate, fail on high)
+  slither:
+    name: Slither static analysis
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { submodules: recursive }
+      - uses: foundry-rs/foundry-toolchain@v1
+        with: { version: nightly }
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install slither-analyzer==6.2.4
+      - run: slither contracts/src --fail-high
+
+  # 4. TS SDK — typecheck + conformance against Anvil (PR gate)
+  ts-sdk:
+    name: TS SDK conformance (Anvil)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { submodules: recursive }
+      - uses: foundry-rs/foundry-toolchain@v1
+        with: { version: nightly }
+      - uses: actions/setup-node@v4
+        with: { node-version: "24", cache: npm }
+      - run: npm install --workspaces
+      - run: npm run lint --workspace @sigilkit/core
+      - run: npm test --workspace @sigilkit/core
+
+  # 5. Nightly — Echidna (placeholder; requires Echidna installed image)
+  echidna-nightly:
+    name: Echidna nightly fuzz
+    if: github.event.schedule == 'nightly'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { submodules: recursive }
+      - run: echo "Echidna runs nightly; configure echidna.yaml per contract."
+
+  # 6. Nightly — Base fork tests
+  forge-fork-base:
+    name: Base fork tests (nightly)
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    env:
+      RPC_BASE: ${{ secrets.RPC_BASE }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { submodules: recursive }
+      - uses: foundry-rs/foundry-toolchain@v1
+        with: { version: nightly }
+      - run: forge test --fork-url "$RPC_BASE" --match-contract '.*Fork'
+
+  # 7. Release gate — Halmos symbolic verification (6 specs over spend-cap core + Merkle)
+  halmos:
+    name: Halmos symbolic verification
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    env:
+      HALMOS_ALLOW_DOWNLOAD: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with: { submodules: recursive }
+      - uses: foundry-rs/foundry-toolchain@v1
+        with: { version: nightly }
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install halmos==0.3.3
+      - run: halmos --match-contract HalmosTest

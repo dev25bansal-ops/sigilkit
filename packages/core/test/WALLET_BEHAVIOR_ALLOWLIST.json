@@ -1,0 +1,49 @@
+{
+  "$schema": "https://raw.githubusercontent.com/sigilkit/sigilkit/main/schemas/wallet-behavior-allowlist.schema.json",
+  "_doc": "Versioned record of wallet RPC behaviors SigilKit depends on. The cross-wallet conformance CI asserts these; a mismatch fails the build BEFORE users hit the regression. Add entries per wallet+behavior with the extension/version they were verified on.",
+  "behaviors": [
+    {
+      "id": "metamask:revoke-raw-rejected",
+      "wallet": "metamask",
+      "behavior": "A raw zero-address EIP-7702 revocation submitted via eth_sendTransaction is REJECTED with 'External EIP-7702 transactions are not supported'. In-UI revoke (PR #30969) produces a valid zero-address authorization tuple.",
+      "expected": "rejected",
+      "issue": "https://github.com/MetaMask/metamask-extension/issues/35520",
+      "verifiedOn": "extension 2025-08",
+      "sigilkitDependency": "SDK must route revocations through in-UI flow for MetaMask users, or use relayer-signed type-4 txs.",
+      "assert": "rejects-raw-zero-address-revoke"
+    },
+    {
+      "id": "metamask:type4-tx-accepts-authorization-list",
+      "wallet": "metamask",
+      "behavior": "eth_sendTransaction accepting an authorizationList field (type-4 relay path) for delegated EOAs.",
+      "expected": "accepted-or-documented-absent",
+      "verifiedOn": "extension 2025-08",
+      "assert": "authorization-list-handled"
+    },
+    {
+      "id": "coinbase:delegate-target-stable",
+      "wallet": "coinbase",
+      "behavior": "Coinbase Smart Wallet implementation address stays 0x000100abaad02f1cfC8Bbe32bD5a564817339E72 behind EIP7702Proxy 0x7702cb554e6bFb442cb743A7dF23154544a7176C.",
+      "expected": "0x000100abaad02f1cfC8Bbe32bD5a564817339E72",
+      "source": "https://github.com/base/eip-7702-proxy",
+      "assert": "delegation-designator-matches"
+    },
+    {
+      "id": "viem:json-rpc-account-signauthorization-unsupported",
+      "wallet": "viem",
+      "behavior": "signAuthorization remains local-account-only (JSON-RPC account signing unsupported pending an ERC).",
+      "expected": "unsupported",
+      "issue": "https://github.com/wevm/viem/discussions/3285",
+      "verifiedOn": "viem 2.55.x",
+      "assert": "signer-library-parity-only"
+    },
+    {
+      "id": "rabby:eip7702-absent",
+      "wallet": "rabby",
+      "behavior": "No EIP-7702 signing support found in Rabby desktop codebase.",
+      "expected": "absent",
+      "verifiedOn": "2026-08 research sweep",
+      "assert": "documented-gap"
+    }
+  ]
+}

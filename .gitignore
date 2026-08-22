@@ -1,0 +1,37 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Foundry / Solidity build artifacts
+out/
+cache/
+broadcast/
+lib/forge-std/  # installed via submodule/clone at build time
+
+# Env / secrets
+.env
+.env.local
+*.key
+
+# Obsidian
+.vault/.obsidian/workspace.json
+
+# Editor
+.idea/
+.vscode/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Coverage
+coverage/
+
+# Build output
+dist/
+
+# Session tooling
+.claude/
+
+# Vault workspace state (keep notes, ignore Obsidian internals)
+vault/.obsidian/

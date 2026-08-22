@@ -1,0 +1,22 @@
+{
+  "name": "sigilkit",
+  "version": "0.1.0",
+  "description": "Open-source toolkit for agent-native wallets: EIP-7702 library, session-key manager with on-chain spend caps and mandatory audit events.",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "test": "forge test",
+    "lint": "npm run lint --workspaces --if-present"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2"
+  }
+}

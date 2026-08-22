@@ -1,0 +1,42 @@
+{
+  "name": "@sigilkit/demo-agent",
+  "version": "0.1.0",
+  "description": "Demo autonomous treasury agent exercising all SigilKit primitives end-to-end (grant \u00e2\u2020\u2019 scoped sign \u00e2\u2020\u2019 on-chain enforce \u00e2\u2020\u2019 ActionLogged).",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/agent.js",
+  "types": "./dist/agent.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/agent.d.ts",
+      "default": "./dist/agent.js"
+    },
+    "./cli": {
+      "types": "./dist/cli.d.ts",
+      "default": "./dist/cli.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "demo": "tsx src/cli.ts",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@sigilkit/core": "*",
+    "viem": "^2.55.19"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.3",
+    "tsx": "^4.19.0",
+    "typescript": "^7.0.2"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sigilkit/sigilkit.git"
+  },
+  "private": true
+}
