@@ -26,6 +26,13 @@ import {
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 
+/**
+ * Strategy action. `nonce` may be omitted — SigilKitClient.prepareExecution then
+ * fetches the current on-chain getNonce at fire time, so a failed or reverted
+ * tick can never permanently desync the agent's nonces.
+ */
+export type StrategyAction = Omit<ActionRequest, "nonce"> & { nonce?: bigint };
+
 export interface TreasuryAgentConfig {
   chain: Chain;
   rpcUrl: string;
@@ -37,7 +44,7 @@ export interface TreasuryAgentConfig {
   /** Scope to grant for this run. */
   scope: Scope;
   /** Strategy: given the tick number, return the action to take or null to idle. */
-  strategy: (tick: number, state: AgentState) => ActionRequest | null;
+  strategy: (tick: number, state: AgentState) => StrategyAction | null;
 }
 
 export interface AgentState {

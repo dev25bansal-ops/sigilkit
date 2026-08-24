@@ -55,6 +55,21 @@ export function rlpEncodeScalar(value: bigint): Hex {
   return toHex(new Uint8Array([0x80 + bytes.length, ...bytes]));
 }
 
+/**
+ * Encodes a 20-byte address as a fixed-length RLP string item.
+ *
+ * Canonical EIP-7702 signers (go-ethereum, viem's hashAuthorization) encode
+ * the address field as EXACTLY 20 bytes: leading zeros are never stripped,
+ * and an all-zero payload stays a 20-byte string item (`0x94 ‖ 20 × 0x00`),
+ * NOT the empty-string encoding `0x80`. Using {@link rlpEncodeScalar} here
+ * would produce digests diverging from canonical whenever the target has a
+ * leading zero byte (~1/256 of addresses) and for every revocation (0x0).
+ */
+export function rlpEncodeAddress(address: Address): Hex {
+  const bytes = pad(hexToBytes(getAddress(address)), { size: 20 });
+  return toHex(new Uint8Array([0x80 + bytes.length, ...bytes])); // len 20 < 56 → single-byte prefix 0x94
+}
+
 /** Encodes a list of already-encoded items with a length prefix. */
 export function rlpEncodeList(items: Hex[]): Hex {
   const payloads = items.map((i) => hexToBytes(i));
@@ -86,7 +101,7 @@ export function authorizationDigest(args: {
   const address = getAddress(contractAddress);
   const preimage = rlpEncodeList([
     rlpEncodeScalar(BigInt(chainId)),
-    rlpEncodeScalar(hexToBigInt(address)),
+    rlpEncodeAddress(address), // fixed 20-byte string, canonical per go-ethereum/viem
     rlpEncodeScalar(BigInt(nonce)),
   ]);
   return keccak256(concat([AUTHORIZATION_MAGIC, preimage]));

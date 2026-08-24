@@ -2,8 +2,11 @@ name: SigilKit CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, master]
   pull_request:
+  schedule:
+    # Nightly at 03:17 UTC — gates echidna-nightly and forge-fork-base.
+    - cron: "17 3 * * *"
   workflow_dispatch:
 
 concurrency:
@@ -49,10 +52,12 @@ jobs:
         with: { version: nightly }
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
-      - run: pip install slither-analyzer==6.2.4
+      # 6.x does not exist on PyPI (latest line is 0.11.x); pin the current release.
+      - run: pip install slither-analyzer==0.11.6
+      - run: slither --version
       - run: slither contracts/src --fail-high
 
-  # 4. TS SDK — typecheck + conformance against Anvil (PR gate)
+  # 4. TS SDK — typecheck, lint, build both workspaces, conformance against Anvil (PR gate)
   ts-sdk:
     name: TS SDK conformance (Anvil)
     runs-on: ubuntu-latest
@@ -63,21 +68,22 @@ jobs:
         with: { version: nightly }
       - uses: actions/setup-node@v4
         with: { node-version: "24", cache: npm }
-      - run: npm install --workspaces
+      - run: npm ci
       - run: npm run lint --workspace @sigilkit/core
+      - run: npm run lint --workspace @sigilkit/demo-agent
+      - run: npm run build --workspaces
       - run: npm test --workspace @sigilkit/core
 
-  # 5. Nightly — Echidna (placeholder; requires Echidna installed image)
-  echidna-nightly:
-    name: Echidna nightly fuzz
-    if: github.event.schedule == 'nightly'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with: { submodules: recursive }
-      - run: echo "Echidna runs nightly; configure echidna.yaml per contract."
+  # 5. Nightly — Echidna fuzz.
+  # DELETED: no echidna_* property functions exist anywhere in contracts/, so there is
+  # nothing for Echidna to fuzz. A real job would be a guaranteed no-op or false green.
+  # Reintroduce only after adding echidna_ properties (e.g. to SessionKeyManager.t.sol),
+  # installing via crytic/echidna-action or the release binary, and running:
+  #   echidna contracts/src/SessionKeyManager.sol --contract SessionKeyManager --config echidna.yaml
 
-  # 6. Nightly — Base fork tests
+  # 6. Nightly — Base fork smoke tests.
+  # Runs only on the schedule trigger; skips cleanly when secrets.RPC_BASE is unset so a
+  # forkless environment reports a skipped job instead of a red one.
   forge-fork-base:
     name: Base fork tests (nightly)
     if: github.event_name == 'schedule'
@@ -87,17 +93,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: { submodules: recursive }
+      - id: gate
+        if: env.RPC_BASE == ''
+        run: |
+          echo "RPC_BASE secret not set; skipping Base fork tests." >> "$GITHUB_STEP_SUMMARY"
+          echo "skip=true" >> "$GITHUB_OUTPUT"
       - uses: foundry-rs/foundry-toolchain@v1
+        if: steps.gate.outputs.skip != 'true'
         with: { version: nightly }
       - run: forge test --fork-url "$RPC_BASE" --match-contract '.*Fork'
+        if: steps.gate.outputs.skip != 'true'
 
   # 7. Release gate — Halmos symbolic verification (6 specs over spend-cap core + Merkle)
   halmos:
     name: Halmos symbolic verification
-    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     env:
-      HALMOS_ALLOW_DOWNLOAD: "1"
+      HALMOS_ALLOW_DOWNLOAD: "1" # required: halmos downloads solc on first run
     steps:
       - uses: actions/checkout@v4
         with: { submodules: recursive }
@@ -106,4 +119,5 @@ jobs:
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
       - run: pip install halmos==0.3.3
+      - run: halmos --version
       - run: halmos --match-contract HalmosTest

@@ -38,6 +38,6 @@ Initial release of the session-key infrastructure for agent-native wallets.
 - 17 TS tests incl. full on-chain E2E vs Anvil; wallet-behavior allowlist recorded.
 
 ### Infrastructure
-- 8-job GitHub Actions CI incl. Halmos release gate.
+- 6-job GitHub Actions CI (unit, invariant, Slither, TS, nightly Base-fork, Halmos release gate).
 - Obsidian research vault (`vault/`) documenting the Aug-2026 worldwide research sweep,
   whitepaper corrections, competitive landscape, and build plan.

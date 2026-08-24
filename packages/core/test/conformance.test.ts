@@ -4,14 +4,24 @@
  * Anvil node (started by the test harness) with SessionKeyManager deployed.
  */
 import { describe, expect, it, beforeAll, afterAll } from "vitest";
-import { createPublicClient, createWalletClient, encodeFunctionData, http, type Hex } from "viem";
+import {
+  concat,
+  createPublicClient,
+  createWalletClient,
+  encodeFunctionData,
+  http,
+  keccak256,
+  pad,
+  toHex,
+  type Hex,
+} from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { foundry } from "viem/chains";
 import { spawn, execFileSync, type ChildProcess } from "node:child_process";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { actionRequestDigest, signActionRequest, targetLeaf, merkleRoot } from "../src/index.js";
+import { actionRequestDigest, SESSION_KEY_MANAGER_ABI, signActionRequest, targetLeaf, merkleRoot } from "../src/index.js";
 import type { ActionRequest } from "../src/index.js";
 
 const ANVIL_URL = "http://127.0.0.1:8545";
@@ -99,40 +109,45 @@ describe("TS↔Solidity conformance", () => {
     };
   }
 
-  it("digest matches on-chain DOMAIN_SEPARATOR-based recovery", async () => {
-    const nonce = await publicClient.readContract({
+  it("DOMAIN_SEPARATOR matches canonical EIP-712 composition", async () => {
+    // The contract's stored separator must equal an independent off-chain recomputation
+    // from the canonical domain typehash — this pins the actual signing domain, which
+    // every ActionRequest digest is bound to.
+    const onChain = await publicClient.readContract({
       address: managerAddress,
-      abi: [
-        {
-          name: "getNonce",
-          type: "function",
-          stateMutability: "view",
-          inputs: [{ name: "key", type: "address" }],
-          outputs: [{ type: "uint256" }],
-        },
-      ] as const,
-      functionName: "getNonce",
-      args: [agent.address],
+      abi: SESSION_KEY_MANAGER_ABI,
+      functionName: "DOMAIN_SEPARATOR",
+      args: [],
     });
-    const req = makeRequest(nonce);
+
+    const domainTypehash = keccak256(
+      toHex("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
+    );
+    const expected = keccak256(
+      concat([
+        domainTypehash,
+        keccak256(toHex("SigilKit")),
+        keccak256(toHex("1")),
+        pad(toHex(foundry.id)), // uint256 word, left-padded to 32 bytes
+        pad(managerAddress.toLowerCase() as Hex), // address word
+      ] as Hex[]),
+    );
+
+    expect(onChain).toBe(expected);
+
+    // And the digest the SDK builds for a request over this manager must differ when
+    // any domain component changes (guards against domain-stripping regressions).
     const digest = actionRequestDigest({
-      request: req,
+      request: makeRequest(0n),
       chainId: foundry.id,
       verifyingContract: managerAddress,
     });
-    const sig = await agent.sign({ hash: digest });
-
-    // The signature must recover to the agent address over this exact digest.
-    const recovered = await publicClient.verifyMessage({
-      address: agent.address,
-      message: { raw: digest },
-      signature: sig,
-    }).catch(() => null);
-
-    // verifyMessage uses personal_sign; instead assert structural validity + length.
-    expect(sig).toHaveLength(132); // 65 bytes hex
-    expect(digest).toMatch(/^0x[0-9a-f]{64}$/);
-    expect(recovered === null || typeof recovered === "boolean").toBe(true);
+    const otherChainDigest = actionRequestDigest({
+      request: makeRequest(0n),
+      chainId: 1,
+      verifyingContract: managerAddress,
+    });
+    expect(digest).not.toBe(otherChainDigest);
   });
 
   it("merkle root is deterministic and leaf-shaped correctly", () => {

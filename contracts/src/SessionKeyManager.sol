@@ -164,6 +164,10 @@ contract SessionKeyManager is ActionLogger {
         external
         onlyOwner
     {
+        // Reject unknown keys outright: with expiresAt==0 the only surviving path
+        // (overlapEnds==0) would emit spurious Revoked/Rotated events for a key
+        // that never existed.
+        if (oldKey != address(0) && _manager().scopes[oldKey].expiresAt == 0) revert KeyUnknown();
         if (overlapEnds > _manager().scopes[oldKey].expiresAt) revert OverlapBeyondOldExpiry();
         _grant(oldKey, newKey, newScope, overlapEnds);
     }

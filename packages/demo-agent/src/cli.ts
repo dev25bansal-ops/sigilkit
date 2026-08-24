@@ -3,8 +3,8 @@
  *
  * Prereqs: `anvil --port 8545` running; foundry available for the target deploy.
  * The demo deploys SessionKeyManager + a Counter target, funds the wallet,
- * grants a 1-hour scoped session key (0.05 ETH/action, 0.1 ETH/window), then runs
- * five strategy ticks — ticks 1 and 3 fire a 0.04 ETH "rebalance" poke.
+ * grants a 1-hour scoped session key (0.01 ETH/action, 0.05 ETH/window), then runs
+ * five strategy ticks — ticks 1 and 3 fire a 0.004 ETH "rebalance" poke.
  */
 import { execFileSync } from "node:child_process";
 import { homedir } from "node:os";
@@ -20,6 +20,7 @@ import { TreasuryAgent } from "./agent.js";
 
 const ANVIL_URL = "http://127.0.0.1:8545";
 const FORGE = join(homedir(), ".foundry", "bin", "forge");
+// WELL-KNOWN Anvil dev keys - DEMO ONLY, never use on funded chains
 const OWNER_KEY = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"; // anvil #0
 const AGENT_KEY = "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d"; // anvil #1
 
@@ -80,12 +81,14 @@ async function main() {
     },
     strategy: (tick, state) => {
       if (tick !== 1 && tick !== 3) return null; // idle on other ticks
+      // nonce omitted on purpose: prepareExecution fetches the live getNonce
+      // from the manager at fire time, so a failed/reverted tick can't
+      // permanently desync nonces the way an actionsExecuted-derived counter would.
       return {
         agentId: toHex(new TextEncoder().encode("demo-treasury-v1")).padEnd(66, "0") as `0x${string}`,
         target: counterAddress,
         selector: "0x32145f90", // poke(uint256)
         value: 4n * 10n ** 15n, // 0.004 ETH — within caps
-        nonce: BigInt(state.actionsExecuted),
         expiry: Math.floor(Date.now() / 1000) + 120,
         rationaleHash: ("0x" + Buffer.from(`rebalance tick ${tick}`).toString("hex").padStart(64, "0")) as `0x${string}`,
         data: toHex(new Uint8Array(32).fill(Number(tick))), // poke(tick)
@@ -95,7 +98,10 @@ async function main() {
 
   console.log("granting scoped session key…");
   const grantHash = await agent.grantScope();
-  await publicClient.waitForTransactionReceipt({ hash: grantHash });
+  const grantReceipt = await publicClient.waitForTransactionReceipt({ hash: grantHash });
+  if (grantReceipt.status !== "success") {
+    throw new Error(`grantSessionKey reverted: ${grantHash}`);
+  }
   console.log("granted:", grantHash);
 
   console.log("running 5 ticks (strategy fires on ticks 1 and 3)…");

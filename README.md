@@ -25,12 +25,13 @@ session-key management with on-chain spend caps, and a mandatory audit trail per
 
 | Layer | Status |
 |---|---|
-| Foundry unit + fuzz | ✅ 34 tests (17 manager + 17 ERC-7579 module) |
+| Foundry unit + fuzz | ✅ 39 tests (17 manager + 22 ERC-7579 module) |
 | Foundry invariant (INV-1/2/4, handler-only fuzzing) | ✅ 4 suites × 256 runs × 500 calls |
-| Halmos symbolic (spend-cap core + Merkle boundaries) | ✅ 6 specs (`halmos --match-contract HalmosTest`) |
+| Halmos symbolic (spend-cap core + Merkle boundaries) | ✅ 6 specs (`halmos --match-contract HalmosTest`) — scope: the spend-policy math, not yet the auth paths |
 | Slither static analysis | ✅ run; all findings triaged in [`SECURITY.md`](SECURITY.md) |
 | TS SDK vs on-chain E2E (Anvil) | ✅ sign → relay → enforce → `ActionLogged` verified in receipt |
-| Cross-wallet signing parity | ✅ viem ↔ ethers byte-identical digests + signatures |
+| Cross-wallet signing parity | ✅ viem ↔ ethers ↔ hand-rolled reference encoder, byte-identical digests + signatures |
+| CI | ✅ 6 jobs defined (5 PR-gated, fork+Halmos gated); runs on GitHub once pushed |
 
 ## Repository layout
 
@@ -40,12 +41,15 @@ sigilkit/
 │  ├─ src/
 │  │  ├─ ActionLogger.sol     # mandatory audit event (INV-3)
 │  │  ├─ SpendPolicy.sol      # per-action + rolling-window caps (INV-1)
-│  │  └─ SessionKeyManager.sol# session keys, scope, rotation, denylist (INV-2, INV-4)
-│  ├─ test/                   # unit + invariant (INV-1..4) suites
-│  └─ script/Deploy.s.sol     # deterministic deploy
-├─ packages/core/             # @sigilkit/core — TS SDK (EIP-712 signing, Merkle, client)
+│  │  ├─ MerkleWhitelist.sol  # sorted-pair whitelist verification
+│  │  ├─ SessionKeyManager.sol# session keys, scope, rotation, denylist (INV-2, INV-4)
+│  │  └─ SessionKey7579Module.sol # ERC-7579 VALIDATION module for Kernel/Safe
+│  ├─ test/                   # unit + invariant + Halmos specs + fork smoke
+│  └─ script/Deploy.s.sol     # deploy (SIGILKIT_OWNER_KEY required; no default key)
+├─ packages/core/             # @sigilkit/core — TS SDK (EIP-712 signing, EIP-7702, Merkle, client)
+├─ packages/demo-agent/       # @sigilkit/demo-agent — autonomous treasury bot demo
 ├─ vault/                     # Obsidian research + build-plan knowledge base
-└─ .github/workflows/ci.yml   # 8-layer CI (unit, invariant, Slither, TS, fork, Halmos)
+└─ .github/workflows/ci.yml   # CI (unit, invariant, Slither, TS, nightly Base-fork, Halmos gate)
 ```
 
 ## Quick start
@@ -96,16 +100,15 @@ the granted scope — caps and the deny list are enforced in the contract, not o
 | **INV-4** | Owner-only selectors are unreachable through `executeWithSessionKey` on any target. |
 
 Enforcement is Checks-Effects-Interactions + `nonReentrant` + ERC-7201 namespaced storage
-(collision-safe). The internal-transfer blind spot (calldata can't see nested ERC-20 pulls)
-is mitigated by a trusted-target allowlist, post-hoc `ActionLogger` reconciliation, and an
-optional ERC-20 allowance pre-check — documented in [`vault/Component 4 — Agent Session-Key Manager.md`](vault/Component%204%20%E2%80%94%20Agent%20Session-Key%20Manager.md).
+(collision-safe). **Scope note:** spend caps bind native `msg.value` only — calldata cannot see
+nested ERC-20 pulls, so whitelisted token selectors are NOT amount-capped unless the target itself
+is trusted (e.g. routers that settle via permit2). Mitigations: trusted-target allowlists,
+post-hoc reconciliation against cumulative `ActionLogged` records. See [`SECURITY.md`](SECURITY.md).
 
-## Audit & verification status
+## Verification status
 
-- ✅ 21 Foundry tests (unit + stateful invariant, 128k fuzz calls each, zero INV violations).
-- ⬜ Slither clean (CI job wired; run `slither contracts/src --fail-high`).
-- ⬜ Halmos symbolic proofs (`prove_*`) for INV-1..4 before mainnet.
-- ⬜ External audit (book Cantina/Sherlock; offset with Arbitrum Audit Program).
+See the table at the top of this README (kept current from CI output). External audit pending —
+route: Cantina/Sherlock contest + private review, offset with the Arbitrum Audit Program.
 
 ## License
 

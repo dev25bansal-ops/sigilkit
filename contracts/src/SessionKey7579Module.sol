@@ -48,6 +48,7 @@ contract SessionKey7579Module {
     // ------------------------------------------------------------------
     error AlreadyInitialized();
     error NotInitialized();
+    error NotAuthorizedCaller();
     error KeyUnknown();
     error KeyRevoked();
     error KeyExpired();
@@ -76,9 +77,13 @@ contract SessionKey7579Module {
         bytes data;
     }
 
-    /// ERC-7201 namespaced storage.
+    /// @dev ERC-7201 namespaced storage (computed via `cast index-erc7201
+    ///      "sigilkit.storage.SessionKey7579Module"`).
     bytes32 private constant _STORAGE_LOCATION =
-        0x8f2e6dcba7d3cefa0b2623ad1e9d4a1bd3e9a14c9dbf7bbf3a2d5c1ee90f7100;
+        0x37fff519afacb07519d05d86325a08e1838a39976731130004177cffe6d58f00;
+
+    /// @notice Upper bound on batch executions enforced at validation (gas + DoS bound).
+    uint256 private constant MAX_BATCH_SIZE = 8;
 
     struct ModuleStorage {
         mapping(address account => mapping(address key => Scope)) scopes;
@@ -100,6 +105,7 @@ contract SessionKey7579Module {
     event ScopeGranted(address indexed account, address indexed key, uint48 expiresAt);
     event ScopeRevoked(address indexed account, address indexed key);
     event SelectorDenylistSet(address indexed account, bytes4 indexed selector, bool denied);
+    event ModuleUninstalled(address indexed account);
 
     // ------------------------------------------------------------------
     // ERC-7579 module surface
@@ -128,7 +134,9 @@ contract SessionKey7579Module {
         ModuleStorage storage s = _m();
         if (!s.initialized[msg.sender]) revert NotInitialized();
         delete s.initialized[msg.sender];
-        // Scopes/windows intentionally retained for audit reconstruction; revoke gates them.
+        // Scopes/windows intentionally retained for audit reconstruction; validateUserOp
+        // refuses to honor them until the account re-initializes via onInstall.
+        emit ModuleUninstalled(msg.sender);
     }
 
     // ------------------------------------------------------------------
@@ -181,8 +189,15 @@ contract SessionKey7579Module {
         PackedUserOperation calldata userOp,
         bytes32 userOpHash
     ) external returns (uint256 validationData) {
+        // Only the account that owns this userOp may run validation: window state mutates
+        // here (checks+effects), so a mempool-copied op must not burn a victim's spend
+        // window when invoked directly. ERC-4337/7579 accounts invoke validation modules
+        // in their own context, so msg.sender == userOp.sender holds on the happy path.
+        if (msg.sender != userOp.sender) revert NotAuthorizedCaller();
+
         ModuleStorage storage s = _m();
         address account = userOp.sender;
+        if (!s.initialized[account]) revert NotInitialized();
 
         // --- Recover the session key over the account-bound domain ---
         address signer = _recover(account, userOpHash, userOp.signature);
@@ -242,6 +257,7 @@ contract SessionKey7579Module {
     ) internal {
         ModuleStorage storage s = _m();
         if (scope.merkleRoot != bytes32(0)) revert BatchWithWhitelistUnsupported(); // fail closed
+        if (batch.length == 0 || batch.length > MAX_BATCH_SIZE) revert MalformedExecutionData();
 
         // Checks across every tuple first…
         uint256 totalValue = 0;
@@ -343,6 +359,10 @@ contract SessionKey7579Module {
         bytes32 vs = bytes32(signature[32:64]);
         uint8 yParity = uint8(signature[64]);
         if (yParity != 27 && yParity != 28) revert InvalidSignature();
+        // EIP-2: reject malleable high-s signatures (s' = N - s verifies identically).
+        if (uint256(vs) > 0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0) {
+            revert InvalidSignature();
+        }
         address recovered = ecrecover(digest, yParity, r, vs);
         if (recovered == address(0)) revert InvalidSignature();
         return recovered;

@@ -1,9 +1,11 @@
-# Security Notes — Slither Triage (2026-08-23)
+# Security Notes — Slither Triage (2026-08-24)
 
-`slither contracts/src` reports **13 findings across 5 contracts, zero high-severity bugs** (re-run
-after the ERC-7579 module landed; one `uninitialized-local` info finding fixed by explicit
-initialization). Every remaining finding is a known, deliberate design pattern of an agent-action
-executor. This file is the reference the CI Slither gate and future auditors should check against.
+`slither contracts/src` reports **12 findings across 5 contracts, zero high-severity bugs**
+(re-run after the Aug-24 remediation pass added the module caller gate, uninstall gate,
+EIP-2 low-s rejection, batch bounds, and derived ERC-7201 slot; the earlier
+`uninitialized-local` info finding is fixed). Every remaining finding is a known, deliberate
+design pattern of an agent-action executor. This file is the reference the CI Slither gate and
+future auditors should check against.
 
 | # | Detector | Location | Triage |
 |---|----------|----------|--------|

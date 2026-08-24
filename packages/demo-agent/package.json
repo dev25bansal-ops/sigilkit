@@ -1,7 +1,7 @@
 {
   "name": "@sigilkit/demo-agent",
   "version": "0.1.0",
-  "description": "Demo autonomous treasury agent exercising all SigilKit primitives end-to-end (grant \u00e2\u2020\u2019 scoped sign \u00e2\u2020\u2019 on-chain enforce \u00e2\u2020\u2019 ActionLogged).",
+  "description": "Demo autonomous treasury agent exercising all SigilKit primitives end-to-end (grant -> scoped sign -> on-chain enforce -> ActionLogged).",
   "license": "MIT",
   "type": "module",
   "main": "./dist/agent.js",

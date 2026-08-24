@@ -5,10 +5,12 @@ import {Script, console2} from "forge-std/Script.sol";
 import {SessionKeyManager} from "../src/SessionKeyManager.sol";
 
 /// @notice Deploys SessionKeyManager with the broadcaster as owner.
-/// Usage: forge script contracts/script/Deploy.s.sol --rpc-url <url> --broadcast
+/// Usage: SIGILKIT_OWNER_KEY=<0x-prefixed key> forge script contracts/script/Deploy.s.sol --rpc-url <url> --broadcast
 contract Deploy is Script {
     function run() external returns (SessionKeyManager manager) {
-        uint256 ownerKey = vm.envOr("SIGILKIT_OWNER_KEY", uint256(0xA11CE));
+        // Hard-required: no well-known-key fallback. A forgotten env var must fail loudly,
+        // not broadcast from a publicly-known private key (0xA11CE) anyone can spend from.
+        uint256 ownerKey = vm.envUint("SIGILKIT_OWNER_KEY");
         address owner = vm.addr(ownerKey);
         vm.startBroadcast(ownerKey);
         manager = new SessionKeyManager(owner);

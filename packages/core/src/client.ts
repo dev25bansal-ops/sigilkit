@@ -13,6 +13,7 @@ import {
   type PrivateKeyAccount,
   type PublicClient,
 } from "viem";
+import { parseActionRequest } from "./signing.js";
 
 /** Minimal ABI surface of SessionKeyManager used by the SDK. */
 export const SESSION_KEY_MANAGER_ABI = [
@@ -77,6 +78,13 @@ export const SESSION_KEY_MANAGER_ABI = [
       { name: "spentThisWindow", type: "uint256" },
     ],
   },
+  {
+    name: "DOMAIN_SEPARATOR",
+    type: "function",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ type: "bytes32" }],
+  },
 ] as const;
 
 export interface SigilKitClientConfig {
@@ -117,6 +125,11 @@ export class SigilKitClient {
     scope: Scope;
     merkleProof?: Hex[];
   }): Promise<ExecuteArgs & { to: Address; data: Hex }> {
+    // Normalize/validate the request up front so deserialized (e.g. JSON-round-tripped)
+    // inputs fail loudly here instead of TypeError-ing mid-encode or hashing garbage.
+    // A placeholder nonce satisfies the parser; the real one is fetched right after
+    // and overrides it.
+    const normalized = parseActionRequest({ ...args.request, nonce: args.request.nonce ?? 0n });
     const nonce =
       args.request.nonce ??
       (await this.publicClient.readContract({
@@ -126,7 +139,7 @@ export class SigilKitClient {
         args: [args.account.address],
       }));
 
-    const request: ActionRequest = { ...args.request, nonce } as ActionRequest;
+    const request: ActionRequest = { ...normalized, nonce } as ActionRequest;
 
     // Zero-gas local policy check before signing.
     let windowState: { windowStart: number; spentThisWindow: bigint } | undefined;
@@ -145,7 +158,12 @@ export class SigilKitClient {
       // View may be unavailable on some transports; on-chain enforcement still applies.
     }
 
-    const check = validateAgainstScope({ request, scope: args.scope, windowState });
+    const check = validateAgainstScope({
+      request,
+      scope: args.scope,
+      windowState,
+      merkleProof: args.merkleProof,
+    });
     if (!check.ok) {
       throw new Error(`SigilKit policy rejection (pre-signature): ${check.reason}`);
     }
@@ -173,10 +191,17 @@ export class SigilKitClient {
     };
   }
 
-  /** Waits for an execution receipt and confirms the mandatory audit event fired. */
+  /**
+   * Waits for an execution receipt and confirms the mandatory audit event fired (INV-3).
+   *
+   * Returns `true` only when the tx succeeded AND an ActionLogged event was emitted.
+   * Throws if the transaction reverted — a revert is an error, not merely "not audited".
+   */
   async assertAuditEmitted(txHash: Hash): Promise<boolean> {
     const receipt = await this.publicClient.waitForTransactionReceipt({ hash: txHash });
-    if (receipt.status !== "success") return false;
+    if (receipt.status !== "success") {
+      throw new Error(`SigilKit: transaction ${txHash} reverted; nothing was executed or audited`);
+    }
     return receipt.logs.some(
       (log) =>
         log.topics.length === 4 && log.topics[0] === ACTION_LOGGED_TOPIC,
@@ -188,26 +213,3 @@ export class SigilKitClient {
 export const ACTION_LOGGED_TOPIC = keccak256(
   toHex("ActionLogged(bytes32,address,bytes4,uint256,bytes32,uint48)"),
 );
-
-/** Converts a TS ActionRequest into the ABI tuple order expected by the contract. */
-function toTuple(request: ActionRequest): [
-  agentId: `0x${string}`,
-  target: `0x${string}`,
-  selector: `0x${string}`,
-  value: bigint,
-  nonce: bigint,
-  expiry: number,
-  rationaleHash: `0x${string}`,
-  data: `0x${string}`,
-] {
-  return [
-    request.agentId,
-    request.target,
-    request.selector,
-    request.value,
-    request.nonce,
-    request.expiry,
-    request.rationaleHash,
-    request.data,
-  ];
-}

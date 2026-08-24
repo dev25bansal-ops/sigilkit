@@ -28,7 +28,7 @@ installable via `forge install` / npm.
 | 1 | EIP-7702 wallet library + cross-wallet conformance | **Kept** — core implemented; MetaMask/Coinbase UI legs pending |
 | 2 | ~~EIP-2535 Diamonds module~~ → **ERC-7579 module** | **Replaced** — EIP-2535 now serves fixed-function upgradeable protocols; ERC-7579 owns agent-wallet extensibility. Shipped as `SessionKey7579Module` |
 | 3 | Multi-RPC provider | **Dropped/deferred** — viem already provides WS reconnect + retry/fallback; commoditized |
-| 4 | Agent session-key manager | **Kept — the moat.** Implemented, formally verified |
+| 4 | Agent session-key manager | **Kept — the moat.** Implemented; spend-cap core formally verified (auth-path specs in progress). |
 
 ## Corrected claims
 
@@ -62,7 +62,7 @@ installable via `forge install` / npm.
 
 All locally-buildable scope is complete and committed (see `CHANGELOG.md`): contracts + ERC-7579
 module, TS SDK with three-way digest conformance, live demo agent, 38 Foundry tests, invariant
-suites, 6 Halmos specs, Slither triage, 8-job CI, publish-ready packages.
+suites, 6 Halmos specs, Slither triage, 6-job CI, publish-ready packages.
 
 Remaining before public launch: external audit (Cantina/Sherlock + private review), Base Sepolia →
 mainnet deployment under 2-of-3 Safe + TimelockController, Immunefi bounty ($50k critical ceiling,

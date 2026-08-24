@@ -22,6 +22,15 @@ contract MockAccount {
     function uninstall() external {
         module.onUninstall("");
     }
+
+    /// @dev Real accounts run validation modules in their own context (ERC-4337/7579),
+    ///      so the account itself must be msg.sender for validateUserOp.
+    function validate(PackedUserOperation memory op, bytes32 hash)
+        external
+        returns (uint256)
+    {
+        return module.validateUserOp(op, hash);
+    }
 }
 
 contract SessionKey7579ModuleTest is Test {
@@ -30,6 +39,10 @@ contract SessionKey7579ModuleTest is Test {
 
     uint256 internal constant KEY_PK = 0xC0FFEE;
     address internal key;
+
+    /// @dev Group order N of secp256k1 (used to craft high-s malleated signatures).
+    uint256 internal constant SECP256K1_N =
+        0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141;
 
     uint48 internal constant EXPIRES_AT = 1_900_000_000; // far future vs 2026 timestamps
     uint48 internal constant WINDOW_SECONDS = 600;
@@ -80,12 +93,8 @@ contract SessionKey7579ModuleTest is Test {
         return abi.encodePacked(bytes32(uint256(0x01 << 248)), abi.encode(calls));
     }
 
-    /// @dev Signs the module's digest for (account, hash) and appends optional proof tail.
-    function signFor(address acct, bytes32 userOpHash, bytes32[] memory proof)
-        internal
-        view
-        returns (bytes memory)
-    {
+    /// @dev Recomputes the module's EIP-712 digest for (account, userOpHash).
+    function digestFor(address acct, bytes32 userOpHash) internal view returns (bytes32) {
         bytes32 structHash = keccak256(
             abi.encode(
                 keccak256("UserOp(address sender,uint256 nonce,bytes32 userOpHash)"),
@@ -105,7 +114,16 @@ contract SessionKey7579ModuleTest is Test {
                 acct
             )
         );
-        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", domainSeparator, structHash));
+        return keccak256(abi.encodePacked("\x19\x01", domainSeparator, structHash));
+    }
+
+    /// @dev Signs the module's digest for (account, hash) and appends optional proof tail.
+    function signFor(address acct, bytes32 userOpHash, bytes32[] memory proof)
+        internal
+        view
+        returns (bytes memory)
+    {
+        bytes32 digest = digestFor(acct, userOpHash);
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(KEY_PK, digest);
         bytes memory sig = abi.encodePacked(r, s, v);
         if (proof.length != 0) {
@@ -201,7 +219,7 @@ contract SessionKey7579ModuleTest is Test {
             signFor(address(account), opHash, new bytes32[](0))
         );
         op.sender = address(account);
-        uint256 vd = module.validateUserOp(op, opHash);
+        uint256 vd = account.validate(op, opHash);
         assertEq(vd, packedSuccess(EXPIRES_AT), "validation binds authorization to scope expiry");
     }
 
@@ -214,7 +232,7 @@ contract SessionKey7579ModuleTest is Test {
         );
         op.sender = address(account);
         vm.expectRevert(SessionKey7579Module.KeyUnknown.selector);
-        module.validateUserOp(op, opHash);
+        account.validate(op, opHash);
     }
 
     function test_Validate_CrossAccountReplay_Fails() public {
@@ -231,7 +249,7 @@ contract SessionKey7579ModuleTest is Test {
         );
         op.sender = address(other);
         vm.expectRevert(); // KeyUnknown — recovered signer differs under other's domain
-        module.validateUserOp(op, opHash);
+        other.validate(op, opHash);
     }
 
     function test_Validate_ExpiredKey_Reverts() public {
@@ -244,7 +262,7 @@ contract SessionKey7579ModuleTest is Test {
         );
         op.sender = address(account);
         vm.expectRevert(SessionKey7579Module.KeyExpired.selector);
-        module.validateUserOp(op, opHash);
+        account.validate(op, opHash);
     }
 
     function warpPastExpiry() internal {
@@ -263,7 +281,7 @@ contract SessionKey7579ModuleTest is Test {
         );
         op.sender = address(account);
         vm.expectRevert(abi.encodeWithSelector(SessionKey7579Module.SelectorDenied.selector, bytes4(hex"cafebabe")));
-        module.validateUserOp(op, opHash);
+        account.validate(op, opHash);
     }
 
     function test_Validate_WindowAccumulatesAndRolloverResets() public {
@@ -286,11 +304,11 @@ contract SessionKey7579ModuleTest is Test {
         );
         op.sender = address(account);
         if (shouldPass) {
-            uint256 vd = module.validateUserOp(op, opHash);
+            uint256 vd = account.validate(op, opHash);
             assertEq(vd, packedSuccess(EXPIRES_AT));
         } else {
             vm.expectRevert();
-            module.validateUserOp(op, opHash);
+            account.validate(op, opHash);
         }
     }
 
@@ -309,7 +327,7 @@ contract SessionKey7579ModuleTest is Test {
             signFor(address(account), opHash, new bytes32[](0))
         );
         op.sender = address(account);
-        uint256 vd = module.validateUserOp(op, opHash);
+        uint256 vd = account.validate(op, opHash);
         assertEq(vd, packedSuccess(EXPIRES_AT));
 
         (, uint256 spent) = module.getWindowState(address(account), key);
@@ -322,7 +340,7 @@ contract SessionKey7579ModuleTest is Test {
         PackedUserOperation memory op2 = makeUserOp(batchCallData(more), signFor(address(account), h2, new bytes32[](0)));
         op2.sender = address(account);
         vm.expectRevert();
-        module.validateUserOp(op2, h2);
+        account.validate(op2, h2);
     }
 
     function test_Validate_Batch_PerActionCapViolated_Reverts() public {
@@ -334,7 +352,7 @@ contract SessionKey7579ModuleTest is Test {
         PackedUserOperation memory op = makeUserOp(batchCallData(calls), signFor(address(account), opHash, new bytes32[](0)));
         op.sender = address(account);
         vm.expectRevert(SessionKey7579Module.MalformedExecutionData.selector);
-        module.validateUserOp(op, opHash);
+        account.validate(op, opHash);
     }
 
     function test_WhitelistedSingleCall_AcceptsValidProof_RejectsWrongTarget() public {
@@ -355,7 +373,7 @@ contract SessionKey7579ModuleTest is Test {
             signFor(address(account), opHash, new bytes32[](0)) // empty proof suffices for 1-leaf root
         );
         ok.sender = address(account);
-        uint256 vd = module.validateUserOp(ok, opHash);
+        uint256 vd = account.validate(ok, opHash);
         assertEq(vd, packedSuccess(EXPIRES_AT));
 
         // different target → not whitelisted
@@ -372,7 +390,7 @@ contract SessionKey7579ModuleTest is Test {
                 selector
             )
         );
-        module.validateUserOp(bad, h2);
+        account.validate(bad, h2);
     }
 
     function test_BatchUnderWhitelist_FailsClosed() public {
@@ -386,7 +404,7 @@ contract SessionKey7579ModuleTest is Test {
         PackedUserOperation memory op = makeUserOp(batchCallData(calls), signFor(address(account), opHash, new bytes32[](0)));
         op.sender = address(account);
         vm.expectRevert(SessionKey7579Module.BatchWithWhitelistUnsupported.selector);
-        module.validateUserOp(op, opHash);
+        account.validate(op, opHash);
     }
 
     // ------------------------------------------------------------------
@@ -401,6 +419,114 @@ contract SessionKey7579ModuleTest is Test {
         vm.prank(address(account));
         vm.expectRevert(SessionKey7579Module.NotInitialized.selector);
         module.grantSessionKey(key, defaultScope());
+    }
+
+    // ------------------------------------------------------------------
+    // Security hardening (audit fixes)
+    // ------------------------------------------------------------------
+    /// @dev FIX: anyone mempool-copying a userOp must not be able to invoke
+    ///      validateUserOp directly and burn the victim's spend window.
+    function test_Validate_DirectCallFromNonSender_RevertsNotAuthorizedCaller() public {
+        installWithScope();
+        bytes32 opHash = keccak256("sec1");
+        PackedUserOperation memory op = makeUserOp(
+            singleCallData(address(0xBEEF), 0.1 ether, hex""),
+            signFor(address(account), opHash, new bytes32[](0))
+        );
+        op.sender = address(account);
+
+        vm.prank(address(0xE17));
+        vm.expectRevert(SessionKey7579Module.NotAuthorizedCaller.selector);
+        module.validateUserOp(op, opHash);
+
+        // The rejected call must not have mutated window state.
+        (, uint256 spent) = module.getWindowState(address(account), key);
+        assertEq(spent, 0, "direct-call attempt must not burn spend window");
+    }
+
+    /// @dev FIX: uninstalled accounts' retained scopes must not keep validating.
+    function test_Validate_AfterUninstall_RevertsNotInitialized() public {
+        installWithScope();
+        account.uninstall();
+        assertFalse(module.isInitialized(address(account)));
+
+        bytes32 opHash = keccak256("sec2");
+        PackedUserOperation memory op = makeUserOp(
+            singleCallData(address(0xBEEF), 0, ""),
+            signFor(address(account), opHash, new bytes32[](0))
+        );
+        op.sender = address(account);
+
+        // Scope storage is intentionally retained post-uninstall, so hitting
+        // NotInitialized (not KeyUnknown) proves validation gates on initialized.
+        vm.expectRevert(SessionKey7579Module.NotInitialized.selector);
+        account.validate(op, opHash);
+    }
+
+    /// @dev FIX: EIP-2 malleability — s' = N - s recovers the same key but must reject.
+    function test_Validate_HighS_MalleatedSig_RevertsInvalidSignature() public {
+        installWithScope();
+        bytes32 opHash = keccak256("sec3");
+        bytes32 digest = digestFor(address(account), opHash);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(KEY_PK, digest);
+        assertTrue(uint256(s) <= SECP256K1_N / 2, "precondition: vm.sign emits low-s");
+
+        // Malleate: negating s flips the curve-point parity; ecrecover still yields
+        // the session key when presented with the flipped v.
+        uint256 sHigh = SECP256K1_N - uint256(s);
+        uint8 vFlipped = uint8(27 + ((v - 27) ^ 1));
+        assertEq(ecrecover(digest, vFlipped, r, bytes32(sHigh)), key, "malleation recovers same key");
+
+        PackedUserOperation memory op = makeUserOp(
+            singleCallData(address(0xBEEF), 0, ""),
+            abi.encodePacked(r, bytes32(sHigh), vFlipped)
+        );
+        op.sender = address(account);
+
+        vm.expectRevert(SessionKey7579Module.InvalidSignature.selector);
+        account.validate(op, opHash);
+    }
+
+    /// @dev FIX: empty batches are rejected outright.
+    function test_Validate_EmptyBatch_RevertsMalformedExecutionData() public {
+        installWithScope();
+        SessionKey7579Module.ExecTuple[] memory calls = new SessionKey7579Module.ExecTuple[](0);
+        bytes32 opHash = keccak256("sec4");
+        PackedUserOperation memory op = makeUserOp(
+            batchCallData(calls),
+            signFor(address(account), opHash, new bytes32[](0))
+        );
+        op.sender = address(account);
+
+        vm.expectRevert(SessionKey7579Module.MalformedExecutionData.selector);
+        account.validate(op, opHash);
+    }
+
+    /// @dev FIX: batches above MAX_BATCH_SIZE (= 8) are rejected; 8 still passes.
+    function test_Validate_BatchOverMaxSize_Reverts_EightStillPasses() public {
+        installWithScope();
+
+        SessionKey7579Module.ExecTuple[] memory maxBatch = new SessionKey7579Module.ExecTuple[](8);
+        for (uint256 i = 0; i < maxBatch.length; ++i) {
+            maxBatch[i] = SessionKey7579Module.ExecTuple(address(uint160(i + 1)), 0, hex"");
+        }
+        bytes32 okHash = keccak256("sec5-ok");
+        PackedUserOperation memory ok =
+            makeUserOp(batchCallData(maxBatch), signFor(address(account), okHash, new bytes32[](0)));
+        ok.sender = address(account);
+        assertEq(account.validate(ok, okHash), packedSuccess(EXPIRES_AT), "batch of 8 allowed");
+
+        SessionKey7579Module.ExecTuple[] memory tooBig = new SessionKey7579Module.ExecTuple[](9);
+        for (uint256 i = 0; i < tooBig.length; ++i) {
+            tooBig[i] = SessionKey7579Module.ExecTuple(address(uint160(i + 1)), 0, hex"");
+        }
+        bytes32 badHash = keccak256("sec5-bad");
+        PackedUserOperation memory bad =
+            makeUserOp(batchCallData(tooBig), signFor(address(account), badHash, new bytes32[](0)));
+        bad.sender = address(account);
+
+        vm.expectRevert(SessionKey7579Module.MalformedExecutionData.selector);
+        account.validate(bad, badHash);
     }
 
     function test_MerkleLibStillVerifiedByHalmosSuite_RegressionGuard() public pure {
