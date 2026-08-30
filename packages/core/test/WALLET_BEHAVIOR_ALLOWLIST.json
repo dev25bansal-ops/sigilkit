@@ -5,12 +5,13 @@
     {
       "id": "metamask:revoke-raw-rejected",
       "wallet": "metamask",
-      "behavior": "A raw zero-address EIP-7702 revocation submitted via eth_sendTransaction is REJECTED with 'External EIP-7702 transactions are not supported'. In-UI revoke (PR #30969) produces a valid zero-address authorization tuple.",
+      "behavior": "A raw zero-address EIP-7702 revocation submitted via eth_sendTransaction is REJECTED. In-UI revoke (PR #30969) produces a valid zero-address authorization tuple.",
       "expected": "rejected",
       "issue": "https://github.com/MetaMask/metamask-extension/issues/35520",
-      "verifiedOn": "extension 2025-08",
+      "verifiedOn": "extension 12.5.0 (2026-08 live harness via Playwright + persistent Chromium)",
       "sigilkitDependency": "SDK must route revocations through in-UI flow for MetaMask users, or use relayer-signed type-4 txs.",
-      "assert": "rejects-raw-zero-address-revoke"
+      "assert": "rejects-raw-zero-address-revoke",
+      "harness": "packages/core/test/wallet-e2e/run.ts"
     },
     {
       "id": "metamask:type4-tx-accepts-authorization-list",

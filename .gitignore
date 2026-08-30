@@ -35,3 +35,8 @@ dist/
 
 # Vault workspace state (keep notes, ignore Obsidian internals)
 vault/.obsidian/
+
+# Wallet E2E harness (downloaded MetaMask extension + Playwright profile)
+packages/core/test/wallet-e2e/metamask/
+packages/core/test/wallet-e2e/.playwright-profile/
+packages/core/test/wallet-e2e/.coinbase-out/

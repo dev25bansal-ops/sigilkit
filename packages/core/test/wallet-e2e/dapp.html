@@ -1,0 +1,15 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>SigilKit Dapp Fixture</title></head>
+<body>
+<h1>SigilKit Wallet Conformance</h1>
+<button id="connect">Connect Wallet</button>
+<button id="sign7702">Sign 7702 Authorization</button>
+<button id="revoke7702">Revoke 7702</button>
+<pre id="out">no calls yet</pre>
+<script>
+// This fixture relies on the *real* MetaMask provider injected at window.ethereum
+// by the extension's content script. We do NOT override window.ethereum here —
+// the dapp is intentionally inert so the harness can exercise the real provider.
+window.__sigilkitCalls = [];
+</script>
+</body></html>

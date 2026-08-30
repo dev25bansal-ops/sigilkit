@@ -17,6 +17,7 @@
     "lint": "npm run lint --workspaces --if-present"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.1",
     "typescript": "^7.0.2"
   }
 }
