@@ -1,5 +1,4 @@
 import type { ActionRequest, ExecuteArgs, Scope } from "./types.js";
-import { ACTION_REQUEST_TYPEHASH } from "./types.js";
 import {
   concat,
   encodeAbiParameters,
@@ -234,13 +233,15 @@ export function merkleRoot(leaves: Hash[]): Hash {
 
 /**
  * Produces the Merkle proof for `leaf` against `leaves` (sorted-pair scheme).
+ * Position tracking is purely index-arithmetic: the level array is sorted once and
+ * parent positions follow floor(idx/2), so no hash lookups are needed after the
+ * initial findIndex.
  */
 export function merkleProof(leaves: Hash[], leaf: Hash): Hex[] {
   let level = [...leaves].sort();
   const proof: Hex[] = [];
-  let current = leaf;
 
-  let idx = level.findIndex((l) => l === current);
+  let idx = level.findIndex((l) => l === leaf);
   if (idx === -1) throw new Error("merkleProof: leaf not in set");
 
   while (level.length > 1) {
@@ -259,10 +260,6 @@ export function merkleProof(leaves: Hash[], leaf: Hash): Hex[] {
     }
     level = next;
     idx = Math.floor(idx / 2);
-    // Recompute position of current node's hash in the parent level.
-    const parentHash =
-      idx >= 0 && idx < next.length ? next[idx]! : undefined;
-    if (parentHash !== undefined) current = parentHash;
   }
   return proof;
 }
@@ -313,7 +310,10 @@ export function validateAgainstScope(args: {
   if (base + request.value > scope.perWindowCap) {
     return { ok: false, reason: `per-window cap exceeded (${base + request.value} > ${scope.perWindowCap})` };
   }
-  if (request.expiry <= nowSec) {
+  // Mirrors the contract's `block.timestamp > request.expiry` revert: a request is
+  // valid through its expiry second (Q5 off-by-one alignment — previously the local
+  // check was stricter by one second).
+  if (request.expiry < nowSec) {
     return { ok: false, reason: "request already expired" };
   }
 

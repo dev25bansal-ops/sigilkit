@@ -35,6 +35,7 @@ contract SessionKeyManager is ActionLogger {
     error InvalidScope();
     error InvalidSignature();
     error OverlapBeyondOldExpiry();
+    error WithdrawFailed();
 
     // ------------------------------------------------------------------
     // Types
@@ -84,6 +85,9 @@ contract SessionKeyManager is ActionLogger {
     event SessionKeyRevoked(address indexed key);
     event SessionKeyRotated(address indexed oldKey, address indexed newKey, uint48 overlapEnds);
     event OwnerOnlySelectorSet(bytes4 indexed selector, bool denied);
+    /// @notice A previously revoked key was reinstated by a fresh grant of the same address.
+    event SessionKeyReinstated(address indexed key);
+    event TreasuryWithdrawal(address indexed to, uint256 amount);
 
     // ------------------------------------------------------------------
     // EIP-712
@@ -127,6 +131,7 @@ contract SessionKeyManager is ActionLogger {
         _setSelectorDenied(this.rotateSessionKey.selector, true);
         _setSelectorDenied(this.transferOwnership.selector, true);
         _setSelectorDenied(this.setSelectorDenied.selector, true);
+        _setSelectorDenied(this.withdraw.selector, true);
     }
 
     receive() external payable {} // fund the wallet so agents can spend from it
@@ -147,9 +152,23 @@ contract SessionKeyManager is ActionLogger {
     function grantSessionKey(address key, Scope calldata scope) external onlyOwner {
         _validateScope(key, scope);
         ManagerStorage storage s = _manager();
+        if (s.revoked[key]) {
+            // This grant reinstates a previously revoked key — make the reversal
+            // observable instead of silently clearing the revocation (issues catalog S5).
+            emit SessionKeyReinstated(key);
+        }
         s.scopes[key] = scope;
         s.revoked[key] = false;
         emit SessionKeyGranted(key, scope.expiresAt);
+    }
+
+    /// @notice Owner-only treasury recovery (issues catalog S6): the only sanctioned way
+    ///         to move funds out besides scoped agent execution. Denylisted from session
+    ///         keys by default like the other admin selectors.
+    function withdraw(address payable to, uint256 amount) external onlyOwner {
+        (bool ok,) = to.call{value: amount}("");
+        if (!ok) revert WithdrawFailed();
+        emit TreasuryWithdrawal(to, amount);
     }
 
     function revokeSessionKey(address key) external onlyOwner {
@@ -177,6 +196,9 @@ contract SessionKeyManager is ActionLogger {
     {
         _validateScope(newKey, newScope);
         ManagerStorage storage s = _manager();
+        if (s.revoked[newKey]) {
+            emit SessionKeyReinstated(newKey); // rotation reinstates a revoked newKey
+        }
         s.scopes[newKey] = newScope;
         s.revoked[newKey] = false;
         emit SessionKeyGranted(newKey, newScope.expiresAt);
@@ -338,9 +360,14 @@ contract SessionKeyManager is ActionLogger {
         );
     }
 
+    /// @dev Internal-virtual so symbolic-verification harnesses can pin the recovered
+    ///      signer and spec the non-signature properties (replay, expiry, denylist,
+    ///      nonce accounting) independently of ECDSA — Halmos models ecrecover as an
+    ///      uninterpreted function, so the recovery result must be assumed, not proven.
     function _recover(ActionRequest calldata request, bytes calldata signature)
         internal
         view
+        virtual
         returns (address)
     {
         bytes32 structHash = keccak256(

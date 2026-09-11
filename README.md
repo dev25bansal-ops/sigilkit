@@ -25,14 +25,15 @@ session-key management with on-chain spend caps, and a mandatory audit trail per
 
 | Layer | Status |
 |---|---|
-| Foundry unit + fuzz | ✅ 40 tests (18 manager + 22 ERC-7579 module) |
-| Foundry invariant (INV-1/2/4, handler-only fuzzing) | ✅ 4 suites × 256 runs × 500 calls |
-| Fork smoke (Base) | ✅ 1 test — runs nightly against a live Base fork |
-| Halmos symbolic (spend-cap core + Merkle boundaries) | ✅ 6 specs (`halmos --match-contract HalmosTest`) — scope: the spend-policy math, not yet the auth paths |
+| Foundry unit + fuzz | ✅ 54 tests (20 manager + 22 ERC-7579 module + 7 executor + 5 governance) |
+| Foundry invariant (INV-1/2/4, handler-only fuzzing incl. admin transitions) | ✅ 4 suites × 256 runs × 500 calls |
+| Fork smoke (Base) | ✅ 1 test — runs nightly against a live Base fork (chainid + chain-bound domain separator + live state) |
+| Halmos symbolic (spend-cap core + Merkle boundaries + auth paths) | ✅ 11 specs (`halmos --match-contract Halmos`) — replay, nonce accounting, request expiry, denylist gating, window-cap |
+| Account-execute E2E (7579 convention) | ✅ validate → execute → value lands, window charged once |
 | Slither static analysis | ✅ run; all findings triaged in [`SECURITY.md`](SECURITY.md) |
 | TS SDK vs on-chain E2E (Anvil) | ✅ sign → relay → enforce → `ActionLogged` verified in receipt |
 | Cross-wallet signing parity | ✅ viem ↔ ethers ↔ hand-rolled reference encoder, byte-identical digests + signatures |
-| CI | ✅ 6 jobs defined (5 PR-gated, fork+Halmos gated); runs on GitHub once pushed |
+| CI | ✅ 9 jobs (4 PR-gated: unit, invariant, Slither, TS+coverage; nightly: deep fuzz, Base fork; weekly: live wallet harnesses; monthly: Foundry canary; release: Halmos). Runs on GitHub once pushed |
 
 ## Repository layout
 
@@ -71,7 +72,9 @@ the agent's session key, enforced on-chain, and audited via `ActionLogged`.
 ```bash
 forge install foundry-rs/forge-std   # or: git clone —depth 1 https://github.com/foundry-rs/forge-std lib/forge-std
 forge build
-forge test                           # 40 unit + 4 invariant suites + 1 fork smoke (needs --fork-url)
+npm test                             # 54 unit + fuzz tests + full TS suite (excludes invariants + fork smoke)
+forge test --match-contract '.*Invariant'   # invariant suites (4 × 256 runs)
+forge test --match-contract '.*Fork' --fork-url $RPC_BASE   # fork smoke (Base)
 ```
 
 Deploy locally (Anvil):

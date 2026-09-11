@@ -143,7 +143,7 @@ jobs:
         with: { python-version: "3.12" }
       - run: pip install halmos==0.3.3
       - run: halmos --version
-      - run: halmos --match-contract HalmosTest
+      - run: halmos --match-contract Halmos # spend-cap core + auth-path specs (seam harness)
 
   # 8. Weekly — live wallet conformance harnesses (MetaMask 12.5.0 + Coinbase designator).
   # Real browsers + a real extension: heads-up Chromium on ubuntu (xvfb not needed —

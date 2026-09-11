@@ -4,6 +4,7 @@ pragma solidity 0.8.36;
 import {Test} from "forge-std/Test.sol";
 import {SessionKey7579Module, PackedUserOperation} from "../src/SessionKey7579Module.sol";
 import {MerkleWhitelist} from "../src/MerkleWhitelist.sol";
+import {SpendPolicy} from "../src/SpendPolicy.sol";
 
 /// @dev Mock 7579 account: installs the module and forwards validateUserOp.
 contract MockAccount {
@@ -351,7 +352,11 @@ contract SessionKey7579ModuleTest is Test {
         bytes32 opHash = keccak256("batch3");
         PackedUserOperation memory op = makeUserOp(batchCallData(calls), signFor(address(account), opHash, new bytes32[](0)));
         op.sender = address(account);
-        vm.expectRevert(SessionKey7579Module.MalformedExecutionData.selector);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                SpendPolicy.PerActionCapExceeded.selector, 0.8 ether, 0.5 ether
+            )
+        );
         account.validate(op, opHash);
     }
 

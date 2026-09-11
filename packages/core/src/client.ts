@@ -1,5 +1,10 @@
 import type { ActionRequest, ExecuteArgs, Scope } from "./types.js";
-import { validateAgainstScope, type HashSigner } from "./signing.js";
+import {
+  parseActionRequest,
+  signActionRequest,
+  validateAgainstScope,
+  type HashSigner,
+} from "./signing.js";
 import {
   createPublicClient,
   encodeFunctionData,
@@ -13,7 +18,6 @@ import {
   type PrivateKeyAccount,
   type PublicClient,
 } from "viem";
-import { parseActionRequest } from "./signing.js";
 
 /** Minimal ABI surface of SessionKeyManager used by the SDK. */
 export const SESSION_KEY_MANAGER_ABI = [
@@ -168,33 +172,41 @@ export class SigilKitClient {
     // A placeholder nonce satisfies the parser; the real one is fetched right after
     // and overrides it.
     const normalized = parseActionRequest({ ...args.request, nonce: args.request.nonce ?? 0n });
-    const nonce =
-      args.request.nonce ??
-      (await this.publicClient.readContract({
-        address: this.managerAddress,
-        abi: SESSION_KEY_MANAGER_ABI,
-        functionName: "getNonce",
-        args: [args.account.address],
-      }));
+
+    // The nonce fetch and the window-state fetch are independent — one RPC round-trip
+    // instead of two (P5). A failed window read degrades the pre-check to
+    // per-action-only — logged so fleet operators can see it (Q1); on-chain
+    // enforcement still applies.
+    const [nonce, windowState] = await Promise.all([
+      args.request.nonce !== undefined
+        ? Promise.resolve(args.request.nonce)
+        : this.publicClient.readContract({
+            address: this.managerAddress,
+            abi: SESSION_KEY_MANAGER_ABI,
+            functionName: "getNonce",
+            args: [args.account.address],
+          }),
+      this.publicClient
+        .readContract({
+          address: this.managerAddress,
+          abi: SESSION_KEY_MANAGER_ABI,
+          functionName: "getWindowState",
+          args: [args.account.address],
+        })
+        .then(
+          (w) => ({ windowStart: Number(w[0]), spentThisWindow: w[1] }),
+          (err: unknown): undefined => {
+            console.warn(
+              "SigilKit: getWindowState unavailable — skipping the local per-window pre-check " +
+                "(on-chain enforcement still applies):",
+              err instanceof Error ? err.message : err,
+            );
+            return undefined;
+          },
+        ),
+    ]);
 
     const request: ActionRequest = { ...normalized, nonce } as ActionRequest;
-
-    // Zero-gas local policy check before signing.
-    let windowState: { windowStart: number; spentThisWindow: bigint } | undefined;
-    try {
-      const w = await this.publicClient.readContract({
-        address: this.managerAddress,
-        abi: SESSION_KEY_MANAGER_ABI,
-        functionName: "getWindowState",
-        args: [args.account.address],
-      });
-      windowState = {
-        windowStart: Number(w[0]),
-        spentThisWindow: w[1],
-      };
-    } catch {
-      // View may be unavailable on some transports; on-chain enforcement still applies.
-    }
 
     const check = validateAgainstScope({
       request,
@@ -206,7 +218,6 @@ export class SigilKitClient {
       throw new Error(`SigilKit policy rejection (pre-signature): ${check.reason}`);
     }
 
-    const { signActionRequest } = await import("./signing.js");
     const signature = await signActionRequest({
       account: args.account,
       request,

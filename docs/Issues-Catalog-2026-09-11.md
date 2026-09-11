@@ -2,6 +2,55 @@
 
 **Date:** 2026-09-11 · **Codebase state:** `master` @ `f3e3fce` · **Source evidence:** direct code inspection, live test runs, `vault/Audit Raw Findings 2026-08-24.md` (re-verified item-by-item against HEAD)
 
+> ## ✅ RESOLUTION STATUS (2026-09-11, end of remediation day)
+>
+> **23 of 24 catalog items are closed in code.** Commits: `ee53f09` (P0), `892d790` (P1),
+> `eb3eef0` (P2), plus the P3/final commit.
+>
+> | Item | Status | Where |
+> |------|--------|-------|
+> | B1 core typecheck | ✅ fixed | `tsconfig.wallet-e2e.json` split, harness typed; both tsconfigs exit 0 |
+> | B2 placeholder wallet legs | ✅ replaced | `wallet-e2e.manual.test.ts` spawns the real `run-all.ts` |
+> | B3 README drift | ✅ reconciled | counts/commands/claims regenerated from measured truth |
+> | B4 vacuous fork test | ✅ real | Base chainid, chain-bound DOMAIN_SEPARATOR, live Multicall3 assertion |
+> | B5 invariant admin paths | ✅ added | grant/rotate/ownership/denylist/warp handlers + ghost mirror; 4/4 @ 256 runs |
+> | Q6 multi-level Merkle | ✅ tested | TS property tests 1..32 + Foundry 4-leaf/2-element proof tests |
+> | A6 coverage | ✅ gated | vitest v8 thresholds (88/74/90/88) + forge lcov nightly artifact |
+> | P3 CI fuzz cost | ✅ split | PR gate 2k runs, nightly deep profile 10k/1k |
+> | A10 nightly Foundry | ✅ pinned | v1.7.1 + monthly canary (the removed `--invariant-runs` flag proved the risk) |
+> | A1 repo/CI never run | ⏳ **one manual step left** | everything prepared; see "A1 — remaining step" below |
+> | S1 token caps | ✅ implemented | whitelist leaf format v2 (argument-bound + wildcard) across contracts + SDK + docs |
+> | A3 7579 audit trail | ✅ shipped | `ActionLog7579Executor.sol` (type 6) + 7 tests incl. negative INV-3 |
+> | P1 sequential nonces | ✅ mitigated | `NonceGate` + `SigilKitClient.nonceGate` + 4 tests |
+> | A5 handleOps gap | ✅ closed | `Module7579AccountE2E.t.sol`: validated ops actually execute; caps hold |
+> | A2 governance | ✅ decided+supported | `SIGILKIT_OWNER_ADDRESS` (Safe) deploy path; SECURITY.md posture; T5 CREATE2 script |
+> | A4 Halmos scope | ✅ extended | 11 specs total: 5 new auth-path specs over a `_recover` virtual seam, all passing |
+> | A7 wallet harness | ✅ CI'd | weekly job with pinned MetaMask 12.5.0 download (continue-on-error until green history) |
+> | P4/P5 perf polish | ✅ done | collection overhead dropped ~90% via vitest 5; `prepareExecution` now fetches nonce + window state in one parallel round-trip (P5), with Q1 warn-on-degradation |
+> | Q1–Q9 quality batch | ✅ done | warn-on-swallow, dead code, error naming, off-by-one, TYPEHASH JSDoc, root test script |
+> | S2 low-s | ✅ added | manager `_ecrecover` now EIP-2 + malleability test |
+> | S3 tumbling window | ✅ restated+tested | docs across the repo + boundary-burst test pinning semantics |
+> | S5 resurrection | ✅ observable | `SessionKeyReinstated` event + tests |
+> | S6 withdrawal | ✅ added | owner-only `withdraw`, denylisted, 3 tests |
+> | S7 dev vulns | ✅ resolved | vitest 5.x — `npm audit` clean (0 vulnerabilities) |
+> | T1–T5 hygiene | ✅ done | zip/state untracked; root TS dep removed; duplicate harness deleted; CREATE2 deploy script |
+>
+> **Final measured state:** Foundry 62/63 (the 1 is the fork smoke failing off-fork by design —
+> it asserts `chainid == 8453`); invariants 4/4 @ 256 runs; Halmos 11/11; TS 43 passed / 1
+> skipped; `npm audit` 0 vulnerabilities; both packages build and lint clean.
+>
+> **A1 — remaining step (one command, deliberately left to the maintainer):** the repo is
+> still unpublished. Create the public repository and push, then watch the first CI run:
+>
+> ```
+> gh repo create sigilkit/sigilkit --public --source . --remote origin --push
+> ```
+>
+> (or `gh repo create dev25bansal-ops/sigilkit --public --source . --remote origin --push` for
+> a personal-account repo — the npm `repository.url` fields currently point at the org form,
+> so update `packages/*/package.json` if you choose the personal path). Everything else —
+> lint, CI triggers, workflow jobs, docs — is already prepared for that first push to be green.
+
 Severity scale: **Critical / High / Medium / Low** (business impact + exploitability under the project's own threat model: the agent session key is untrusted, the owner key is trusted). Security ratings include indicative CVSS v3.1-style reasoning — these are analyst estimates, not certified scores.
 
 ---

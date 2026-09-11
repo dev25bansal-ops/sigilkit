@@ -13,11 +13,11 @@
   },
   "scripts": {
     "build": "npm run build --workspaces --if-present",
-    "test": "forge test",
+    "test": "forge test --no-match-contract '.*Invariant|.*Fork' && npm run test --workspaces --if-present",
+    "test:full": "forge test --no-match-contract '.*Fork' && npm run test --workspaces --if-present",
     "lint": "npm run lint --workspaces --if-present"
   },
   "devDependencies": {
-    "@playwright/test": "^1.62.1",
-    "typescript": "^7.0.2"
+    "@playwright/test": "^1.62.1"
   }
 }

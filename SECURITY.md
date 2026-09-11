@@ -28,14 +28,28 @@ future auditors should check against.
 
 - **INV-1**: window spend ≤ per-window cap **within any single fixed (tumbling) window** — covered by
   stateful invariant fuzz suite **and 4 Halmos symbolic specs** over the `SpendPolicy.enforce` core
-  (exact-spend recording, over-cap reversion, rollover isolation, per-action cap). Window
+  (exact-spend recording, over-cap reversion, rollover isolation, per-action cap) **plus 1
+  auth-path spec** (`check_execute_WindowSpendNeverExceedsCap`). Window
   semantics: the window RESETS to zero when fully elapsed (tumbling, not sliding), so up to ~2×
   `perWindowCap` can legitimately cross a window boundary; a boundary-burst unit test pins this.
-  Run: `halmos --match-contract HalmosTest`.
+  Run: `halmos --match-contract Halmos` (11 specs: 6 spend-cap/Merkle core + 5 auth-path over a
+  recover-seam harness).
 - **INV-2**: expired or revoked keys cannot execute (covered by invariant fuzz suite).
-- **INV-3**: `ActionLogged` emitted iff inner call succeeded (asserted in unit + TS E2E tests).
+- **INV-3**: `ActionLogged` emitted iff inner call succeeded (asserted in unit + TS E2E tests; on
+  the 7579 path, `ActionLog7579Executor` emits it at execution time with the same negative
+  guarantee — no audit on failed execution).
 - **INV-4**: owner-only selectors unreachable via `executeWithSessionKey` (denylist, covered by
   unit + invariant suites).
+
+## Governance posture (decided 2026-09 — issues catalog A2)
+
+The manager is **immutable-by-design pre-mainnet**: no proxy/UUPS upgrade path exists before the
+external audit; key migration happens via `rotateSessionKey` and denylist policy, not code
+upgrades. Production deployments MUST set `SIGILKIT_OWNER_ADDRESS` to a governance contract
+(2-of-3 Gnosis Safe per the build plan) — the deploy script then treats the broadcaster key as a
+deployer with NO authority over the deployed manager. Plain-EOA ownership via
+`SIGILKIT_OWNER_KEY` is supported for local/test only. Treasury recovery is the owner-only
+`withdraw` (denylisted from session keys by default).
 
 ## Known limitation (documented, mitigated)
 

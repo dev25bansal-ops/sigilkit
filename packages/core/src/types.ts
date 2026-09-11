@@ -53,7 +53,12 @@ export interface ExecuteArgs {
 export const SIGILKIT_DOMAIN_NAME = "SigilKit";
 export const SIGILKIT_DOMAIN_VERSION = "1";
 
-/** keccak256 of the ActionRequest EIP-712 type string (matches on-chain typehash). */
+/**
+ * keccak256 of the ActionRequest EIP-712 type string (matches the on-chain typehash).
+ * Not used internally — hashTypedData derives it from the type definition — but
+ * exported as the cross-language reference for consumers building digests by hand
+ * (see test/reference.test.ts for the byte-exact usage).
+ */
 export const ACTION_REQUEST_TYPEHASH: Hash = keccak256(
   toHex(
     "ActionRequest(bytes32 agentId,address target,bytes4 selector,uint256 value,uint256 nonce,uint48 expiry,bytes32 rationaleHash,bytes data)",

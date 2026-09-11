@@ -264,7 +264,11 @@ contract SessionKey7579Module {
         for (uint256 i = 0; i < batch.length; ++i) {
             bytes4 selector = bytes4(batch[i].data);
             if (s.deniedSelectors[account][selector]) revert SelectorDenied(selector);
-            if (batch[i].value > scope.perActionCap) revert MalformedExecutionData();
+            if (batch[i].value > scope.perActionCap) {
+                // Dedicated error (not MalformedExecutionData) so relayers and indexers
+                // can distinguish a policy violation from a malformed payload.
+                revert SpendPolicy.PerActionCapExceeded(batch[i].value, scope.perActionCap);
+            }
             unchecked {
                 totalValue += batch[i].value;
             }
