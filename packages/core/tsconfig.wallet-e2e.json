@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // The harness callbacks run inside Chromium pages (page.evaluate), so DOM
+    // globals like `window` must resolve here — they are absent from the main
+    // package tsconfig, which deliberately excludes this directory.
+    "lib": ["ES2022", "DOM"],
+    "types": ["node"]
+  },
+  "include": ["test/wallet-e2e/**/*.ts"],
+  "exclude": ["node_modules/**", "dist/**"]
+}

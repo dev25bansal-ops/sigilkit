@@ -7,7 +7,7 @@
  */
 import { chromium, type BrowserContext } from "@playwright/test";
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
@@ -209,12 +209,35 @@ async function main() {
         return { rejected: true as const, message: String(err?.message ?? err) };
       }
     })) as { rejected: boolean; hash?: string; message?: string };
+
+    // The canary is allowlist-driven: WALLET_BEHAVIOR_ALLOWLIST.json records the
+    // verified behavior (metamask:revoke-raw-rejected ⇒ "rejected", extension 12.5.0).
+    // A silent flip — MetaMask starting to ACCEPT raw zero-address revocations —
+    // must fail this harness so the SDK's revocation routing gets revisited before
+    // users hit it, not after.
+    const allowlist = JSON.parse(
+      readFileSync(resolve(__dirname, "../WALLET_BEHAVIOR_ALLOWLIST.json"), "utf8"),
+    ) as { behaviors: Array<{ id: string; expected: string; verifiedOn: string }> };
+    const entry = allowlist.behaviors.find((b) => b.id === "metamask:revoke-raw-rejected");
+    if (!entry) throw new Error("allowlist missing metamask:revoke-raw-rejected");
+
     if (!result.rejected) {
-      console.log(
-        `        [info] zero-address 7702 revoke was ACCEPTED — MetaMask #35520 may have been fixed in this build (tx=${result.hash})`,
-      );
+      console.log(`        [info] tx hash: ${result.hash}`);
+      if (entry.expected === "rejected") {
+        throw new Error(
+          `ALLOWLIST VIOLATION: MetaMask accepted a raw zero-address 7702 revoke ` +
+            `(expected "${entry.expected}", verified on ${entry.verifiedOn}). ` +
+            `Update WALLET_BEHAVIOR_ALLOWLIST.json and re-verify the SDK revocation routing.`,
+        );
+      }
     } else {
       console.log(`        [info] rejection message: ${result.message}`);
+      if (entry.expected === "accepted-or-documented-absent") {
+        throw new Error(
+          `ALLOWLIST VIOLATION: MetaMask now REJECTS raw zero-address revokes ` +
+            `(expected "${entry.expected}"). Update WALLET_BEHAVIOR_ALLOWLIST.json.`,
+        );
+      }
     }
   });
 

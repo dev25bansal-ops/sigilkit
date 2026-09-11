@@ -14,7 +14,7 @@ session-key management with on-chain spend caps, and a mandatory audit trail per
 
 | # | Component | Status | What it does |
 |---|-----------|--------|--------------|
-| 1 | **EIP-7702 Wallet Library** | **Core implemented** | `signAuthorization` / `signRevocation` / `validateAuthorization` with cast-verified RLP digests + viem↔ethers byte-identical signing parity (first cell of the conformance matrix). MetaMask/Coinbase Playwright legs pending. |
+| 1 | **EIP-7702 Wallet Library** | **Core implemented** | `signAuthorization` / `signRevocation` / `validateAuthorization` with cast-verified RLP digests + viem↔ethers byte-identical signing parity (first cell of the conformance matrix). Live MetaMask 12.5.0 + Coinbase Smart Wallet Playwright harnesses in [`packages/core/test/wallet-e2e/`](packages/core/test/wallet-e2e/README.md) (manual; CI wiring pending). |
 | 2 | **ERC-7579 module** (replaces the bespoke Diamond) | **Implemented** | `SessionKey7579Module.sol` — a VALIDATION module for Kernel/Safe{Core} accounts: scoped session-key userOp authorization with per-action + batch-aware window caps, Merkle whitelists (proofs ride in the signature blob), selector denylists, account-bound EIP-712 domains. |
 | 3 | **Multi-RPC Provider** | Deferred | viem already covers WS reconnect + retry; use viem directly. |
 | 4 | **Agent Session-Key Manager** | **Implemented + formally verified** | `SessionKeyManager.sol` + `SpendPolicy.sol` + `ActionLogger.sol` + `MerkleWhitelist.sol` with on-chain spend caps, per-window rate limits, Merkle target whitelists, and a mandatory `ActionLogged` event per call. |
@@ -25,8 +25,9 @@ session-key management with on-chain spend caps, and a mandatory audit trail per
 
 | Layer | Status |
 |---|---|
-| Foundry unit + fuzz | ✅ 39 tests (17 manager + 22 ERC-7579 module) |
+| Foundry unit + fuzz | ✅ 40 tests (18 manager + 22 ERC-7579 module) |
 | Foundry invariant (INV-1/2/4, handler-only fuzzing) | ✅ 4 suites × 256 runs × 500 calls |
+| Fork smoke (Base) | ✅ 1 test — runs nightly against a live Base fork |
 | Halmos symbolic (spend-cap core + Merkle boundaries) | ✅ 6 specs (`halmos --match-contract HalmosTest`) — scope: the spend-policy math, not yet the auth paths |
 | Slither static analysis | ✅ run; all findings triaged in [`SECURITY.md`](SECURITY.md) |
 | TS SDK vs on-chain E2E (Anvil) | ✅ sign → relay → enforce → `ActionLogged` verified in receipt |
@@ -70,15 +71,20 @@ the agent's session key, enforced on-chain, and audited via `ActionLogged`.
 ```bash
 forge install foundry-rs/forge-std   # or: git clone —depth 1 https://github.com/foundry-rs/forge-std lib/forge-std
 forge build
-forge test                           # 34 unit + 4 invariant suites, 38 total
+forge test                           # 40 unit + 4 invariant suites + 1 fork smoke (needs --fork-url)
 ```
 
 Deploy locally (Anvil):
 
 ```bash
 anvil &
-forge script contracts/script/Deploy.s.sol --rpc-url http://127.0.0.1:8545 --broadcast
+SIGILKIT_OWNER_KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80 \
+  forge script contracts/script/Deploy.s.sol --rpc-url http://127.0.0.1:8545 --broadcast
 ```
+
+The owner key is required (the script fails loudly if unset — it never falls back to a
+well-known key). On any shared/persistent network, use a key you control and consider a
+Safe as the owner address.
 
 ### SDK (TypeScript)
 

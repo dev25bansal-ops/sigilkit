@@ -40,7 +40,16 @@ npx tsx test/wallet-e2e/coinbase.ts  # Coinbase Smart Wallet (on-chain designato
   [MetaMask issue #35520](https://github.com/MetaMask/metamask-extension/issues/35520)**
   and is *stronger* than the original "External EIP-7702 transactions are not
   supported" rejection: MetaMask now refuses the entire request because the
-  dapp is unauthorized, not just the revoke form.
+  dapp is unauthorized, not just the revoke form. **The canary is
+  allowlist-driven**: the result is asserted against
+  [`../WALLET_BEHAVIOR_ALLOWLIST.json`](../WALLET_BEHAVIOR_ALLOWLIST.json)
+  (`metamask:revoke-raw-rejected` ⇒ `rejected`), so a silent behavior flip
+  fails the harness instead of logging.
+
+> **Canonical harness note:** `run.ts` + `coinbase.ts` (this directory) are the
+> only MetaMask/Coinbase conformance implementations. An earlier
+> `metamask.test.ts` duplicate with placeholder assertions was removed — do not
+> reintroduce legs that assert allowlist JSON strings instead of wallet behavior.
 
 ### Coinbase Smart Wallet (`coinbase.ts`)
 

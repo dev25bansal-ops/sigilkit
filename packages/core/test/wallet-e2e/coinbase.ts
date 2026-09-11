@@ -67,6 +67,21 @@ async function waitForRpc(url: string, timeoutMs = 30000): Promise<void> {
   throw new Error("anvil did not start in time");
 }
 
+/**
+ * viem's PublicClient.request types `method` as its known RPC method union, which
+ * deliberately excludes anvil_* cheat methods. Send them through the underlying
+ * transport untouched (same wire format the cheatcodes expect).
+ */
+async function anvilRpc(
+  client: ReturnType<typeof createPublicClient>,
+  method: string,
+  params: unknown[],
+): Promise<unknown> {
+  return client.request({ method, params } as unknown as Parameters<
+    ReturnType<typeof createPublicClient>["request"]
+  >[0]);
+}
+
 async function main() {
   console.log(`[anvil] starting on :8545`);
   const anvil = spawn(ANVIL, ["--port", "8545", "--silent"], { stdio: "ignore" });
@@ -122,10 +137,7 @@ async function main() {
     const eoa = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266";
     const impl = "0x000100abaad02f1cfC8Bbe32bD5a564817339E72";
     const designator = ("0xef0100" + impl.slice(2)) as `0x${string}`;
-    await publicClient.request({
-      method: "anvil_setCode",
-      params: [eoa, designator],
-    });
+    await anvilRpc(publicClient, "anvil_setCode", [eoa, designator]);
     const code = await publicClient.getCode({ address: eoa });
     if (!code || !code.startsWith("0xef0100") || code.length !== 48) {
       throw new Error(`unexpected code length=${code?.length} head=${code?.slice(0, 12)}`);
@@ -143,10 +155,7 @@ async function main() {
     // distinct from a delegate-to-impl designator. This is the "did SigilKit correctly
     // distinguish delegated vs revoked" check.
     const zeroDesignator = ("0xef0100" + "00".repeat(20)) as `0x${string}`;
-    await publicClient.request({
-      method: "anvil_setCode",
-      params: [eoa, zeroDesignator],
-    });
+    await anvilRpc(publicClient, "anvil_setCode", [eoa, zeroDesignator]);
     const code = await publicClient.getCode({ address: eoa });
     if (code !== zeroDesignator) throw new Error("zero designator not set");
     const recovered = ("0x" + code.slice(8)) as `0x${string}`;

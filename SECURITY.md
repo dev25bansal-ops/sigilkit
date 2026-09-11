@@ -39,8 +39,9 @@ future auditors should check against.
 Calldata cannot observe nested/internal token transfers inside the target call, so
 `request.value` may undercount actual outflow for targets that pull tokens mid-call.
 Mitigations: trusted-target allowlists (e.g. routers that settle via permit2 without arbitrary
-pulls), post-hoc reconciliation off-chain against cumulative `ActionLogged` records, and optional
-ERC-20 allowance pre-checks in the SDK layer.
+pulls), post-hoc reconciliation off-chain against cumulative `ActionLogged` records, and
+argument-bound whitelist leaves (see the whitelist leaf-format note below). An SDK-side
+ERC-20 allowance pre-check is **planned but not implemented** — do not rely on it.
 
 ---
 *Generated from `slither .` runs of 2026-08-22/23 (slither-analyzer on solc 0.8.36 output).*

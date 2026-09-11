@@ -115,6 +115,47 @@ contract SessionKeyManagerTest is Test {
     // ------------------------------------------------------------------
     // Lifecycle
     // ------------------------------------------------------------------
+    function test_Execute_RejectsMalleableHighS() public {
+        vm.prank(vm.addr(OWNER_KEY));
+        skm.grantSessionKey(agent, defaultScope);
+
+        SessionKeyManager.ActionRequest memory req =
+            _makeRequest(address(counter), counter.poke.selector, 0 ether, abi.encode(1));
+        bytes32 ds = skm.DOMAIN_SEPARATOR();
+        bytes32 typehash = skm.ACTION_REQUEST_TYPEHASH();
+        bytes32 structHash = keccak256(
+            abi.encode(
+                typehash,
+                req.agentId,
+                req.target,
+                req.selector,
+                req.value,
+                req.nonce,
+                req.expiry,
+                req.rationaleHash,
+                keccak256(req.data)
+            )
+        );
+        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", ds, structHash));
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(AGENT_KEY, digest);
+
+        // Canonical low-s signature executes fine.
+        (bool ok,) = address(skm).call(
+            abi.encodeWithSelector(
+                skm.executeWithSessionKey.selector, req, abi.encodePacked(r, s, v), new bytes32[](0)
+            )
+        );
+        assertTrue(ok, "low-s signature should execute");
+
+        // Malleated twin (s' = N - s, flipped parity) recovers the same address but
+        // must be rejected — recovery runs before any state check.
+        uint256 secp256k1N = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141;
+        bytes32 sHigh = bytes32(secp256k1N - uint256(s));
+        uint8 vFlip = v == 27 ? 28 : 27;
+        vm.expectRevert(SessionKeyManager.InvalidSignature.selector);
+        skm.executeWithSessionKey(req, abi.encodePacked(r, sHigh, vFlip), new bytes32[](0));
+    }
+
     function test_GrantRequiresOwner() public {
         vm.prank(agent);
         vm.expectRevert(SessionKeyManager.NotOwner.selector);

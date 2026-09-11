@@ -1,17 +1,20 @@
 /**
- * MANUAL cross-wallet conformance legs: MetaMask + Coinbase Wallet.
+ * Cross-wallet conformance legs: MetaMask + Coinbase Smart Wallet.
  *
- * These tests are SKIPPED unless RUN_WALLET_E2E=1 and require @playwright/test plus the
- * wallet extension builds. They encode the assertions referenced by
- * WALLET_BEHAVIOR_ALLOWLIST.json so that a silent wallet regression (e.g. MetaMask flipping
- * its raw-revoke rejection) fails CI before users hit it — see vault/Agent Architecture.md.
+ * SKIPPED unless RUN_WALLET_E2E=1. When enabled, this file no longer asserts
+ * allowlist JSON strings — it runs the REAL Playwright harnesses
+ * (test/wallet-e2e/run.ts + coinbase.ts via run-all.ts) and fails if either
+ * suite fails, so a silent wallet regression (e.g. MetaMask flipping its
+ * raw-revoke rejection) surfaces before users hit it. See
+ * vault/Agent Architecture.md and test/wallet-e2e/README.md.
  *
- * Run locally:
- *   RUN_WALLET_E2E=1 npm i -D @playwright/test && npx playwright install chromium && \
- *   npx vitest run test/wallet-e2e.manual.test.ts
+ * Run locally (requires the MetaMask 12.5.0 extension unpacked at
+ * test/wallet-e2e/metamask/ — see wallet-e2e/README.md):
+ *   RUN_WALLET_E2E=1 npx vitest run test/wallet-e2e.manual.test.ts
  */
 import { describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 
 const ENABLED = process.env.RUN_WALLET_E2E === "1";
@@ -22,42 +25,30 @@ const allowlist = JSON.parse(
   behaviors: Array<{
     id: string;
     wallet: string;
+    behavior: string;
     assert: string;
     expected: string;
+    verifiedOn?: string;
+    harness?: string;
   }>;
 };
 
-function behavior(id: string) {
-  const b = allowlist.behaviors.find((x) => x.id === id);
-  if (!b) throw new Error(`allowlist entry missing: ${id}`);
-  return b;
-}
-
 describe.skipIf(!ENABLED)("manual wallet E2E (RUN_WALLET_E2E=1)", () => {
-  it("metamask rejects raw zero-address revoke (canary for #35520)", async () => {
-    const b = behavior("metamask:revoke-raw-rejected");
-    // Requires: Anvil fork on :8545, MetaMask extension loaded via playwright,
-    // metamask-test-dapp open, funded test account imported.
-    // Dynamic specifier keeps @playwright/test optional at typecheck time.
-    const pkg = "@playwright" + "/test"; // dynamic specifier keeps the dep optional
-    const mod = (await import(pkg)) as { chromium?: unknown };
-    void mod.chromium; // harness wiring per vault/Agent Architecture.md Part A
-    // Steps (implemented when wallet infra is available):
-    // 1. launch persistent context with the MetaMask dist unpacked
-    // 2. onboard a deterministic test seed; connect to dapp on chain 31337
-    // 3. request eth_sendTransaction carrying an authorizationList entry {address: 0x0}
-    // 4. EXPECT rejection matching "External EIP-7702 transactions are not supported"
-    // 5. drive the in-UI revoke flow; capture the emitted authorization tuple
-    // 6. assert tuple == [chainId, 0x0, nonce, y, r, s] byte-identical to SDK signRevocation()
-    expect(b.expected).toBe("rejected"); // placeholder until wired
-  }, 120_000);
-
-  it("coinbase delegation designator matches allowlist pin", async () => {
-    const b = behavior("coinbase:delegate-target-stable");
-    // Requires: Coinbase Wallet extension; assert getCode(EOA) startsWith 0xef0100 &&
-    // implementation == pinned address after a delegated session.
-    expect(b.expected).toBe("0x000100abaad02f1cfC8Bbe32bD5a564817339E72"); // placeholder
-  }, 120_000);
+  it(
+    "live harnesses pass (MetaMask + Coinbase Smart Wallet via run-all.ts)",
+    () => {
+      const runAll = join(__dirname, "wallet-e2e", "run-all.ts");
+      const res = spawnSync("npx", ["tsx", runAll], {
+        stdio: "inherit",
+        shell: process.platform === "win32",
+        env: { ...process.env },
+      });
+      if (res.status !== 0) {
+        throw new Error(`wallet-e2e run-all.ts failed (exit ${res.status})`);
+      }
+    },
+    600_000,
+  );
 });
 
 describe("wallet allowlist integrity (always runs)", () => {
@@ -65,8 +56,27 @@ describe("wallet allowlist integrity (always runs)", () => {
     for (const b of allowlist.behaviors) {
       expect(b.id).toBeTruthy();
       expect(b.wallet).toBeTruthy();
+      expect(b.behavior).toBeTruthy();
       expect(b.assert).toBeTruthy();
-      expect(["rejected", "accepted-or-documented-absent", "unsupported", "absent"].includes(b.expected) || b.expected.startsWith("0x")).toBe(true);
+      expect(
+        ["rejected", "accepted-or-documented-absent", "unsupported", "absent"].includes(
+          b.expected,
+        ) || b.expected.startsWith("0x"),
+      ).toBe(true);
+      // Live-verified entries must point at the harness that verifies them.
+      if (b.verifiedOn?.includes("live harness")) {
+        expect(b.harness).toBeTruthy();
+      }
+    }
+  });
+
+  it("allowlist entries with harness paths reference existing files", () => {
+    for (const b of allowlist.behaviors) {
+      if (b.harness) {
+        expect(
+          existsSync(join(__dirname, b.harness.replace(/^packages\/core\/test\//, ""))),
+        ).toBe(true);
+      }
     }
   });
 });

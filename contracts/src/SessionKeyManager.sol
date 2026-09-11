@@ -336,6 +336,11 @@ contract SessionKeyManager is ActionLogger {
         bytes32 vs = bytes32(signature[32:64]);
         uint8 yParity = uint8(signature[64]);
         if (yParity != 27 && yParity != 28) revert InvalidSignature();
+        // EIP-2: reject malleable high-s signatures (s' = N - s verifies identically).
+        // Mirrors SessionKey7579Module._recover.
+        if (uint256(vs) > 0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0) {
+            revert InvalidSignature();
+        }
         address recovered = ecrecover(digest, yParity, r, vs);
         if (recovered == address(0)) revert InvalidSignature();
         return recovered;

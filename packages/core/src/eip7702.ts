@@ -188,19 +188,23 @@ export async function validateAuthorization(
   publicClient: PublicClient,
   args: { address: Address },
 ): Promise<DelegationStatus> {
-  const code = await publicClient.getCode({ address: args.address });
-  if (!code || code === "0x") {
-    return { delegated: false, implementation: null, revoked: false };
-  }
-  if (!code.startsWith(DELEGATION_PREFIX) || code.length !== DELEGATION_CODE_LENGTH) {
-    throw new Error(`address has non-7702 code (${code.slice(0, 12)}…) — refusing to interpret`);
-  }
-  const implementation = getAddress(("0x" + code.slice(8)) as Hex) as Address;
-  return {
-    delegated: true,
-    implementation,
-    revoked: implementation === ZERO_ADDRESS,
-  };
+    const code = await publicClient.getCode({ address: args.address });
+    if (!code || code === "0x") {
+      return { delegated: false, implementation: null, revoked: false };
+    }
+    if (!code.startsWith(DELEGATION_PREFIX) || code.length !== DELEGATION_CODE_LENGTH) {
+      throw new Error(`address has non-7702 code (${code.slice(0, 12)}…) — refusing to interpret`);
+    }
+    const implementation = getAddress(("0x" + code.slice(8)) as Hex) as Address;
+    return {
+      delegated: true,
+      implementation,
+      // The zero designator clears delegation entirely per EIP-7702, so on any
+      // real network a revoked EOA surfaces as code 0x → delegated:false above.
+      // This branch only fires when something explicitly sets 0xef0100||0x00*20
+      // (e.g. anvil_setCode in tests).
+      revoked: implementation === ZERO_ADDRESS,
+    };
 }
 
 /** Convenience: true iff the EOA delegates to exactly `expected`. */
