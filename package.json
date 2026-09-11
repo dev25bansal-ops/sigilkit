@@ -15,7 +15,8 @@
     "build": "npm run build --workspaces --if-present",
     "test": "forge test --no-match-contract '.*Invariant|.*Fork' && npm run test --workspaces --if-present",
     "test:full": "forge test --no-match-contract '.*Fork' && npm run test --workspaces --if-present",
-    "lint": "npm run lint --workspaces --if-present"
+    "lint": "npm run lint --workspaces --if-present",
+    "vectors:generate": "node scripts/generate-vectors.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.62.1"

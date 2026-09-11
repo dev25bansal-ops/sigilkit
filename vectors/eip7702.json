@@ -1,0 +1,48 @@
+{
+  "_doc": "Golden vectors for EIP-7702 authorization digests. Digests are generated with viem's hashAuthorization — the canonical signer implementation — NOT with @sigilkit/core, so the SDK test pins our encoder to go-ethereum semantics.",
+  "casesCount": 6,
+  "cases": [
+    {
+      "name": "revocation-zero-address",
+      "chainId": "1",
+      "contractAddress": "0x0000000000000000000000000000000000000000",
+      "nonce": "0",
+      "digest": "0x20aed0d1fcfcae79908c669252609bf10de3cc521c36d631c62eea3e826c79ad"
+    },
+    {
+      "name": "leading-zero-address",
+      "chainId": "1",
+      "contractAddress": "0x00000000000000000000000000000000deadbeef",
+      "nonce": "0",
+      "digest": "0xc5e5d378ac1fda0c0569eceece4b444519cc9a72a7ae3526bc408fa63e610b3b"
+    },
+    {
+      "name": "nonce-127",
+      "chainId": "31337",
+      "contractAddress": "0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f",
+      "nonce": "127",
+      "digest": "0xc43df4b0d7378ba8f0422c51a7915147b3cce984b7e91a3bf1e154520f662b7e"
+    },
+    {
+      "name": "nonce-128-length-prefix",
+      "chainId": "31337",
+      "contractAddress": "0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f",
+      "nonce": "128",
+      "digest": "0x8ab03024e070141aa947d56fa5980d9d107b38c9d2465d8af9c5421f157179aa"
+    },
+    {
+      "name": "nonce-uint16-max",
+      "chainId": "8453",
+      "contractAddress": "0x7702cb554e6bFb442cb743A7dF23154544a7176C",
+      "nonce": "65535",
+      "digest": "0x6046c0a09a938d6534b1137d4753666844f9960a4b78bfd4f7c71838c439f994"
+    },
+    {
+      "name": "sepolia",
+      "chainId": "11155111",
+      "contractAddress": "0x000100abaad02f1cfC8Bbe32bD5a564817339E72",
+      "nonce": "1",
+      "digest": "0xe3a78f01d78809f999777a25cc0472b66b582871f68eda05de37535058e3a9c3"
+    }
+  ]
+}

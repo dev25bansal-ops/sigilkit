@@ -1,0 +1,37 @@
+name: Publish
+
+on:
+  push:
+    tags: ["v*"]
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish-core:
+    name: Publish @sigilkit/core (tag-gated)
+    runs-on: ubuntu-latest
+    environment: npm
+    steps:
+      - uses: actions/checkout@v4
+        with: { submodules: recursive }
+      - uses: foundry-rs/foundry-toolchain@v1
+        with: { version: "v1.7.1" }
+      - uses: actions/setup-node@v4
+        with: { node-version: "24", cache: npm, registry-url: "https://registry.npmjs.org" }
+      - run: npm ci
+      # Full gate: contracts + SDK must be green for THIS tag before anything ships.
+      - run: forge test --no-match-contract '.*Invariant|.*Fork'
+      - run: forge test --match-contract '.*Invariant'
+      - run: npm run build --workspaces
+      - run: npm run lint --workspaces
+      - run: npm test --workspace @sigilkit/core
+      - name: Pack preview
+        run: npm pack --dry-run --workspace @sigilkit/core
+      - name: Publish with provenance
+        run: npm publish --provenance --access public --workspace @sigilkit/core
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Record published version
+        run: echo "Published $(node -p "require('./packages/core/package.json').version") from ${GITHUB_REF}" >> "$GITHUB_STEP_SUMMARY"

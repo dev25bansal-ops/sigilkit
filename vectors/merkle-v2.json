@@ -1,0 +1,64 @@
+{
+  "_doc": "Golden vectors for whitelist leaf format v2 (pinned + wildcard leaves) and a 3-leaf sorted-pair tree with odd-node promotion. Consumers: both language suites.",
+  "leafCases": [
+    {
+      "name": "pinned-transfer",
+      "target": "0x0000000000000000000000000000000000009001",
+      "selector": "0xa9059cbb",
+      "argsHash": "0xef9d334ee3e15416314a60312ef616e881c3bfffe4b60b11befc2707c79b7d35",
+      "data": "0x00000000000000000000000000000000000000000000000000000000000003e8",
+      "leaf": "0xfbcf1b4a58adb078cae024388b0896754b5dde8f23b7fb130bf4974f14762b2f"
+    },
+    {
+      "name": "wildcard-poke",
+      "target": "0x0000000000000000000000000000000000009002",
+      "selector": "0x32145f90",
+      "argsHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+      "data": null,
+      "leaf": "0xab725ec09295d2a4be1c91982219df18c40d87d59458cf32c4475ec438915a2e"
+    },
+    {
+      "name": "pinned-empty-calldata",
+      "target": "0x0000000000000000000000000000000000009003",
+      "selector": "0x00000000",
+      "argsHash": "0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470",
+      "data": "0x",
+      "leaf": "0xaf9a67a5a3379948910f499a56c919b6175fd47614992b0ef06390b08254e9a3"
+    }
+  ],
+  "trees": [
+    {
+      "leaves": [
+        "0xfbcf1b4a58adb078cae024388b0896754b5dde8f23b7fb130bf4974f14762b2f",
+        "0xab725ec09295d2a4be1c91982219df18c40d87d59458cf32c4475ec438915a2e",
+        "0xaf9a67a5a3379948910f499a56c919b6175fd47614992b0ef06390b08254e9a3"
+      ],
+      "root": "0x302f54a0a91e2c2a760e49add32e8ae35500a760e984f74ee114c09bb735de4f",
+      "proofs": [
+        {
+          "leaf": "0xfbcf1b4a58adb078cae024388b0896754b5dde8f23b7fb130bf4974f14762b2f",
+          "proof": [
+            "0xd4b46e0a1d5b8dbaf082489d798fbd06d329b4e118c7b31ed77377a21e3d2660"
+          ]
+        },
+        {
+          "leaf": "0xab725ec09295d2a4be1c91982219df18c40d87d59458cf32c4475ec438915a2e",
+          "proof": [
+            "0xaf9a67a5a3379948910f499a56c919b6175fd47614992b0ef06390b08254e9a3",
+            "0xfbcf1b4a58adb078cae024388b0896754b5dde8f23b7fb130bf4974f14762b2f"
+          ]
+        },
+        {
+          "leaf": "0xaf9a67a5a3379948910f499a56c919b6175fd47614992b0ef06390b08254e9a3",
+          "proof": [
+            "0xab725ec09295d2a4be1c91982219df18c40d87d59458cf32c4475ec438915a2e",
+            "0xfbcf1b4a58adb078cae024388b0896754b5dde8f23b7fb130bf4974f14762b2f"
+          ]
+        }
+      ],
+      "proofsCount": 3,
+      "leavesCount": 3
+    }
+  ],
+  "leafCasesCount": 3
+}

@@ -1,0 +1,70 @@
+{
+  "_doc": "Golden vectors for the ActionRequest EIP-712 digest. Consumers: packages/core/test/vectors.test.ts (SDK equality) and contracts/test/GoldenVectors.t.sol (on-chain equality). Regenerate: npm run vectors:generate.",
+  "casesCount": 4,
+  "cases": [
+    {
+      "name": "zero-value-empty-data",
+      "chainId": 31337,
+      "verifyingContract": "0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f",
+      "request": {
+        "agentId": "0x1111111111111111111111111111111111111111111111111111111111111111",
+        "target": "0x0000000000000000000000000000000000000001",
+        "selector": "0x32145f90",
+        "value": "0",
+        "nonce": "0",
+        "expiry": 1900000000,
+        "rationaleHash": "0x2222222222222222222222222222222222222222222222222222222222222222",
+        "data": "0x"
+      },
+      "digest": "0x0f6b35d04ce459f91a2319e48d71944844c4673fc639939310a57c7b3fcd5841"
+    },
+    {
+      "name": "value-and-args",
+      "chainId": 1,
+      "verifyingContract": "0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f",
+      "request": {
+        "agentId": "0xabababababababababababababababababababababababababababababababab",
+        "target": "0x0000000000000000000000000000000000009001",
+        "selector": "0xa9059cbb",
+        "value": "0x1000000000000000000000000000000000000000000000000000000000000000",
+        "nonce": "7",
+        "expiry": 1900000000,
+        "rationaleHash": "0xcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "data": "0x0000000000000000000000000000000000000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      },
+      "digest": "0x16e76c8c1a7de69455e3c9324b20d5b41a0087cac567c1c133e553d9b413a8be"
+    },
+    {
+      "name": "max-uint48-expiry",
+      "chainId": 11155111,
+      "verifyingContract": "0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f",
+      "request": {
+        "agentId": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "target": "0x0000000000000000000000000000000000000000",
+        "selector": "0x00000000",
+        "value": "0x3000000000000000000000000000000000000000000000000000000000000000",
+        "nonce": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "expiry": 281474976710655,
+        "rationaleHash": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "data": "0xdeadbeef"
+      },
+      "digest": "0xa5f94caa61bf23bf5a181456994a1cc292d3c528f63429a8be2f2dbc1505d759"
+    },
+    {
+      "name": "long-data",
+      "chainId": 8453,
+      "verifyingContract": "0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f",
+      "request": {
+        "agentId": "0x5757575757575757575757575757575757575757575757575757575757575757",
+        "target": "0x000000000000000000000000000000000000cafe",
+        "selector": "0x01234567",
+        "value": "123456789",
+        "nonce": "18446744073709551615",
+        "expiry": 4294967295,
+        "rationaleHash": "0x9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a",
+        "data": "0x5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a"
+      },
+      "digest": "0x77910a995ef5143f29256e7bc1f22a6b73729ed3c2209537911782bb204b2a51"
+    }
+  ]
+}
