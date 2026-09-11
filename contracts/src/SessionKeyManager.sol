@@ -479,8 +479,33 @@ contract SessionKeyManager is ActionLogger {
         virtual
         returns (address)
     {
-        bytes32 structHash = _requestStructHash(request);
-        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", _domainSeparator(), structHash));
+        bytes32 digest = _requestDigest(request);
+        // 65-byte signatures take the ECDSA path. Any other length is an ERC-1271
+        // smart-account session key (E17): address(keyContract) || 1271 signature.
+        // The owner grants the scope to the 1271 CONTRACT's address; the contract
+        // proves control of the digest via isValidSignature (staticcall — read-only,
+        // so no reentrancy surface before the effects).
+        if (signature.length != 65) {
+            if (signature.length < 20) revert InvalidSignature();
+            address keyContract = address(bytes20(signature[0:20]));
+            uint256 codeSize;
+            assembly ("memory-safe") {
+                codeSize := extcodesize(keyContract)
+            }
+            if (codeSize == 0) revert InvalidSignature();
+            (bool ok, bytes memory ret) =
+                keyContract.staticcall(abi.encodeWithSelector(0x1626ba7e, digest, signature[20:]));
+            // 0x1626ba7e = isValidSignature(bytes32,bytes) success magic. Accept the
+            // word in either alignment (standard low-aligned ABI or high-aligned).
+            if (
+                ok
+                    && ret.length >= 32
+                    && (uint256(bytes32(ret)) == uint256(0x1626ba7e) || bytes4(ret) == bytes4(0x1626ba7e))
+            ) {
+                return keyContract;
+            }
+            revert InvalidSignature();
+        }
         return _ecrecover(digest, signature);
     }
 

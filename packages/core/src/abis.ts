@@ -74,7 +74,6 @@ export const SIGILKIT_ERRORS_ABI = [
   { type: "error", name: "NotAuthorizedCaller", inputs: [] },
   { type: "error", name: "UnsupportedCallType", inputs: [{ name: "callType", type: "bytes1" }] },
   { type: "error", name: "MalformedExecutionData", inputs: [] },
-  { type: "error", name: "BatchWithWhitelistUnsupported", inputs: [] },
   // ActionLog7579Executor
   { type: "error", name: "NotAccount", inputs: [] },
   { type: "error", name: "ExecutionFailed", inputs: [] },

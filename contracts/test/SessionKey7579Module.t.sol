@@ -398,17 +398,89 @@ contract SessionKey7579ModuleTest is Test {
         account.validate(bad, h2);
     }
 
-    function test_BatchUnderWhitelist_FailsClosed() public {
+    function test_BatchUnderWhitelist_PerTupleProofs_Accept() public {
+        // E16: batching is no longer locked out of the whitelist regime — each tuple
+        // carries its own proof in the signature tail
+        // [uint16 tupleCount][tupleCount × {uint16 proofLen, proofLen × bytes32}].
+        address targetA = address(0x1111);
+        address targetB = address(0x2222);
+        bytes4 selector = hex"12345678";
+        bytes32 leafA = keccak256(abi.encode(targetA, selector, bytes32(0)));
+        bytes32 leafB = keccak256(abi.encode(targetB, selector, bytes32(0)));
+        bytes32 root = leafA < leafB
+            ? keccak256(abi.encodePacked(leafA, leafB))
+            : keccak256(abi.encodePacked(leafB, leafA));
+
         SessionKey7579Module.Scope memory scoped = defaultScope();
-        scoped.merkleRoot = bytes32(uint256(0xABCD)); // non-zero root ⇒ whitelist regime
+        scoped.merkleRoot = root;
+        account.install(abi.encode(key, scoped));
+
+        SessionKey7579Module.ExecTuple[] memory calls = new SessionKey7579Module.ExecTuple[](2);
+        calls[0] = SessionKey7579Module.ExecTuple(targetA, 0.1 ether, abi.encodePacked(selector));
+        calls[1] = SessionKey7579Module.ExecTuple(targetB, 0.1 ether, abi.encodePacked(selector));
+
+        // Proof for tuple 0 is leafB; for tuple 1 is leafA (2-leaf sorted tree).
+        bytes32 proofForA = leafB;
+        bytes32 proofForB = leafA;
+        bytes memory tail = abi.encodePacked(
+            uint16(2), // tuple count
+            uint16(1), proofForA, // tuple 0: one proof element
+            uint16(1), proofForB // tuple 1: one proof element
+        );
+        bytes32 opHash = keccak256("bwl-accept");
+        PackedUserOperation memory op = makeUserOp(
+            batchCallData(calls), abi.encodePacked(signFor(address(account), opHash, new bytes32[](0)), tail)
+        );
+        op.sender = address(account);
+        uint256 vd = account.validate(op, opHash);
+        assertEq(vd, packedSuccess(EXPIRES_AT), "whitelisted batch with per-tuple proofs should validate");
+    }
+
+    function test_BatchUnderWhitelist_TamperedProof_Reverts() public {
+        address targetA = address(0x1111);
+        bytes4 selector = hex"12345678";
+        bytes32 leafA = keccak256(abi.encode(targetA, selector, bytes32(0)));
+        bytes32 leafB = keccak256(abi.encode(address(0x2222), selector, bytes32(0)));
+        bytes32 root = leafA < leafB
+            ? keccak256(abi.encodePacked(leafA, leafB))
+            : keccak256(abi.encodePacked(leafB, leafA));
+
+        SessionKey7579Module.Scope memory scoped = defaultScope();
+        scoped.merkleRoot = root;
         account.install(abi.encode(key, scoped));
 
         SessionKey7579Module.ExecTuple[] memory calls = new SessionKey7579Module.ExecTuple[](1);
-        calls[0] = SessionKey7579Module.ExecTuple(address(0xA), 0, hex"");
-        bytes32 opHash = keccak256("bwl1");
-        PackedUserOperation memory op = makeUserOp(batchCallData(calls), signFor(address(account), opHash, new bytes32[](0)));
+        calls[0] = SessionKey7579Module.ExecTuple(targetA, 0, abi.encodePacked(selector));
+        // Wrong proof: the element is NOT leafA's sibling.
+        bytes32 wrong = keccak256("wrong");
+        bytes memory tail = abi.encodePacked(uint16(1), uint16(1), wrong);
+        bytes32 opHash = keccak256("bwl-bad");
+        PackedUserOperation memory op = makeUserOp(
+            batchCallData(calls), abi.encodePacked(signFor(address(account), opHash, new bytes32[](0)), tail)
+        );
         op.sender = address(account);
-        vm.expectRevert(SessionKey7579Module.BatchWithWhitelistUnsupported.selector);
+        vm.expectRevert(
+            abi.encodeWithSelector(SessionKey7579Module.TargetNotAllowed.selector, targetA, selector)
+        );
+        account.validate(op, opHash);
+    }
+
+    function test_BatchUnderWhitelist_MalformedTail_Reverts() public {
+        SessionKey7579Module.Scope memory scoped = defaultScope();
+        scoped.merkleRoot = bytes32(uint256(0xABCD));
+        account.install(abi.encode(key, scoped));
+
+        SessionKey7579Module.ExecTuple[] memory calls = new SessionKey7579Module.ExecTuple[](2);
+        calls[0] = SessionKey7579Module.ExecTuple(address(0xA), 0, hex"");
+        calls[1] = SessionKey7579Module.ExecTuple(address(0xB), 0, hex"");
+        // Tail declares 1 tuple but the batch has 2 → InvalidSignature.
+        bytes memory tail = abi.encodePacked(uint16(1), uint16(0));
+        bytes32 opHash = keccak256("bwl-malformed");
+        PackedUserOperation memory op = makeUserOp(
+            batchCallData(calls), abi.encodePacked(signFor(address(account), opHash, new bytes32[](0)), tail)
+        );
+        op.sender = address(account);
+        vm.expectRevert(SessionKey7579Module.InvalidSignature.selector);
         account.validate(op, opHash);
     }
 

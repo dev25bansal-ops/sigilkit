@@ -15,6 +15,7 @@ const GENERATOR_ABI_NAMES = [
   "SessionKeyManager",
   "SessionKey7579Module",
   "ActionLog7579Executor",
+  "SigilKitDelegator",
 ] as const;
 
 type AbiItem = {

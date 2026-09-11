@@ -38,8 +38,9 @@ struct PackedUserOperation {
 ///   [67..]     proofCount × bytes32 sorted-pair proof elements (single-call ops only)
 ///
 /// Whitelist semantics: scope.merkleRoot == 0 ⇒ allow all targets (dangerous; documented).
-/// With a non-zero root, SINGLE-call ops MUST carry a proof; BATCH ops under a non-zero root
-/// are REJECTED (per-tuple proof framing is out of scope for v1) — fail closed.
+/// With a non-zero root, SINGLE-call ops MUST carry one proof; BATCH ops carry one proof
+/// PER TUPLE (E16): [uint16 tupleCount][tupleCount × {uint16 proofLen, proofLen × bytes32}]
+/// after the 65-byte signature, gas-bounded by MAX_TOTAL_PROOF_ELEMENTS.
 contract SessionKey7579Module {
     using SpendPolicy for SpendPolicy.WindowState;
 
@@ -57,7 +58,6 @@ contract SessionKey7579Module {
     error UnsupportedCallType(bytes1 callType);
     error InvalidSignature();
     error MalformedExecutionData();
-    error BatchWithWhitelistUnsupported();
 
     // ------------------------------------------------------------------
     // Types
@@ -84,6 +84,8 @@ contract SessionKey7579Module {
 
     /// @notice Upper bound on batch executions enforced at validation (gas + DoS bound).
     uint256 private constant MAX_BATCH_SIZE = 8;
+    /// @notice Gas bound on the combined per-tuple proof elements of one batch (E16).
+    uint256 private constant MAX_TOTAL_PROOF_ELEMENTS = 32;
 
     struct ModuleStorage {
         mapping(address account => mapping(address key => Scope)) scopes;
@@ -223,7 +225,10 @@ contract SessionKey7579Module {
             _enforceSingle(account, signer, scope, single);
         } else if (callType == 0x01) {
             ExecTuple[] memory batch = abi.decode(execPayload, (ExecTuple[]));
-            _enforceBatch(account, signer, scope, batch);
+            // Per-tuple proofs (E16): required under a non-zero root, one per tuple.
+            bytes32[][] memory batchProofs =
+                scope.merkleRoot != bytes32(0) ? _parseBatchProofs(userOp.signature, batch.length) : new bytes32[][](0);
+            _enforceBatch(account, signer, scope, batch, batchProofs);
         } else {
             revert UnsupportedCallType(callType);
         }
@@ -253,10 +258,10 @@ contract SessionKey7579Module {
         address account,
         address signer,
         Scope storage scope,
-        ExecTuple[] memory batch
+        ExecTuple[] memory batch,
+        bytes32[][] memory batchProofs
     ) internal {
         ModuleStorage storage s = _m();
-        if (scope.merkleRoot != bytes32(0)) revert BatchWithWhitelistUnsupported(); // fail closed
         if (batch.length == 0 || batch.length > MAX_BATCH_SIZE) revert MalformedExecutionData();
 
         // Checks across every tuple first…
@@ -268,6 +273,14 @@ contract SessionKey7579Module {
                 // Dedicated error (not MalformedExecutionData) so relayers and indexers
                 // can distinguish a policy violation from a malformed payload.
                 revert SpendPolicy.PerActionCapExceeded(batch[i].value, scope.perActionCap);
+            }
+            // Per-tuple whitelist (E16): under a non-zero root every tuple must carry
+            // its own proof (v2 pinned-or-wildcard leaf) — batching is no longer
+            // locked out of the whitelist regime.
+            if (scope.merkleRoot != bytes32(0)) {
+                if (!_whitelisted(scope.merkleRoot, batch[i].target, batch[i].data, batchProofs[i])) {
+                    revert TargetNotAllowed(batch[i].target, bytes4(batch[i].data));
+                }
             }
             unchecked {
                 totalValue += batch[i].value;
@@ -321,6 +334,37 @@ contract SessionKey7579Module {
             uint256 start = 67 + i * 32;
             proof[i] = bytes32(signature[start:start + 32]);
         }
+    }
+
+    /// @dev Per-tuple proof tail for batches (E16), after the 65-byte ECDSA:
+    ///      [uint16 tupleCount][tupleCount × {uint16 proofLen, proofLen × bytes32}].
+    ///      tupleCount must equal the decoded batch length and the tail must be
+    ///      exactly consumed; total proof elements are gas-bounded by MAX_TOTAL_PROOF_ELEMENTS.
+    function _parseBatchProofs(bytes calldata signature, uint256 batchLen)
+        internal
+        pure
+        returns (bytes32[][] memory proofs)
+    {
+        if (signature.length < 67) revert InvalidSignature();
+        uint256 tupleCount = (uint16(uint8(signature[65])) << 8) | uint16(uint8(signature[66]));
+        if (tupleCount != batchLen) revert InvalidSignature();
+        proofs = new bytes32[][](tupleCount);
+        uint256 offset = 67;
+        uint256 totalElements = 0;
+        for (uint256 i = 0; i < tupleCount; ++i) {
+            if (offset + 2 > signature.length) revert InvalidSignature();
+            uint256 proofLen = (uint16(uint8(signature[offset])) << 8) | uint16(uint8(signature[offset + 1]));
+            offset += 2;
+            if (offset + proofLen * 32 > signature.length) revert InvalidSignature();
+            proofs[i] = new bytes32[](proofLen);
+            for (uint256 j = 0; j < proofLen; ++j) {
+                proofs[i][j] = bytes32(signature[offset:offset + 32]);
+                offset += 32;
+            }
+            totalElements += proofLen;
+            if (totalElements > MAX_TOTAL_PROOF_ELEMENTS) revert InvalidSignature();
+        }
+        if (offset != signature.length) revert InvalidSignature();
     }
 
     // ------------------------------------------------------------------
