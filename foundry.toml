@@ -15,7 +15,20 @@ fs_permissions = [{ access = "read", path = "./" }]
 [profile.default.fuzz]
 runs = 256
 
+# PR-gate profile: 2k fuzz runs per test keeps the unit job fast while staying deep.
+# (forge >=1.x removed the `--invariant-runs` CLI flag; invariant depth is config-only.)
 [profile.ci.fuzz]
+runs = 2000
+
+[profile.ci.invariant]
+runs = 256
+
+# Nightly deep-fuzz profile: full-depth fuzzing that would slow the PR gate.
+[profile.deep.fuzz]
 runs = 10000
+
+[profile.deep.invariant]
+runs = 1000
+
 
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options

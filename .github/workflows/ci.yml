@@ -5,8 +5,12 @@ on:
     branches: [main, master]
   pull_request:
   schedule:
-    # Nightly at 03:17 UTC — gates echidna-nightly and forge-fork-base.
+    # Nightly at 03:17 UTC — gates forge-deep-fuzz and forge-fork-base.
     - cron: "17 3 * * *"
+    # Weekly Mondays 04:23 UTC — wallet conformance harnesses.
+    - cron: "23 4 * * 1"
+    # Monthly on the 1st 04:43 UTC — Foundry nightly canary.
+    - cron: "43 4 1 * *"
   workflow_dispatch:
 
 concurrency:
@@ -15,10 +19,13 @@ concurrency:
 
 env:
   FOUNDRY_PROFILE: ci
-  NODE_VERSION: "24"
+  # Pinned Foundry: nightly moved `--invariant-runs` into config-only and can break
+  # the gate at any time (found 2026-09). The foundry-canary job below tests nightly
+  # separately so bumps are caught deliberately. Bump in one place (this env var).
+  FOUNDRY_VERSION: "v1.7.1"
 
 jobs:
-  # 1. Forge unit + fuzz (PR gate)
+  # 1. Forge unit + fuzz (PR gate) — 2k fuzz runs/test via [profile.ci.fuzz]
   forge-unit:
     name: Forge unit + fuzz
     runs-on: ubuntu-latest
@@ -26,11 +33,14 @@ jobs:
       - uses: actions/checkout@v4
         with: { submodules: recursive }
       - uses: foundry-rs/foundry-toolchain@v1
-        with: { version: nightly }
+        with: { version: "${{ env.FOUNDRY_VERSION }}" }
       - run: forge build --sizes
-      - run: forge test --no-match-contract '.*Invariant'
+      # Fork smoke runs nightly against a real Base fork; its assertions are
+      # fork-specific by design and would fail on a local chain.
+      - run: forge test --no-match-contract '.*Invariant|.*Fork'
 
-  # 2. Forge invariant (PR gate)
+  # 2. Forge invariant (PR gate) — 256 runs via [profile.ci.invariant]
+  #    (forge >=1.x has no --invariant-runs CLI flag; depth is config-only)
   forge-invariant:
     name: Forge invariant (INV-1..4)
     runs-on: ubuntu-latest
@@ -38,8 +48,8 @@ jobs:
       - uses: actions/checkout@v4
         with: { submodules: recursive }
       - uses: foundry-rs/foundry-toolchain@v1
-        with: { version: nightly }
-      - run: forge test --match-contract '.*Invariant' --invariant-runs 256
+        with: { version: "${{ env.FOUNDRY_VERSION }}" }
+      - run: forge test --match-contract '.*Invariant'
 
   # 3. Slither static analysis (PR gate, fail on high)
   slither:
@@ -49,7 +59,7 @@ jobs:
       - uses: actions/checkout@v4
         with: { submodules: recursive }
       - uses: foundry-rs/foundry-toolchain@v1
-        with: { version: nightly }
+        with: { version: "${{ env.FOUNDRY_VERSION }}" }
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
       # 6.x does not exist on PyPI (latest line is 0.11.x); pin the current release.
@@ -65,7 +75,7 @@ jobs:
       - uses: actions/checkout@v4
         with: { submodules: recursive }
       - uses: foundry-rs/foundry-toolchain@v1
-        with: { version: nightly }
+        with: { version: "${{ env.FOUNDRY_VERSION }}" }
       - uses: actions/setup-node@v4
         with: { node-version: "24", cache: npm }
       - run: npm ci
@@ -73,20 +83,33 @@ jobs:
       - run: npm run lint --workspace @sigilkit/demo-agent
       - run: npm run build --workspaces
       - run: npm test --workspace @sigilkit/core
+      - run: npm run test:coverage --workspace @sigilkit/core
 
-  # 5. Nightly — Echidna fuzz.
-  # DELETED: no echidna_* property functions exist anywhere in contracts/, so there is
-  # nothing for Echidna to fuzz. A real job would be a guaranteed no-op or false green.
-  # Reintroduce only after adding echidna_ properties (e.g. to SessionKeyManager.t.sol),
-  # installing via crytic/echidna-action or the release binary, and running:
-  #   echidna contracts/src/SessionKeyManager.sol --contract SessionKeyManager --config echidna.yaml
+  # 5. Nightly — deep fuzz (10k runs/test, 1k invariant runs via [profile.deep]) + coverage artifact.
+  forge-deep-fuzz:
+    name: Forge deep fuzz + coverage (nightly)
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '17 3 * * *'
+    runs-on: ubuntu-latest
+    env:
+      FOUNDRY_PROFILE: deep
+    steps:
+      - uses: actions/checkout@v4
+        with: { submodules: recursive }
+      - uses: foundry-rs/foundry-toolchain@v1
+        with: { version: "${{ env.FOUNDRY_VERSION }}" }
+      - run: forge test --match-contract '.*Invariant'
+      - run: forge coverage --report lcov --report summary
+      - uses: actions/upload-artifact@v4
+        with:
+          name: forge-lcov
+          path: lcov.info
 
   # 6. Nightly — Base fork smoke tests.
   # Runs only on the schedule trigger; skips cleanly when secrets.RPC_BASE is unset so a
   # forkless environment reports a skipped job instead of a red one.
   forge-fork-base:
     name: Base fork tests (nightly)
-    if: github.event_name == 'schedule'
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '17 3 * * *'
     runs-on: ubuntu-latest
     env:
       RPC_BASE: ${{ secrets.RPC_BASE }}
@@ -100,7 +123,7 @@ jobs:
           echo "skip=true" >> "$GITHUB_OUTPUT"
       - uses: foundry-rs/foundry-toolchain@v1
         if: steps.gate.outputs.skip != 'true'
-        with: { version: nightly }
+        with: { version: "${{ env.FOUNDRY_VERSION }}" }
       - run: forge test --fork-url "$RPC_BASE" --match-contract '.*Fork'
         if: steps.gate.outputs.skip != 'true'
 
@@ -115,9 +138,59 @@ jobs:
       - uses: actions/checkout@v4
         with: { submodules: recursive }
       - uses: foundry-rs/foundry-toolchain@v1
-        with: { version: nightly }
+        with: { version: "${{ env.FOUNDRY_VERSION }}" }
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
       - run: pip install halmos==0.3.3
       - run: halmos --version
       - run: halmos --match-contract HalmosTest
+
+  # 8. Weekly — live wallet conformance harnesses (MetaMask 12.5.0 + Coinbase designator).
+  # Real browsers + a real extension: heads-up Chromium on ubuntu (xvfb not needed —
+  # Playwright launches headed Chromium fine with --no-sandbox on Linux runners).
+  # Non-blocking (continue-on-error) until it has a few green weeks of history.
+  wallet-e2e-weekly:
+    name: Wallet conformance (weekly)
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '23 4 * * 1'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with: { submodules: recursive }
+      - uses: foundry-rs/foundry-toolchain@v1
+        with: { version: "${{ env.FOUNDRY_VERSION }}" }
+      - uses: actions/setup-node@v4
+        with: { node-version: "24", cache: npm }
+      - run: npm ci
+      - run: npx playwright install chromium --with-deps
+      - name: Fetch pinned MetaMask 12.5.0 extension
+        run: |
+          cd packages/core/test/wallet-e2e
+          curl -L -o metamask.zip \
+            "https://github.com/MetaMask/metamask-extension/releases/download/v12.5.0/metamask-chrome-12.5.0.zip"
+          unzip -o metamask.zip -d metamask
+          rm metamask.zip
+      - run: npx tsx test/wallet-e2e/run-all.ts
+        working-directory: packages/core
+           - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wallet-e2e-log
+          path: packages/core/test-results/
+          if-no-files-found: ignore
+
+  # 9. Canary — monthly `nightly` toolchain check so future Foundry flag/config drift
+  #    (like the removed --invariant-runs) is caught here, not by a red PR gate.
+  foundry-canary:
+    name: Foundry nightly canary (monthly)
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '43 4 1 * *'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with: { submodules: recursive }
+      - uses: foundry-rs/foundry-toolchain@v1
+        with: { version: nightly }
+      - run: forge build
+      - run: forge test --match-contract '.*Invariant'
+      - run: forge test --no-match-contract '.*Invariant|.*Fork'

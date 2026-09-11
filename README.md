@@ -41,7 +41,7 @@ sigilkit/
 ├─ contracts/                 # Foundry lib (forge-installable): src/ + test/ + script/
 │  ├─ src/
 │  │  ├─ ActionLogger.sol     # mandatory audit event (INV-3)
-│  │  ├─ SpendPolicy.sol      # per-action + rolling-window caps (INV-1)
+│  │  ├─ SpendPolicy.sol      # per-action + fixed-window (tumbling) caps (INV-1)
 │  │  ├─ MerkleWhitelist.sol  # sorted-pair whitelist verification
 │  │  ├─ SessionKeyManager.sol# session keys, scope, rotation, denylist (INV-2, INV-4)
 │  │  └─ SessionKey7579Module.sol # ERC-7579 VALIDATION module for Kernel/Safe
@@ -100,7 +100,7 @@ the granted scope — caps and the deny list are enforced in the contract, not o
 
 | Invariant | Guarantee |
 |-----------|-----------|
-| **INV-1** | Sum of values out within any rolling window ≤ `perWindowCap`. |
+| **INV-1** | Sum of values out within any single fixed (tumbling) window ≤ `perWindowCap`. Up to ~2× `perWindowCap` may cross a window boundary (the window resets fully on rollover — it is not a sliding window). |
 | **INV-2** | After `expiry`, a session key cannot modify any state. |
 | **INV-3** | `ActionLogged` is emitted **iff** the inner call succeeded — no silent success. |
 | **INV-4** | Owner-only selectors are unreachable through `executeWithSessionKey` on any target. |

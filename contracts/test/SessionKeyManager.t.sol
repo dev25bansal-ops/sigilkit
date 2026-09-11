@@ -299,6 +299,35 @@ contract SessionKeyManagerTest is Test {
         skm.executeWithSessionKey{value: 0.1 ether}(req, sig, new bytes32[](0));
     }
 
+    function test_WindowIsTumbling_BoundaryBurstPinned() public {
+        // Pins SpendPolicy's window semantics: the window is a FIXED (tumbling) window
+        // that resets fully on rollover — NOT a sliding window. See the INV-1 note in
+        // SpendPolicy.sol: up to ~2x perWindowCap can legitimately cross a boundary.
+        vm.prank(vm.addr(OWNER_KEY));
+        skm.grantSessionKey(agent, defaultScope); // 1 ETH/action, 2 ETH/window, 1h window
+
+        SessionKeyManager.ActionRequest memory req =
+            _makeRequest(address(counter), counter.poke.selector, 0.9 ether, abi.encode(1));
+        (bool ok,) = _execute(req);
+        assertTrue(ok, "first spend should pass");
+        req = _makeRequest(address(counter), counter.poke.selector, 0.9 ether, abi.encode(2));
+        (ok,) = _execute(req);
+        assertTrue(ok, "second spend should pass (1.8 <= 2 ETH window cap)");
+
+        // A third spend inside the same window is capped (1.8 + 0.9 > 2).
+        req = _makeRequest(address(counter), counter.poke.selector, 0.9 ether, abi.encode(3));
+        (ok,) = _execute(req);
+        assertFalse(ok, "window cap must hold inside the window");
+
+        // Cross the boundary: the window resets fully, so the same 0.9 ETH passes —
+        // a sliding-window reading of INV-1 would reject this; tumbling is the actual
+        // (documented) behavior.
+        vm.warp(block.timestamp + 1 hours + 1);
+        req = _makeRequest(address(counter), counter.poke.selector, 0.9 ether, abi.encode(4));
+        (ok,) = _execute(req);
+        assertTrue(ok, "post-rollover spend should pass (tumbling window; SpendPolicy INV-1 note)");
+    }
+
     // ------------------------------------------------------------------
     // Spend caps
     // ------------------------------------------------------------------

@@ -8,11 +8,11 @@ import { keccak256, toHex } from "viem";
 export interface Scope {
   /** Hard expiry (unix seconds). Must be in the future at grant time. */
   expiresAt: number;
-  /** Rolling-window length for the spend cap (seconds). */
+  /** Fixed (tumbling) spend-window length in seconds. See SpendPolicy INV-1 note. */
   windowSeconds: number;
   /** Max native value per single action (wei). */
   perActionCap: bigint;
-  /** Max cumulative native value per rolling window (wei). */
+  /** Max cumulative native value per fixed (tumbling) window (wei); up to ~2x may cross a boundary. */
   perWindowCap: bigint;
   /**
    * Root over keccak256(abi.encode(target, selector)) leaves.

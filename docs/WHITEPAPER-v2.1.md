@@ -9,7 +9,7 @@
 ## Abstract
 
 SigilKit is an open-source (MIT), audited toolkit for **agent-native wallets**: scoped session-key
-management with on-chain spend caps, rolling-window rate limits, Merkle target whitelists, a
+management with on-chain spend caps, fixed-window (tumbling) rate limits, Merkle target whitelists, a
 mandatory per-action audit event, an EIP-7702 authorization library with three-way signing
 conformance, and an ERC-7579 validation module bringing the same scope enforcement to Kernel /
 Safe{Core} accounts.

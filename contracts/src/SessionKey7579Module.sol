@@ -20,7 +20,7 @@ struct PackedUserOperation {
 /// @title SessionKey7579Module
 /// @notice ERC-7579 VALIDATION module: lets ERC-4337 smart accounts (Kernel, Safe{Core}, …)
 ///         authorize user operations signed by scoped session keys with on-chain spend caps,
-///         rolling-window rate limits, Merkle target whitelists, and selector denylists.
+///         fixed-window (tumbling) rate limits, Merkle target whitelists, and selector denylists.
 /// @dev Security model (mirrors SessionKeyManager):
 ///      - The session key holder is UNTRUSTED. All scope enforcement happens HERE at
 ///        validation time; a compromised agent cannot exceed the granted scope.
@@ -64,9 +64,9 @@ contract SessionKey7579Module {
     // ------------------------------------------------------------------
     struct Scope {
         uint48 expiresAt; // hard expiry; must be future at grant time
-        uint48 windowSeconds; // rolling-window length
+        uint48 windowSeconds; // fixed (tumbling) window length
         uint256 perActionCap; // max value per SINGLE inner call
-        uint256 perWindowCap; // max cumulative value per rolling window
+        uint256 perWindowCap; // max cumulative value per fixed (tumbling) window
         bytes32 merkleRoot; // root over keccak(abi.encode(target,selector)); 0 = allow all
     }
 

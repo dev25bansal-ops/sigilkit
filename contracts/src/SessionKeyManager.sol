@@ -7,7 +7,7 @@ import {ActionLogger} from "./ActionLogger.sol";
 
 /// @title SessionKeyManager
 /// @notice Agent-first session-key manager: scoped keys with on-chain spend caps,
-///         rolling-window rate limits, Merkle target whitelists, and a mandatory
+///         fixed-window (tumbling) rate limits, Merkle target whitelists, and a mandatory
 ///         audit event per executed action.
 /// @dev Security model:
 ///      - The agent (session key holder) is treated as UNTRUSTED. A compromised agent or SDK
@@ -42,9 +42,9 @@ contract SessionKeyManager is ActionLogger {
     /// @notice Scope granted to a session key. All fields immutable once granted.
     struct Scope {
         uint48 expiresAt; // hard expiry; must be in the future at grant time
-        uint48 windowSeconds; // rolling-window length for the spend cap
+        uint48 windowSeconds; // fixed (tumbling) window length for the spend cap
         uint256 perActionCap; // max native value per single action
-        uint256 perWindowCap; // max cumulative native value per rolling window
+        uint256 perWindowCap; // max cumulative native value per fixed (tumbling) window
         bytes32 merkleRoot; // root over keccak(target,selector) leaves; 0 = allow ALL (dangerous)
     }
 
