@@ -283,13 +283,18 @@ contract SessionKeyManager is ActionLogger {
 
         // --- Spend caps: checks + effects BEFORE the inner call (CEI) ---
         s.windows[signer].enforce(
-            request.value, scope.perActionCap, scope.perWindowCap, scope.windowSeconds
+            address(this), signer, request.value, scope.perActionCap, scope.perWindowCap, scope.windowSeconds
         );
 
         // --- Interaction ---
-        (bool ok,) =
+        // Revert-data bubbling (enhancement E2): a failed inner call reverts with its
+        // own reason when that reason is recognizable (plain string require, Panic, or
+        // a known SigilKit error bubbled from a nested SigilKit deployment); unknown
+        // selectors collapse to InnerCallFailed so every manager failure stays
+        // recognizable to tooling.
+        (bool ok, bytes memory ret) =
             request.target.call{value: request.value}(abi.encodePacked(request.selector, request.data));
-        if (!ok) revert InnerCallFailed();
+        if (!ok) _revertInnerCall(ret);
 
         // --- Mandatory audit (INV-3): no silent success path ---
         _logAction(request.agentId, request.target, request.selector, request.value, request.rationaleHash);
@@ -329,6 +334,28 @@ contract SessionKeyManager is ActionLogger {
     // ------------------------------------------------------------------
     // Internals
     // ------------------------------------------------------------------
+    /// @dev Bubbles recognizable inner revert reasons (enhancement E2): empty reason
+    ///      (plain require(false)) is indistinguishable from a bare failure and stays
+    ///      InnerCallFailed; Error(string)/Panic and known SigilKit errors pass through
+    ///      so integrators see WHY the target failed. Unknown selectors keep the
+    ///      blanket error — INV: every revert of this contract is identifiable.
+    function _revertInnerCall(bytes memory reason) internal pure {
+        if (reason.length >= 4) {
+            // Canonical selectors: Error(string) = 0x08c379a0, Panic(uint256) = 0x4e487b71.
+            bytes4 sel = bytes4(reason);
+            if (
+                sel == 0x08c379a0 || sel == 0x4e487b71
+                    || sel == SpendPolicy.PerActionCapExceeded.selector
+                    || sel == SpendPolicy.PerWindowCapExceeded.selector
+            ) {
+                assembly ("memory-safe") {
+                    revert(add(reason, 32), mload(reason))
+                }
+            }
+        }
+        revert InnerCallFailed();
+    }
+
     /// @dev Whitelist check against leaf format v2: the proof must verify against
     ///      either the pinned leaf (commits keccak256(data)) or the wildcard leaf
     ///      (argsHash == 0 — any calldata for this target+selector).

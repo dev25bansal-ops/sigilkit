@@ -5,8 +5,11 @@ import {
   validateAgainstScope,
   type HashSigner,
 } from "./signing.js";
+import { decodeSigilKitError, decorateWithDecodedRevert } from "./errors.js";
+import { ACTION_LOGGER_ABI } from "./abis.js";
 import {
   createPublicClient,
+  decodeEventLog,
   encodeFunctionData,
   http,
   keccak256,
@@ -15,8 +18,10 @@ import {
   type Chain,
   type Hash,
   type Hex,
-  type PrivateKeyAccount,
+  type Log,
   type PublicClient,
+  type TransactionReceipt,
+  type WalletClient,
 } from "viem";
 
 /** Minimal ABI surface of SessionKeyManager used by the SDK. */
@@ -256,6 +261,96 @@ export class SigilKitClient {
         log.topics.length === 4 && log.topics[0] === ACTION_LOGGED_TOPIC,
     );
   }
+
+  /**
+   * One-call execution (enhancement E3): prepare + sign + locally validate, send via
+   * the provided wallet (the relayer), wait for the receipt, and return the TYPED
+   * audit record. Throws on revert (with the decoded SigilKit reason when available,
+   * E4) and when a successful execution somehow lacks ActionLogged (INV-3 violation).
+   *
+   * Wrap in `client.nonceGate.run(key, …)` when the same session key may have
+   * concurrent in-flight actions.
+   */
+  async execute(
+    args: Parameters<SigilKitClient["prepareExecution"]>[0],
+    wallet: WalletClient,
+  ): Promise<{ receipt: TransactionReceipt; audit: ActionLogRecord }> {
+    const prepared = await this.prepareExecution(args);
+    if (!wallet.account) {
+      throw new Error("SigilKit execute: wallet client must carry an account (the relayer)");
+    }
+    let txHash: Hash;
+    try {
+      txHash = await wallet.sendTransaction({
+        account: wallet.account,
+        chain: this.chain,
+        to: prepared.to,
+        data: prepared.data,
+      });
+    } catch (err) {
+      throw decorateWithDecodedRevert(err);
+    }
+
+    let receipt: TransactionReceipt;
+    try {
+      receipt = await this.publicClient.waitForTransactionReceipt({ hash: txHash });
+    } catch (err) {
+      throw decorateWithDecodedRevert(err);
+    }
+    if (receipt.status !== "success") {
+      throw new Error(`SigilKit: transaction ${txHash} reverted; nothing was executed or audited`);
+    }
+    const audit = parseActionLogged(receipt.logs);
+    if (!audit) {
+      throw new Error(`SigilKit: ActionLogged missing in successful tx ${txHash} — INV-3 violated`);
+    }
+    return { receipt, audit };
+  }
+}
+
+/** A decoded ActionLogged audit record (enhancement E3). */
+export interface ActionLogRecord {
+  agentId: Hash;
+  target: Address;
+  selector: Hex;
+  value: bigint;
+  rationaleHash: Hash;
+  /** Seconds (uint48) — the block timestamp of the audit event. */
+  timestamp: number;
+  txHash: Hash;
+  blockNumber: bigint;
+}
+
+/**
+ * Extracts and decodes the ActionLogged record from a set of logs. Returns null when
+ * no ActionLogged event is present (the INV-3 violation signal for callers).
+ */
+export function parseActionLogged(logs: Log[]): ActionLogRecord | null {
+  for (const log of logs) {
+    if (log.topics.length !== 4 || log.topics[0] !== ACTION_LOGGED_TOPIC) continue;
+    let decoded: { args: Record<string, unknown> };
+    try {
+      decoded = decodeEventLog({
+        abi: ACTION_LOGGER_ABI,
+        data: log.data,
+        topics: log.topics,
+      }) as unknown as { args: Record<string, unknown> };
+    } catch {
+      continue;
+    }
+    return {
+      agentId: decoded.args.agentId as Hash,
+      target: decoded.args.target as Address,
+      selector: decoded.args.selector as Hex,
+      value: decoded.args.value as bigint,
+      rationaleHash: decoded.args.rationaleHash as Hash,
+      timestamp: Number(decoded.args.timestamp),
+      // Receipt logs are always mined; null is only possible on pending log objects.
+      txHash: log.transactionHash as Hash,
+      blockNumber: log.blockNumber as bigint,
+    };
+  }
+  return null;
 }
 
 /** keccak256("ActionLogged(bytes32,address,bytes4,uint256,bytes32,uint48)") — event signature topic. */

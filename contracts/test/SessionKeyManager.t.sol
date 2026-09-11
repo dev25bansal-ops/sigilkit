@@ -27,10 +27,24 @@ contract OwnerOnlyTarget {
     function sweep() external payable {}
 }
 
+/// @dev Targets with distinct revert behaviors for the E2 bubbling tests.
+contract RevertingTarget {
+    error SomeUnknownError(uint256 x); // selector intentionally absent from the allowlist
+
+    function stringRevert() external pure {
+        revert("slippage: out of bounds");
+    }
+
+    function unknownRevert() external pure {
+        revert SomeUnknownError(1);
+    }
+}
+
 contract SessionKeyManagerTest is Test {
     SessionKeyManager internal skm;
     Counter internal counter;
     OwnerOnlyTarget internal ownerTarget;
+    RevertingTarget internal reverter;
 
     uint256 internal constant OWNER_KEY = 0xA11CE;
     uint256 internal constant AGENT_KEY = 0xB0B;
@@ -43,6 +57,7 @@ contract SessionKeyManagerTest is Test {
         skm = new SessionKeyManager(vm.addr(OWNER_KEY));
         counter = new Counter();
         ownerTarget = new OwnerOnlyTarget();
+        reverter = new RevertingTarget();
         vm.deal(address(skm), 100 ether);
 
         defaultScope = SessionKeyManager.Scope({
@@ -297,6 +312,47 @@ contract SessionKeyManagerTest is Test {
 
         vm.expectRevert(SessionKeyManager.ValueNotAccepted.selector);
         skm.executeWithSessionKey{value: 0.1 ether}(req, sig, new bytes32[](0));
+    }
+
+    // ------------------------------------------------------------------
+    // E1/E2: window-charged observability + inner revert bubbling
+    // ------------------------------------------------------------------
+    function test_Execute_EmitsWindowCharged() public {
+        vm.prank(vm.addr(OWNER_KEY));
+        skm.grantSessionKey(agent, defaultScope);
+
+        SessionKeyManager.ActionRequest memory req =
+            _makeRequest(address(counter), counter.poke.selector, 0.1 ether, abi.encode(1));
+
+        // First charge opens a fresh window at the current timestamp.
+        vm.expectEmit(true, true, true, true, address(skm));
+        emit SpendPolicy.WindowCharged(address(skm), agent, 0.1 ether, uint48(block.timestamp), 0.1 ether);
+        (bool ok,) = _execute(req);
+        assertTrue(ok, "execution should succeed");
+    }
+
+    function test_Execute_BubblesRecognizableInnerRevert() public {
+        vm.prank(vm.addr(OWNER_KEY));
+        skm.grantSessionKey(agent, defaultScope);
+
+        SessionKeyManager.ActionRequest memory req =
+            _makeRequest(address(reverter), reverter.stringRevert.selector, 0 ether, "");
+        bytes memory sig = _signRequest(AGENT_KEY, req, skm.DOMAIN_SEPARATOR());
+
+        vm.expectRevert(bytes("slippage: out of bounds"));
+        skm.executeWithSessionKey(req, sig, new bytes32[](0));
+    }
+
+    function test_Execute_UnknownInnerRevertStaysInnerCallFailed() public {
+        vm.prank(vm.addr(OWNER_KEY));
+        skm.grantSessionKey(agent, defaultScope);
+
+        SessionKeyManager.ActionRequest memory req =
+            _makeRequest(address(reverter), reverter.unknownRevert.selector, 0 ether, "");
+        bytes memory sig = _signRequest(AGENT_KEY, req, skm.DOMAIN_SEPARATOR());
+
+        vm.expectRevert(SessionKeyManager.InnerCallFailed.selector);
+        skm.executeWithSessionKey(req, sig, new bytes32[](0));
     }
 
     function test_WindowIsTumbling_BoundaryBurstPinned() public {

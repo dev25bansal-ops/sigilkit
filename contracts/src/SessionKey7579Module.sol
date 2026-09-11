@@ -245,7 +245,7 @@ contract SessionKey7579Module {
         bytes4 selector = bytes4(call_.data);
         if (s.deniedSelectors[account][selector]) revert SelectorDenied(selector);
         s.windows[account][signer].enforce(
-            call_.value, scope.perActionCap, scope.perWindowCap, scope.windowSeconds
+            account, signer, call_.value, scope.perActionCap, scope.perWindowCap, scope.windowSeconds
         );
     }
 
@@ -276,7 +276,7 @@ contract SessionKey7579Module {
         // …then ONE window charge for the batch total. The aggregate deliberately bypasses
         // the per-action check (each tuple was checked individually above).
         s.windows[account][signer].enforce(
-            totalValue, type(uint256).max, scope.perWindowCap, scope.windowSeconds
+            account, signer, totalValue, type(uint256).max, scope.perWindowCap, scope.windowSeconds
         );
     }
 

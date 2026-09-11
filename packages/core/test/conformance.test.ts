@@ -282,4 +282,79 @@ describe("TS↔Solidity conformance", () => {
     });
     expect(count).toBe(7n);
   }, 45000);
+
+  it("client.execute returns a typed audit record + WindowCharged (E3/E1 E2E)", async () => {
+    const owner = privateKeyToAccount(OWNER_KEY);
+    const { SigilKitClient, SESSION_KEY_MANAGER_ABI } = await import("../src/index.js");
+    const client = new SigilKitClient({ managerAddress, chain: foundry, rpcUrl: ANVIL_URL });
+    const walletClient = createWalletClient({
+      account: owner,
+      chain: foundry,
+      transport: http(ANVIL_URL),
+    });
+
+    // Re-grant is an upsert — same scope semantics as the full E2E above.
+    const scope = {
+      expiresAt: Math.floor(Date.now() / 1000) + 3600,
+      windowSeconds: 600,
+      perActionCap: 10n ** 17n,
+      perWindowCap: 2n * 10n ** 17n,
+      merkleRoot: ("0x" + "00".repeat(32)) as `0x${string}`,
+    };
+    const grantData = encodeFunctionData({
+      abi: SESSION_KEY_MANAGER_ABI,
+      functionName: "grantSessionKey",
+      args: [agent.address, scope],
+    });
+    const grantHash = await walletClient.sendTransaction({ to: managerAddress, data: grantData });
+    await publicClient.waitForTransactionReceipt({ hash: grantHash });
+
+    // Fund (idempotent) and deploy a fresh counter.
+    await walletClient.sendTransaction({ to: managerAddress, value: 10n ** 18n });
+    const counterOut = execFileSync(
+      FORGE,
+      ["create", "contracts/test/CounterTarget.sol:CounterTarget", "--rpc-url", ANVIL_URL, "--private-key", OWNER_KEY, "--broadcast"],
+      { cwd: REPO_ROOT, encoding: "utf8" },
+    );
+    const counterAddress = counterOut.match(/Deployed to: (0x[0-9a-fA-F]{40})/)![1] as `0x${string}`;
+
+    const { receipt, audit } = await client.execute(
+      {
+        account: agent,
+        request: {
+          agentId: ("0x" + "55".repeat(32)) as Hex,
+          target: counterAddress,
+          selector: "0x32145f90",
+          value: 10n ** 16n,
+          expiry: Math.floor(Date.now() / 1000) + 300,
+          rationaleHash: ("0x" + "66".repeat(32)) as Hex,
+          data: ("0x" +
+            encodeFunctionData({
+              abi: [{ name: "poke", type: "function", stateMutability: "payable", inputs: [{ name: "by", type: "uint256" }], outputs: [] }],
+              functionName: "poke",
+              args: [9n],
+            }).slice(10)) as Hex,
+        },
+        scope,
+      },
+      walletClient,
+    );
+
+    // Typed audit record matches the signed request.
+    expect(audit.agentId).toBe(("0x" + "55".repeat(32)) as Hex);
+    expect(audit.target.toLowerCase()).toBe(counterAddress.toLowerCase());
+    expect(audit.selector).toBe("0x32145f90");
+    expect(audit.value).toBe(10n ** 16n);
+    expect(audit.rationaleHash).toBe(("0x" + "66".repeat(32)) as Hex);
+    expect(audit.timestamp).toBeGreaterThan(0);
+    expect(audit.txHash).toBe(receipt.transactionHash);
+
+    // E1: the same receipt carries the WindowCharged event (3 topics, indexed account
+    // = the manager as the spending wallet, padded to 32 bytes).
+    const charged = receipt.logs.filter((l) => l.topics.length === 3);
+    expect(charged.length).toBeGreaterThan(0);
+    expect(
+      charged.some((l) => l.topics[1]!.slice(26).toLowerCase() === managerAddress.slice(2).toLowerCase()),
+    ).toBe(true);
+  }, 45000);
 });

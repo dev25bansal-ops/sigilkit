@@ -21,7 +21,8 @@ contract SpendPolicyHarness {
         uint256 perWindowCap,
         uint48 windowSeconds
     ) external returns (uint256 spentAfter) {
-        SpendPolicy.enforce(window, value, perActionCap, perWindowCap, windowSeconds);
+        // Harness identity placeholders — the specs assert window math, not attribution.
+        SpendPolicy.enforce(window, address(this), address(0), value, perActionCap, perWindowCap, windowSeconds);
         return window.spentThisWindow;
     }
 }
