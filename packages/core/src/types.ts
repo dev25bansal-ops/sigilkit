@@ -21,6 +21,19 @@ export interface Scope {
    * Zero root = allow ALL targets (dangerous; avoid in production).
    */
   merkleRoot: Hash;
+  /**
+   * Graduated authority (E10): actions with value > this require an owner approval
+   * signature over RequestApproval(requestDigest). 0 = never require countersign.
+   */
+  countersignAbove: bigint;
+  /**
+   * Balance-delta enforcement (E11): when true, the inner call must not siphon native
+   * value beyond the request's declared value, and watched tokens must not
+   * net-decrease beyond their declared transfer amounts.
+   */
+  enforceNativeDelta: boolean;
+  /** E11: up to 8 standard ERC-20s whose balances are snapshotted around the call. */
+  tokenWatchlist: Address[];
 }
 
 /**
@@ -47,6 +60,8 @@ export interface ExecuteArgs {
   signature: Hex;
   /** Sorted-pair Merkle proof when the key's scope has a non-zero merkleRoot. */
   merkleProof?: Hex[];
+  /** E10: owner approval signature when value exceeds scope.countersignAbove. */
+  ownerApproval?: Hex;
 }
 
 /** EIP-712 domain used by SigilKit contracts. */

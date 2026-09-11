@@ -84,6 +84,15 @@ jobs:
       - run: npm run build --workspaces
       - run: npm test --workspace @sigilkit/core
       - run: npm run test:coverage --workspace @sigilkit/core
+      # ABI drift gate (E5): regenerate compiler ABIs and fail if the committed files
+      # are stale relative to the contracts in this PR.
+      - name: Regenerate contract ABIs
+        run: |
+          for c in SessionKeyManager SessionKey7579Module ActionLog7579Executor; do
+            forge inspect contracts/src/$c.sol:$c abi --json > packages/core/abis/$c.json
+          done
+      - name: Fail on ABI drift
+        run: git diff --exit-code packages/core/abis
 
   # 5. Nightly — deep fuzz (10k runs/test, 1k invariant runs via [profile.deep]) + coverage artifact.
   forge-deep-fuzz:

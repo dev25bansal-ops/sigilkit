@@ -65,7 +65,10 @@ contract SessionKeyManagerTest is Test {
             windowSeconds: 1 hours,
             perActionCap: 1 ether,
             perWindowCap: 2 ether,
-            merkleRoot: bytes32(0)
+            merkleRoot: bytes32(0),
+                countersignAbove: 0,
+                enforceNativeDelta: false,
+                tokenWatchlist: new address[](0)
         });
     }
 
@@ -122,7 +125,7 @@ contract SessionKeyManagerTest is Test {
         bytes memory sig = _signRequest(AGENT_KEY, req, ds);
         (ok, ret) = address(skm).call(
             abi.encodeWithSelector(
-                skm.executeWithSessionKey.selector, req, sig, new bytes32[](0)
+                skm.executeWithSessionKey.selector, req, sig, new bytes32[](0), bytes("")
             )
         );
     }
@@ -157,7 +160,7 @@ contract SessionKeyManagerTest is Test {
         // Canonical low-s signature executes fine.
         (bool ok,) = address(skm).call(
             abi.encodeWithSelector(
-                skm.executeWithSessionKey.selector, req, abi.encodePacked(r, s, v), new bytes32[](0)
+                skm.executeWithSessionKey.selector, req, abi.encodePacked(r, s, v), new bytes32[](0), bytes("")
             )
         );
         assertTrue(ok, "low-s signature should execute");
@@ -168,7 +171,7 @@ contract SessionKeyManagerTest is Test {
         bytes32 sHigh = bytes32(secp256k1N - uint256(s));
         uint8 vFlip = v == 27 ? 28 : 27;
         vm.expectRevert(SessionKeyManager.InvalidSignature.selector);
-        skm.executeWithSessionKey(req, abi.encodePacked(r, sHigh, vFlip), new bytes32[](0));
+        skm.executeWithSessionKey(req, abi.encodePacked(r, sHigh, vFlip), new bytes32[](0), bytes(""));
     }
 
     function test_GrantRequiresOwner() public {
@@ -311,7 +314,7 @@ contract SessionKeyManagerTest is Test {
         bytes memory sig = _signRequest(AGENT_KEY, req, skm.DOMAIN_SEPARATOR());
 
         vm.expectRevert(SessionKeyManager.ValueNotAccepted.selector);
-        skm.executeWithSessionKey{value: 0.1 ether}(req, sig, new bytes32[](0));
+        skm.executeWithSessionKey{value: 0.1 ether}(req, sig, new bytes32[](0), bytes(""));
     }
 
     // ------------------------------------------------------------------
@@ -340,7 +343,7 @@ contract SessionKeyManagerTest is Test {
         bytes memory sig = _signRequest(AGENT_KEY, req, skm.DOMAIN_SEPARATOR());
 
         vm.expectRevert(bytes("slippage: out of bounds"));
-        skm.executeWithSessionKey(req, sig, new bytes32[](0));
+        skm.executeWithSessionKey(req, sig, new bytes32[](0), bytes(""));
     }
 
     function test_Execute_UnknownInnerRevertStaysInnerCallFailed() public {
@@ -352,7 +355,7 @@ contract SessionKeyManagerTest is Test {
         bytes memory sig = _signRequest(AGENT_KEY, req, skm.DOMAIN_SEPARATOR());
 
         vm.expectRevert(SessionKeyManager.InnerCallFailed.selector);
-        skm.executeWithSessionKey(req, sig, new bytes32[](0));
+        skm.executeWithSessionKey(req, sig, new bytes32[](0), bytes(""));
     }
 
     function test_WindowIsTumbling_BoundaryBurstPinned() public {
@@ -446,7 +449,7 @@ contract SessionKeyManagerTest is Test {
         proof[0] = leafB;
         bytes memory sig = _signRequest(AGENT_KEY, good, skm.DOMAIN_SEPARATOR());
         (bool ok,) = address(skm).call(
-            abi.encodeWithSelector(skm.executeWithSessionKey.selector, good, sig, proof)
+            abi.encodeWithSelector(skm.executeWithSessionKey.selector, good, sig, proof, bytes(""))
         );
         assertTrue(ok, "listed target with proof should pass");
 
@@ -456,7 +459,7 @@ contract SessionKeyManagerTest is Test {
         proof[0] = leafA; // wrong proof
         bytes memory sig2 = _signRequest(AGENT_KEY, bad, skm.DOMAIN_SEPARATOR());
         (ok,) = address(skm).call(
-            abi.encodeWithSelector(skm.executeWithSessionKey.selector, bad, sig2, proof)
+            abi.encodeWithSelector(skm.executeWithSessionKey.selector, bad, sig2, proof, bytes(""))
         );
         assertFalse(ok, "unlisted target should fail");
     }
@@ -501,7 +504,7 @@ contract SessionKeyManagerTest is Test {
     {
         bytes memory sig = _signRequest(AGENT_KEY, req, skm.DOMAIN_SEPARATOR());
         (ok, ret) = address(skm).call(
-            abi.encodeWithSelector(skm.executeWithSessionKey.selector, req, sig, proof)
+            abi.encodeWithSelector(skm.executeWithSessionKey.selector, req, sig, proof, bytes(""))
         );
     }
 

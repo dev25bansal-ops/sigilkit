@@ -72,7 +72,10 @@ contract SessionKeyManagerInvariant is Test {
                     windowSeconds: 1 hours,
                     perActionCap: 0.5 ether,
                     perWindowCap: 1 ether,
-                    merkleRoot: bytes32(0)
+                    merkleRoot: bytes32(0),
+                    countersignAbove: 0,
+                    enforceNativeDelta: false,
+                    tokenWatchlist: new address[](0)
                 })
             );
             ghostPerActionCap[vm.addr(pk)] = 0.5 ether;
@@ -117,7 +120,10 @@ contract SessionKeyManagerInvariant is Test {
                 windowSeconds: 1 hours + uint48(scopeSeed % 23 hours),
                 perActionCap: 0.5 ether + (scopeSeed % 2 ether),
                 perWindowCap: 0,
-                merkleRoot: bytes32(0)
+                merkleRoot: bytes32(0),
+                    countersignAbove: 0,
+                    enforceNativeDelta: false,
+                    tokenWatchlist: new address[](0)
             });
             scope.perWindowCap = scope.perActionCap + (scopeSeed % 3 ether);
         } else if (variant == 1) {
@@ -201,7 +207,10 @@ contract SessionKeyManagerInvariant is Test {
             windowSeconds: 1 hours,
             perActionCap: 0.5 ether,
             perWindowCap: 1 ether,
-            merkleRoot: bytes32(0)
+            merkleRoot: bytes32(0),
+                    countersignAbove: 0,
+                    enforceNativeDelta: false,
+                    tokenWatchlist: new address[](0)
         });
     }
 
@@ -237,7 +246,7 @@ contract SessionKeyManagerInvariant is Test {
         bool shouldSucceed = _expectedOutcome(a, value);
 
         (bool ok,) = address(skm).call(
-            abi.encodeWithSelector(skm.executeWithSessionKey.selector, req, sig, new bytes32[](0))
+            abi.encodeWithSelector(skm.executeWithSessionKey.selector, req, sig, new bytes32[](0), bytes(""))
         );
 
         if (shouldSucceed) {

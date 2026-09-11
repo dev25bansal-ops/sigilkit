@@ -47,6 +47,7 @@ export const SESSION_KEY_MANAGER_ABI = [
       },
       { name: "signature", type: "bytes" },
       { name: "merkleProof", type: "bytes32[]" },
+      { name: "ownerApproval", type: "bytes" },
     ],
     outputs: [],
   },
@@ -65,6 +66,9 @@ export const SESSION_KEY_MANAGER_ABI = [
           { name: "perActionCap", type: "uint256" },
           { name: "perWindowCap", type: "uint256" },
           { name: "merkleRoot", type: "bytes32" },
+          { name: "countersignAbove", type: "uint256" },
+          { name: "enforceNativeDelta", type: "bool" },
+          { name: "tokenWatchlist", type: "address[]" },
         ],
       },
     ],
@@ -171,6 +175,8 @@ export class SigilKitClient {
     request: Omit<ActionRequest, "nonce"> & { nonce?: bigint };
     scope: Scope;
     merkleProof?: Hex[];
+    /** E10: owner countersignature, required when value exceeds scope.countersignAbove. */
+    ownerApproval?: Hex;
   }): Promise<ExecuteArgs & { to: Address; data: Hex }> {
     // Normalize/validate the request up front so deserialized (e.g. JSON-round-tripped)
     // inputs fail loudly here instead of TypeError-ing mid-encode or hashing garbage.
@@ -233,13 +239,14 @@ export class SigilKitClient {
     const data = encodeFunctionData({
       abi: SESSION_KEY_MANAGER_ABI,
       functionName: "executeWithSessionKey",
-      args: [request, signature, args.merkleProof ?? []],
+      args: [request, signature, args.merkleProof ?? [], args.ownerApproval ?? "0x"],
     });
 
     return {
       request,
       signature,
       merkleProof: args.merkleProof ?? [],
+      ownerApproval: args.ownerApproval ?? "0x",
       to: this.managerAddress,
       data,
     };

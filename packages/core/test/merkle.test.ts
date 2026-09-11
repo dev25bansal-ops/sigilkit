@@ -113,6 +113,9 @@ describe("leaf format v2: argument-bound (pinned) leaves — issues catalog S1",
       perActionCap: 10n ** 18n,
       perWindowCap: 10n ** 18n,
       merkleRoot: root,
+      countersignAbove: 0n,
+      enforceNativeDelta: false,
+      tokenWatchlist: [],
     };
   }
 

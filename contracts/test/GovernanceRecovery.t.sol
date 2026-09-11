@@ -29,7 +29,10 @@ contract GovernanceRecoveryTest is Test {
                 windowSeconds: 1 hours,
                 perActionCap: 0.5 ether,
                 perWindowCap: 1 ether,
-                merkleRoot: bytes32(0)
+                merkleRoot: bytes32(0),
+                countersignAbove: 0,
+                enforceNativeDelta: false,
+                tokenWatchlist: new address[](0)
             })
         );
     }
@@ -112,6 +115,6 @@ contract GovernanceRecoveryTest is Test {
 
         vm.prank(agent);
         vm.expectRevert(abi.encodeWithSelector(SessionKeyManager.SelectorDenied.selector, skm.withdraw.selector));
-        skm.executeWithSessionKey(req, abi.encodePacked(r, s, v), new bytes32[](0));
+        skm.executeWithSessionKey(req, abi.encodePacked(r, s, v), new bytes32[](0), bytes(""));
     }
 }

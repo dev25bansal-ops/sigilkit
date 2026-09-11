@@ -49,7 +49,10 @@ contract HalmosAuthTest is Test {
                 windowSeconds: 1 hours,
                 perActionCap: 1 ether,
                 perWindowCap: 2 ether,
-                merkleRoot: bytes32(0)
+                merkleRoot: bytes32(0),
+                countersignAbove: 0,
+                enforceNativeDelta: false,
+                tokenWatchlist: new address[](0)
             })
         );
     }

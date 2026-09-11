@@ -208,6 +208,9 @@ describe("TS↔Solidity conformance", () => {
       perActionCap: 10n ** 17n, // 0.1 ETH
       perWindowCap: 2n * 10n ** 17n, // 0.2 ETH
       merkleRoot: ("0x" + "00".repeat(32)) as `0x${string}`, // allow-all
+      countersignAbove: 0n,
+      enforceNativeDelta: false,
+      tokenWatchlist: [],
     };
     const grantData = encodeFunctionData({
       abi: SESSION_KEY_MANAGER_ABI,
@@ -300,6 +303,9 @@ describe("TS↔Solidity conformance", () => {
       perActionCap: 10n ** 17n,
       perWindowCap: 2n * 10n ** 17n,
       merkleRoot: ("0x" + "00".repeat(32)) as `0x${string}`,
+      countersignAbove: 0n,
+      enforceNativeDelta: false,
+      tokenWatchlist: [],
     };
     const grantData = encodeFunctionData({
       abi: SESSION_KEY_MANAGER_ABI,

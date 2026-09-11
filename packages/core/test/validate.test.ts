@@ -13,6 +13,9 @@ const SCOPE: Scope = {
   perActionCap: 2n * 10n ** 18n,
   perWindowCap: 5n * 10n ** 18n,
   merkleRoot: `0x${"0".repeat(64)}` as Hash,
+  countersignAbove: 0n,
+  enforceNativeDelta: false,
+  tokenWatchlist: [],
 };
 
 function request(overrides: Partial<ActionRequest>): ActionRequest {

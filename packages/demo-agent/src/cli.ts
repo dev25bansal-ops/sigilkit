@@ -78,6 +78,9 @@ async function main() {
       perActionCap: 10n ** 16n, // 0.01 ETH
       perWindowCap: 5n * 10n ** 16n, // 0.05 ETH
       merkleRoot: toHex(new Uint8Array(32)), // allow-all for the demo
+      countersignAbove: 0n, // no owner countersign required in the demo
+      enforceNativeDelta: false,
+      tokenWatchlist: [],
     },
     strategy: (tick, state) => {
       if (tick !== 1 && tick !== 3) return null; // idle on other ticks

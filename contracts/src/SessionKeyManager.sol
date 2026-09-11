@@ -36,6 +36,9 @@ contract SessionKeyManager is ActionLogger {
     error InvalidSignature();
     error OverlapBeyondOldExpiry();
     error WithdrawFailed();
+    error OwnerCountersignRequired();
+    error InvalidOwnerApproval();
+    error NativeDeltaExceeded(uint256 balanceBefore, uint256 balanceAfter, uint256 declared);
 
     // ------------------------------------------------------------------
     // Types
@@ -47,6 +50,9 @@ contract SessionKeyManager is ActionLogger {
         uint256 perActionCap; // max native value per single action
         uint256 perWindowCap; // max cumulative native value per fixed (tumbling) window
         bytes32 merkleRoot; // root over keccak(target,selector,argsHash) leaves (v2: argsHash binds calldata, 0 = wildcard); 0 = allow ALL (dangerous)
+        uint256 countersignAbove; // E10: actions with value > this need an owner approval signature; 0 = never
+        bool enforceNativeDelta; // E11: the inner call must not siphon native value beyond `value`
+        address[] tokenWatchlist; // E11: up to 8 tokens whose balances must not net-decrease beyond declared amounts
     }
 
     /// @notice EIP-712 signed action request.
@@ -100,6 +106,11 @@ contract SessionKeyManager is ActionLogger {
         keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
     bytes32 private constant _NAME_HASH = keccak256("SigilKit");
     bytes32 private constant _VERSION_HASH = keccak256("1");
+    /// @notice E10: owner countersignature typehash over a request digest.
+    bytes32 private constant _REQUEST_APPROVAL_TYPEHASH =
+        keccak256("RequestApproval(bytes32 requestDigest)");
+    /// @notice E11: hard cap on watchlist length (gas bound on balance snapshots).
+    uint256 private constant MAX_WATCHED_TOKENS = 8;
 
     // ------------------------------------------------------------------
     // Modifiers
@@ -219,6 +230,7 @@ contract SessionKeyManager is ActionLogger {
         if (scope.perActionCap == 0) revert InvalidScope(); // value cap zero
         if (scope.perWindowCap < scope.perActionCap) revert InvalidScope(); // window below action cap
         if (scope.windowSeconds == 0) revert InvalidScope();
+        if (scope.tokenWatchlist.length > MAX_WATCHED_TOKENS) revert InvalidScope(); // E11 gas bound
     }
 
     /// @notice Adds/removes a selector from the session-key denylist. Session keys can NEVER
@@ -240,12 +252,18 @@ contract SessionKeyManager is ActionLogger {
     ///         entirely from the signature.
     /// @param request The signed action request.
     /// @param signature EIP-712 signature over the request, from the session key.
-    /// @param merkleProof Sorted-pair Merkle proof over keccak(abi.encode(target,selector));
+    /// @param merkleProof Sorted-pair Merkle proof over the v2 whitelist leaves;
     ///        required when the key's scope has a non-zero merkleRoot, ignored otherwise.
+    /// @param ownerApproval EIP-712 owner signature over `RequestApproval(requestDigest)`
+    ///        — required (non-empty) iff the scope sets `countersignAbove` and
+    ///        `request.value` exceeds it (graduated authority, enhancement E10). The
+    ///        digest binding makes approvals single-use by construction. Ignored
+    ///        otherwise; the owner's own key is always exempt.
     function executeWithSessionKey(
         ActionRequest calldata request,
         bytes calldata signature,
-        bytes32[] calldata merkleProof
+        bytes32[] calldata merkleProof,
+        bytes calldata ownerApproval
     ) external payable nonReentrant {
         if (msg.value != 0) revert ValueNotAccepted(); // value flows from wallet balance, not relayer
 
@@ -258,6 +276,22 @@ contract SessionKeyManager is ActionLogger {
         if (s.revoked[signer]) revert KeyRevoked();
         if (block.timestamp > scope.expiresAt) revert KeyExpired(); // INV-2
         if (block.timestamp > request.expiry) revert RequestExpired();
+
+        // --- Graduated authority (E10): owner countersign for large actions ---
+        if (scope.countersignAbove != 0 && request.value > scope.countersignAbove) {
+            if (signer != s.owner) {
+                if (ownerApproval.length == 0) revert OwnerCountersignRequired();
+                bytes32 requestDigest = _requestDigest(request);
+                bytes32 approvalDigest = keccak256(
+                    abi.encodePacked("\x19\x01", _domainSeparator(), _approvalStructHash(requestDigest))
+                );
+                if (_ecrecover(approvalDigest, ownerApproval) != s.owner) {
+                    revert InvalidOwnerApproval();
+                }
+            }
+            // The owner's own session key carries owner authority — exempt.
+        }
+        // Approval binds the full request digest → single-use by nonce uniqueness.
 
         // --- Replay protection ---
         if (request.nonce != s.nonces[signer]) revert NonceUsed();
@@ -286,15 +320,8 @@ contract SessionKeyManager is ActionLogger {
             address(this), signer, request.value, scope.perActionCap, scope.perWindowCap, scope.windowSeconds
         );
 
-        // --- Interaction ---
-        // Revert-data bubbling (enhancement E2): a failed inner call reverts with its
-        // own reason when that reason is recognizable (plain string require, Panic, or
-        // a known SigilKit error bubbled from a nested SigilKit deployment); unknown
-        // selectors collapse to InnerCallFailed so every manager failure stays
-        // recognizable to tooling.
-        (bool ok, bytes memory ret) =
-            request.target.call{value: request.value}(abi.encodePacked(request.selector, request.data));
-        if (!ok) _revertInnerCall(ret);
+        // --- Interaction + balance-delta verification (E2/E11) ---
+        _interact(scope, request);
 
         // --- Mandatory audit (INV-3): no silent success path ---
         _logAction(request.agentId, request.target, request.selector, request.value, request.rationaleHash);
@@ -331,9 +358,64 @@ contract SessionKeyManager is ActionLogger {
         return _ACTION_REQUEST_TYPEHASH;
     }
 
+    function REQUEST_APPROVAL_TYPEHASH() external pure returns (bytes32) {
+        return _REQUEST_APPROVAL_TYPEHASH;
+    }
+
     // ------------------------------------------------------------------
     // Internals
     // ------------------------------------------------------------------
+    /// @dev The interaction step, isolated in its own frame (stack-depth): snapshot
+    ///      balances (E11), make the inner call with revert-data bubbling (E2), then
+    ///      verify balances. Runs inside the reentrancy lock; reverts roll everything
+    ///      back, so the CEI ordering is preserved.
+    function _interact(Scope storage scope, ActionRequest calldata request) internal {
+        BalanceSnapshot memory snap = _snapshotBalances(scope);
+        (bool ok, bytes memory ret) =
+            request.target.call{value: request.value}(abi.encodePacked(request.selector, request.data));
+        if (!ok) _revertInnerCall(ret);
+        _verifyBalances(scope, snap, request.value, _declaredTokenOutflow(request.selector, request.data));
+    }
+
+    /// @dev Pre/post balance capture for the E11 delta check. One memory struct keeps
+    ///      the execution frame shallow.
+    struct BalanceSnapshot {
+        uint256 nativeBefore;
+        uint256[] tokenBalances;
+    }
+
+    function _snapshotBalances(Scope storage scope) internal view returns (BalanceSnapshot memory snap) {
+        if (!scope.enforceNativeDelta) return snap;
+        snap.nativeBefore = address(this).balance;
+        uint256 n = scope.tokenWatchlist.length;
+        if (n > MAX_WATCHED_TOKENS) n = MAX_WATCHED_TOKENS;
+        snap.tokenBalances = new uint256[](n);
+        for (uint256 i = 0; i < n; ++i) {
+            snap.tokenBalances[i] = _erc20BalanceOf(scope.tokenWatchlist[i], address(this));
+        }
+    }
+
+    /// @dev After the inner call: native balance must not have dropped by more than the
+    ///      declared value, and watched tokens must not have net-decreased by more than
+    ///      the amount their standard transfer selector declared (0 otherwise).
+    function _verifyBalances(
+        Scope storage scope,
+        BalanceSnapshot memory snap,
+        uint256 declaredNative,
+        uint256 declaredTokens
+    ) internal view {
+        if (!scope.enforceNativeDelta) return;
+        if (address(this).balance < snap.nativeBefore - declaredNative) {
+            revert NativeDeltaExceeded(snap.nativeBefore, address(this).balance, declaredNative);
+        }
+        for (uint256 i = 0; i < snap.tokenBalances.length; ++i) {
+            uint256 afterBal = _erc20BalanceOf(scope.tokenWatchlist[i], address(this));
+            if (snap.tokenBalances[i] > afterBal + declaredTokens) {
+                revert NativeDeltaExceeded(snap.tokenBalances[i], afterBal, declaredTokens);
+            }
+        }
+    }
+
     /// @dev Bubbles recognizable inner revert reasons (enhancement E2): empty reason
     ///      (plain require(false)) is indistinguishable from a bare failure and stays
     ///      InnerCallFailed; Error(string)/Panic and known SigilKit errors pass through
@@ -397,7 +479,13 @@ contract SessionKeyManager is ActionLogger {
         virtual
         returns (address)
     {
-        bytes32 structHash = keccak256(
+        bytes32 structHash = _requestStructHash(request);
+        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", _domainSeparator(), structHash));
+        return _ecrecover(digest, signature);
+    }
+
+    function _requestStructHash(ActionRequest calldata request) internal pure returns (bytes32) {
+        return keccak256(
             abi.encode(
                 _ACTION_REQUEST_TYPEHASH,
                 request.agentId,
@@ -410,8 +498,46 @@ contract SessionKeyManager is ActionLogger {
                 keccak256(request.data)
             )
         );
-        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", _domainSeparator(), structHash));
-        return _ecrecover(digest, signature);
+    }
+
+    /// @dev Full EIP-712 digest of an ActionRequest — also bound into owner approvals
+    ///      (E10) so a countersignature authorizes exactly one request.
+    function _requestDigest(ActionRequest calldata request) internal view returns (bytes32) {
+        return keccak256(abi.encodePacked("\x19\x01", _domainSeparator(), _requestStructHash(request)));
+    }
+
+    function _approvalStructHash(bytes32 requestDigest) internal pure returns (bytes32) {
+        return keccak256(abi.encode(_REQUEST_APPROVAL_TYPEHASH, requestDigest));
+    }
+
+    /// @dev Reads `balanceOf(holder)` on a watchlist token. Non-standard tokens (call
+    ///      fails / short data) read as 0 — the watchlist is opt-in and entries must be
+    ///      standard ERC-20s; a non-standard entry simply contributes no delta check.
+    function _erc20BalanceOf(address token, address holder) internal view returns (uint256) {
+        (bool ok, bytes memory ret) =
+            token.staticcall(abi.encodeWithSelector(0x70a08231, holder)); // balanceOf(address)
+        if (!ok || ret.length < 32) return 0;
+        return abi.decode(ret, (uint256));
+    }
+
+    /// @dev Declared token outflow for standard transfer selectors: `transfer` and
+    ///      `transferFrom` declare their amount in the calldata; any other selector
+    ///      declares nothing (zero tolerance on watched tokens). NOTE: request.data
+    ///      EXCLUDES the 4-byte selector — amounts sit at the ABI arg offsets.
+    function _declaredTokenOutflow(bytes4 selector, bytes calldata data)
+        internal
+        pure
+        returns (uint256)
+    {
+        if (selector == 0xa9059cbb && data.length >= 64) {
+            // transfer(address,uint256): amount is the 2nd arg → bytes 32..64
+            return uint256(bytes32(data[32:64]));
+        }
+        if (selector == 0x23b872dd && data.length >= 96) {
+            // transferFrom(address,address,uint256): amount is the 3rd arg → bytes 64..96
+            return uint256(bytes32(data[64:96]));
+        }
+        return 0;
     }
 
     function _ecrecover(bytes32 digest, bytes calldata signature) internal pure returns (address) {
