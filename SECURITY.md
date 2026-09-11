@@ -43,8 +43,19 @@ Calldata cannot observe nested/internal token transfers inside the target call, 
 `request.value` may undercount actual outflow for targets that pull tokens mid-call.
 Mitigations: trusted-target allowlists (e.g. routers that settle via permit2 without arbitrary
 pulls), post-hoc reconciliation off-chain against cumulative `ActionLogged` records, and
-argument-bound whitelist leaves (see the whitelist leaf-format note below). An SDK-side
-ERC-20 allowance pre-check is **planned but not implemented** — do not rely on it.
+argument-bound whitelist leaves. An SDK-side ERC-20 allowance pre-check is **planned but not
+implemented** — do not rely on it.
+
+## Whitelist leaf format v2 (argument binding)
+
+Leaves commit the calldata: `leaf = keccak256(abi.encode(target, selector, argsHash))` with
+`argsHash = keccak256(calldata)`. A **pinned** leaf authorizes exactly one calldata payload for
+that target+selector (e.g. a single `transfer(recipient, amount)` — the compromised-agent drain
+scenario is closed); the **wildcard** leaf (`argsHash = bytes32(0)`) authorizes any calldata for
+the selector, matching the pre-v2 behavior. `keccak256` of real data is never zero, so the two
+never collide. `SessionKeyManager._targetAllowed` / `SessionKey7579Module._whitelisted` accept a
+proof against either form. Leaf format v2 supersedes the v0.1.0 preimage
+(`abi.encode(target, selector)`); pre-mainnet this is a breaking root-format change by design.
 
 ---
 *Generated from `slither .` runs of 2026-08-22/23 (slither-analyzer on solc 0.8.36 output).*

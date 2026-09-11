@@ -372,9 +372,11 @@ contract SessionKeyManagerTest is Test {
     // Merkle whitelist
     // ------------------------------------------------------------------
     function test_MerkleWhitelist_AllowsListed_BlocksUnlisted() public {
-        // Root over two leaves: counter.poke and ownerTarget.sweep (sorted-pair hashing).
-        bytes32 leafA = keccak256(abi.encode(address(counter), counter.poke.selector));
-        bytes32 leafB = keccak256(abi.encode(address(ownerTarget), ownerTarget.sweep.selector));
+        // Root over two WILDCARD leaves (argsHash=0 — any calldata) in leaf format v2:
+        // counter.poke and ownerTarget.sweep (sorted-pair hashing).
+        bytes32 leafA = keccak256(abi.encode(address(counter), counter.poke.selector, bytes32(0)));
+        bytes32 leafB =
+            keccak256(abi.encode(address(ownerTarget), ownerTarget.sweep.selector, bytes32(0)));
         bytes32 root = _sortedHash(leafA, leafB);
 
         defaultScope.merkleRoot = root;
@@ -405,6 +407,46 @@ contract SessionKeyManagerTest is Test {
 
     function _sortedHash(bytes32 a, bytes32 b) internal pure returns (bytes32) {
         return a < b ? keccak256(abi.encodePacked(a, b)) : keccak256(abi.encodePacked(b, a));
+    }
+
+    function test_Whitelist_ArgumentBoundLeaf_CapsCalldata() public {
+        // Leaf format v2 pinned entry: whitelisting transfer(address,uint256) with the
+        // calldata COMMITTED means a compromised agent cannot vary the arguments — the
+        // fix for "whitelisted token selectors are uncapped" (issues catalog S1).
+        // Single-leaf tree: root == leaf, empty proof verifies by identity.
+        address tokenLike = address(0x9001);
+        bytes4 transferSel = 0xa9059cbb; // transfer(address,uint256)
+        bytes memory pinnedData = abi.encode(address(0xCAFE), uint256(1000));
+        bytes32 pinnedLeaf =
+            keccak256(abi.encode(tokenLike, transferSel, keccak256(pinnedData)));
+
+        defaultScope.merkleRoot = pinnedLeaf;
+        vm.prank(vm.addr(OWNER_KEY));
+        skm.grantSessionKey(agent, defaultScope);
+
+        // Exact pinned calldata → allowed.
+        SessionKeyManager.ActionRequest memory good =
+            _makeRequest(tokenLike, transferSel, 0 ether, pinnedData);
+        (bool ok,) = _executeWithProof(good, new bytes32[](0));
+        assertTrue(ok, "pinned calldata should pass");
+
+        // Same whitelisted target+selector, DIFFERENT calldata (e.g. a 10^9-unit
+        // transfer to another recipient) → rejected even though the selector is
+        // whitelisted: the arguments are bound by the leaf.
+        SessionKeyManager.ActionRequest memory drain =
+            _makeRequest(tokenLike, transferSel, 0 ether, abi.encode(address(0xDEAD), uint256(1e9)));
+        (ok,) = _executeWithProof(drain, new bytes32[](0));
+        assertFalse(ok, "non-pinned calldata for a whitelisted selector must be rejected");
+    }
+
+    function _executeWithProof(SessionKeyManager.ActionRequest memory req, bytes32[] memory proof)
+        internal
+        returns (bool ok, bytes memory ret)
+    {
+        bytes memory sig = _signRequest(AGENT_KEY, req, skm.DOMAIN_SEPARATOR());
+        (ok, ret) = address(skm).call(
+            abi.encodeWithSelector(skm.executeWithSessionKey.selector, req, sig, proof)
+        );
     }
 
     // ------------------------------------------------------------------

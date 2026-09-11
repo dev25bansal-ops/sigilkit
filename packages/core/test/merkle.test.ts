@@ -8,7 +8,8 @@
  */
 import { describe, expect, it } from "vitest";
 import { concat, keccak256, toHex, type Address, type Hash, type Hex } from "viem";
-import { merkleProof, merkleRoot, targetLeaf } from "../src/index.js";
+import { merkleProof, merkleRoot, targetLeaf, validateAgainstScope } from "../src/index.js";
+import type { ActionRequest, Scope } from "../src/index.js";
 
 /** Local mirror of MerkleWhitelist.verify (contracts/src/MerkleWhitelist.sol). */
 function verifyRef(proof: Hex[], root: Hash, leaf: Hash): boolean {
@@ -81,5 +82,69 @@ describe("multi-level Merkle proofs (SDK ↔ on-chain sorted-pair scheme)", () =
     for (const leaf of leaves) {
       expect(verifyRef(merkleProof(leaves, leaf), root, leaf)).toBe(true);
     }
+  });
+});
+
+describe("leaf format v2: argument-bound (pinned) leaves — issues catalog S1", () => {
+  const TARGET = "0x0000000000000000000000000000000000009001" as Address;
+  const SEL = "0xa9059cbb" as Hex; // transfer(address,uint256)
+  const DATA = "0x000000000000000000000000000000000000cafe0000000000000000000003e8" as Hex;
+  const OTHER = "0x000000000000000000000000000000000000dead000000000000003b9aca00" as Hex;
+
+  function request(data: Hex): ActionRequest {
+    return {
+      agentId: keccak256(toHex("agent")) as Hash,
+      target: TARGET,
+      selector: SEL,
+      value: 0n,
+      nonce: 0n,
+      expiry: Math.floor(Date.now() / 1000) + 600,
+      rationaleHash: zeroHashLike(),
+      data,
+    };
+  }
+  function zeroHashLike(): Hash {
+    return `0x${"0".repeat(64)}` as Hash;
+  }
+  function scope(root: Hash): Scope {
+    return {
+      expiresAt: Math.floor(Date.now() / 1000) + 3600,
+      windowSeconds: 600,
+      perActionCap: 10n ** 18n,
+      perWindowCap: 10n ** 18n,
+      merkleRoot: root,
+    };
+  }
+
+  it("wildcard and pinned leaves are distinct; pinning binds the exact calldata", () => {
+    const wildcard = targetLeaf(TARGET, SEL);
+    const pinned = targetLeaf(TARGET, SEL, DATA);
+    const pinnedOther = targetLeaf(TARGET, SEL, OTHER);
+    expect(pinned).not.toBe(wildcard);
+    expect(pinnedOther).not.toBe(pinned);
+    // keccak256("") != 0 → pinned-empty and wildcard also differ.
+    expect(targetLeaf(TARGET, SEL, "0x")).not.toBe(wildcard);
+  });
+
+  it("validateAgainstScope accepts the pinned proof and rejects other calldata", () => {
+    const leaves = [targetLeaf(TARGET, SEL, DATA)];
+    const root = merkleRoot(leaves);
+    const proof = merkleProof(leaves, targetLeaf(TARGET, SEL, DATA));
+
+    const okResult = validateAgainstScope({
+      request: request(DATA),
+      scope: scope(root),
+      merkleProof: proof,
+    });
+    expect(okResult).toEqual({ ok: true });
+
+    // Same whitelisted selector, different (draining) calldata → rejected locally
+    // before a signature is burned — the zero-gas mirror of the on-chain check.
+    const bad = validateAgainstScope({
+      request: request(OTHER),
+      scope: scope(root),
+      merkleProof: proof,
+    });
+    expect(bad).toEqual({ ok: false, reason: "target not whitelisted" });
   });
 });

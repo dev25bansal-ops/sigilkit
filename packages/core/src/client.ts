@@ -96,6 +96,38 @@ export interface SigilKitClientConfig {
 }
 
 /**
+ * Per-key execution serialization (issues catalog P1: strictly-sequential on-chain
+ * nonces mean two concurrent executions from one session key both fetch the same
+ * nonce and the loser reverts on-chain after gas is spent).
+ *
+ * Queue every step that must not interleave — prepare, sign, relay, confirm — for a
+ * given key:
+ *
+ *   await client.nonceGate.run(agentAddress, async () => {
+ *     const prepared = await client.prepareExecution({ ... });
+ *     const hash = await relayer.sendTransaction(prepared);
+ *     return client.assertAuditEmitted(hash);
+ *   });
+ *
+ * Coordination is in-process only (the client stays stateless across machines); for
+ * multi-process fleets, serialize per key upstream or use distinct keys per agent.
+ * Failures do not poison the queue — the next run proceeds regardless.
+ */
+export class NonceGate {
+  private chains = new Map<Address, Promise<unknown>>();
+
+  run<T>(key: Address, fn: () => Promise<T>): Promise<T> {
+    const prev = this.chains.get(key) ?? Promise.resolve();
+    const next = prev.then(fn, fn); // run regardless of the previous run's outcome
+    this.chains.set(
+      key,
+      next.catch(() => undefined), // keep the chain alive on errors
+    );
+    return next;
+  }
+}
+
+/**
  * High-level client for driving a session key against a SessionKeyManager.
  * Stateless by design: holds no keys, caches no state — safe across a fleet of agents.
  */
@@ -103,6 +135,12 @@ export class SigilKitClient {
   readonly managerAddress: Address;
   readonly chain: Chain;
   private readonly publicClient: PublicClient;
+
+  /**
+   * Per-key execution queue — see {@link NonceGate}. Wrap prepare + send + confirm in
+   * `client.nonceGate.run(key, …)` when one key may have concurrent in-flight actions.
+   */
+  readonly nonceGate = new NonceGate();
 
   constructor(config: SigilKitClientConfig) {
     this.managerAddress = config.managerAddress;

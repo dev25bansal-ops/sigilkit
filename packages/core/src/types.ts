@@ -15,8 +15,10 @@ export interface Scope {
   /** Max cumulative native value per fixed (tumbling) window (wei); up to ~2x may cross a boundary. */
   perWindowCap: bigint;
   /**
-   * Root over keccak256(abi.encode(target, selector)) leaves.
-   * Zero value = allow ALL targets (dangerous; avoid in production).
+   * Root over keccak256(abi.encode(target, selector, argsHash)) leaves (format v2).
+   * argsHash binds the calldata: keccak256(data) pins the EXACT arguments (e.g. one
+   * specific token transfer); 0 = wildcard (any calldata for that target+selector).
+   * Zero root = allow ALL targets (dangerous; avoid in production).
    */
   merkleRoot: Hash;
 }

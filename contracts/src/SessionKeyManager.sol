@@ -45,7 +45,7 @@ contract SessionKeyManager is ActionLogger {
         uint48 windowSeconds; // fixed (tumbling) window length for the spend cap
         uint256 perActionCap; // max native value per single action
         uint256 perWindowCap; // max cumulative native value per fixed (tumbling) window
-        bytes32 merkleRoot; // root over keccak(target,selector) leaves; 0 = allow ALL (dangerous)
+        bytes32 merkleRoot; // root over keccak(target,selector,argsHash) leaves (v2: argsHash binds calldata, 0 = wildcard); 0 = allow ALL (dangerous)
     }
 
     /// @notice EIP-712 signed action request.
@@ -245,9 +245,14 @@ contract SessionKeyManager is ActionLogger {
         if (s.ownerOnlySelectors[request.selector]) revert SelectorDenied(request.selector);
 
         // --- Target whitelist ---
+        // Leaf format v2: leaves commit the calldata too, so a whitelisted entry can
+        // bind the EXACT arguments (e.g. one specific token transfer) — the fix for
+        // "whitelisted token selectors are uncapped". argsHash == 0 is the wildcard
+        // leaf (selector whitelisted for any calldata); keccak256 of real data is
+        // never zero, so pinned and wildcard leaves never collide.
         if (scope.merkleRoot != bytes32(0)) {
-            bytes32 leaf = keccak256(abi.encode(request.target, request.selector));
-            if (!MerkleWhitelist.verify(merkleProof, scope.merkleRoot, leaf)) {
+            if (!_targetAllowed(scope.merkleRoot, request.target, request.selector, request.data, merkleProof))
+            {
                 revert TargetNotAllowed(request.target, request.selector);
             }
         }
@@ -302,6 +307,31 @@ contract SessionKeyManager is ActionLogger {
     // ------------------------------------------------------------------
     // Internals
     // ------------------------------------------------------------------
+    /// @dev Whitelist check against leaf format v2: the proof must verify against
+    ///      either the pinned leaf (commits keccak256(data)) or the wildcard leaf
+    ///      (argsHash == 0 — any calldata for this target+selector).
+    function _targetAllowed(
+        bytes32 root,
+        address target,
+        bytes4 selector,
+        bytes calldata data,
+        bytes32[] calldata proof
+    ) internal pure returns (bool) {
+        bytes32 argsHash = keccak256(data);
+        if (MerkleWhitelist.verify(proof, root, keccak256(abi.encode(target, selector, argsHash)))) {
+            return true;
+        }
+        if (
+            argsHash != bytes32(0)
+                && MerkleWhitelist.verify(
+                    proof, root, keccak256(abi.encode(target, selector, bytes32(0)))
+                )
+        ) {
+            return true;
+        }
+        return false;
+    }
+
     function _domainSeparator() internal view returns (bytes32) {
         return keccak256(
             abi.encode(_DOMAIN_TYPEHASH, _NAME_HASH, _VERSION_HASH, block.chainid, address(this))

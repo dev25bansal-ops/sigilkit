@@ -356,10 +356,10 @@ contract SessionKey7579ModuleTest is Test {
     }
 
     function test_WhitelistedSingleCall_AcceptsValidProof_RejectsWrongTarget() public {
-        // scope WITH a real root over leaves {leafA}
+        // scope WITH a real root over leaves {leafA} — leaf format v2 wildcard leaf
         address targetA = address(0x1111);
         bytes4 selector = hex"12345678";
-        bytes32 leafA = keccak256(abi.encode(targetA, selector));
+        bytes32 leafA = keccak256(abi.encode(targetA, selector, bytes32(0)));
 
         SessionKey7579Module.Scope memory scoped = defaultScope();
         scoped.merkleRoot = leafA; // single-leaf tree; empty proof path == identity? No:

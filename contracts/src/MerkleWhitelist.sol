@@ -3,8 +3,11 @@ pragma solidity 0.8.36;
 
 /// @title MerkleWhitelist
 /// @notice Sorted-pair Merkle verification for target/selector whitelists.
-/// @dev Leaf convention (must match packages/core targetLeaf):
-///      leaf = keccak256(abi.encode(target, selector)); pairs hash as keccak256(abi.encodePacked(a,b)).
+/// @dev Leaf convention v2 (must match packages/core targetLeaf):
+///      leaf = keccak256(abi.encode(target, selector, argsHash)); pairs hash as
+///      keccak256(abi.encodePacked(a,b)). argsHash = keccak256(calldata); the
+///      wildcard leaf uses argsHash == bytes32(0) (any calldata) — keccak256 of
+///      real data is never zero, so pinned and wildcard leaves never collide.
 library MerkleWhitelist {
     /// @notice Returns true iff `proof` recomputes `leaf` up to `root`.
     /// @dev Memory parameter: callers may pass calldata arrays directly (implicit copy).

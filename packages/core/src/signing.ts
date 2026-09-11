@@ -189,14 +189,23 @@ export async function signActionRequest(args: {
 }
 
 /**
- * Computes the Merkle leaf for a (target, selector) pair:
- * keccak256(abi.encode(target, selector)) — matches on-chain leaf construction.
+ * Computes the Merkle leaf for a (target, selector) pair — leaf format v2, matching
+ * the on-chain construction in SessionKeyManager/SessionKey7579Module.
+ *
+ * Without `data` this returns the WILDCARD leaf (argsHash = 0: the selector is
+ * whitelisted for ANY calldata). With `data` it returns the PINNED leaf, which
+ * commits keccak256(data) so the whitelisted entry only authorizes that exact
+ * calldata — e.g. one specific token transfer amount and recipient.
+ *
+ * leaf = keccak256(abi.encode(target, selector, argsHash)); keccak256 of real data
+ * is never zero, so pinned and wildcard leaves never collide.
  */
-export function targetLeaf(target: Address, selector: Hex): Hash {
+export function targetLeaf(target: Address, selector: Hex, data?: Hex): Hash {
+  const argsHash = data === undefined ? zeroHash : keccak256(data);
   return keccak256(
     encodeAbiParameters(
-      [{ type: "address" }, { type: "bytes4" }],
-      [target, selector],
+      [{ type: "address" }, { type: "bytes4" }, { type: "bytes32" }],
+      [target, selector, argsHash],
     ),
   );
 }
@@ -308,18 +317,24 @@ export function validateAgainstScope(args: {
     return { ok: false, reason: "request already expired" };
   }
 
-  // Local mirror of the on-chain whitelist: when the scope pins a merkleRoot and a
-  // proof is available, verify membership before burning a signature.
+  // Local mirror of the on-chain whitelist (leaf format v2): when the scope pins a
+  // merkleRoot and a proof is available, verify membership before burning a signature.
+  // The proof must verify against the pinned leaf (commits this request's calldata)
+  // or the wildcard leaf — exactly like the contract's _targetAllowed.
   if (scope.merkleRoot && scope.merkleRoot !== zeroHash) {
     if (!args.merkleProof) {
       return { ok: false, reason: "target not whitelisted" };
     }
-    const leaf = targetLeaf(request.target, request.selector);
-    let node = leaf;
-    for (let i = 0; i < args.merkleProof.length; i++) {
-      node = sortedPairHash(node, args.merkleProof[i]!);
-    }
-    if (node.toLowerCase() !== scope.merkleRoot.toLowerCase()) {
+    const leafMatches = (leaf: Hash): boolean => {
+      let node = leaf;
+      for (let i = 0; i < args.merkleProof!.length; i++) {
+        node = sortedPairHash(node, args.merkleProof![i]!);
+      }
+      return node.toLowerCase() === scope.merkleRoot!.toLowerCase();
+    };
+    const wildcardLeaf = targetLeaf(request.target, request.selector);
+    const pinnedLeaf = targetLeaf(request.target, request.selector, request.data);
+    if (!leafMatches(wildcardLeaf) && !leafMatches(pinnedLeaf)) {
       return { ok: false, reason: "target not whitelisted" };
     }
   }

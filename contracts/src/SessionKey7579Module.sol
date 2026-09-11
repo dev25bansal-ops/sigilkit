@@ -67,7 +67,7 @@ contract SessionKey7579Module {
         uint48 windowSeconds; // fixed (tumbling) window length
         uint256 perActionCap; // max value per SINGLE inner call
         uint256 perWindowCap; // max cumulative value per fixed (tumbling) window
-        bytes32 merkleRoot; // root over keccak(abi.encode(target,selector)); 0 = allow all
+        bytes32 merkleRoot; // root over keccak(target,selector,argsHash) leaves (v2: argsHash binds calldata, 0 = wildcard); 0 = allow all
     }
 
     /// @notice ERC-7579 ExecTuple used by single (wrapped) and batch executions alike.
@@ -282,8 +282,23 @@ contract SessionKey7579Module {
         bytes memory data,
         bytes32[] memory proof
     ) internal pure returns (bool) {
-        bytes32 leaf = keccak256(abi.encode(target, bytes4(data)));
-        return MerkleWhitelist.verify(proof, root, leaf);
+        // Leaf format v2 (mirrors SessionKeyManager._targetAllowed): the proof must
+        // verify against the pinned leaf (commits keccak256(data)) or the wildcard
+        // leaf (argsHash == 0 — any calldata for this target+selector).
+        bytes32 argsHash = keccak256(data);
+        if (MerkleWhitelist.verify(proof, root, keccak256(abi.encode(target, bytes4(data), argsHash))))
+        {
+            return true;
+        }
+        if (
+            argsHash != bytes32(0)
+                && MerkleWhitelist.verify(
+                    proof, root, keccak256(abi.encode(target, bytes4(data), bytes32(0)))
+                )
+        ) {
+            return true;
+        }
+        return false;
     }
 
     /// @dev Parses the optional [uint16 count][count × bytes32] tail after the 65-byte ECDSA.

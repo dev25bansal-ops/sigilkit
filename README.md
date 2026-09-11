@@ -106,10 +106,13 @@ the granted scope — caps and the deny list are enforced in the contract, not o
 | **INV-4** | Owner-only selectors are unreachable through `executeWithSessionKey` on any target. |
 
 Enforcement is Checks-Effects-Interactions + `nonReentrant` + ERC-7201 namespaced storage
-(collision-safe). **Scope note:** spend caps bind native `msg.value` only — calldata cannot see
-nested ERC-20 pulls, so whitelisted token selectors are NOT amount-capped unless the target itself
-is trusted (e.g. routers that settle via permit2). Mitigations: trusted-target allowlists,
-post-hoc reconciliation against cumulative `ActionLogged` records. See [`SECURITY.md`](SECURITY.md).
+(collision-safe). **Token-spend capping:** whitelist leaves (format v2) commit the calldata via
+`argsHash`, so an owner can bind a whitelisted selector to the EXACT arguments — e.g. one specific
+`transfer(recipient, amount)` — and a compromised agent cannot vary them. A wildcard leaf
+(`argsHash = 0`) whitelists the selector for any calldata. Native-value caps always apply
+independently. **Residual blind spot:** calldata cannot see nested ERC-20 pulls inside a trusted
+router call — mitigate with trusted-target allowlists and post-hoc reconciliation against
+cumulative `ActionLogged` records. See [`SECURITY.md`](SECURITY.md).
 
 ## Verification status
 
