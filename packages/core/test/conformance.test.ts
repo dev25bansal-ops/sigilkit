@@ -363,4 +363,81 @@ describe("TS↔Solidity conformance", () => {
       charged.some((l) => l.topics[1]!.slice(26).toLowerCase() === managerAddress.slice(2).toLowerCase()),
     ).toBe(true);
   }, 45000);
+
+  it("checkTokenPath + simulateExecution (E8/E12 e2e)", async () => {
+    const owner = privateKeyToAccount(OWNER_KEY);
+    const { SigilKitClient } = await import("../src/index.js");
+    const client = new SigilKitClient({ managerAddress, chain: foundry, rpcUrl: ANVIL_URL });
+    const walletClient = createWalletClient({
+      account: owner,
+      chain: foundry,
+      transport: http(ANVIL_URL),
+    });
+
+    // Deploy the MockToken from the contract test suite and fund the manager wallet.
+    const tokenOut = execFileSync(
+      FORGE,
+      ["create", "contracts/test/GraduatedAuthority.t.sol:MockToken", "--rpc-url", ANVIL_URL, "--private-key", OWNER_KEY, "--broadcast"],
+      { cwd: REPO_ROOT, encoding: "utf8" },
+    );
+    const tokenAddress = tokenOut.match(/Deployed to: (0x[0-9a-fA-F]{40})/)![1] as `0x${string}`;
+    await walletClient.sendTransaction({
+      to: tokenAddress,
+      data: encodeFunctionData({
+        abi: [{ name: "mint", type: "function", stateMutability: "nonpayable", inputs: [{ name: "to", type: "address" }, { name: "amount", type: "uint256" }], outputs: [] }],
+        functionName: "mint",
+        args: [managerAddress, 100n * 10n ** 18n],
+      }),
+    });
+
+    const transferRequest = (amount: bigint) => ({
+      agentId: ("0x" + "77".repeat(32)) as Hex,
+      target: tokenAddress,
+      selector: "0xa9059cbb" as Hex, // transfer(address,uint256)
+      value: 0n,
+      nonce: 0n,
+      expiry: Math.floor(Date.now() / 1000) + 300,
+      rationaleHash: ("0x" + "88".repeat(32)) as Hex,
+      data: ("0x" +
+        encodeFunctionData({
+          abi: [{ name: "transfer", type: "function", stateMutability: "nonpayable", inputs: [{ name: "to", type: "address" }, { name: "amount", type: "uint256" }], outputs: [{ type: "bool" }] }],
+          functionName: "transfer",
+          args: [owner.address, amount],
+        }).slice(10)) as Hex,
+    });
+
+    // E8: balance check passes at 50 tokens, warns at 200 (advisory, never throws).
+    const okReport = await client.checkTokenPath(transferRequest(50n * 10n ** 18n));
+    expect(okReport.checks).toHaveLength(1);
+    expect(okReport.checks[0]!.ok).toBe(true);
+
+    const warnReport = await client.checkTokenPath(transferRequest(200n * 10n ** 18n));
+    expect(warnReport.checks[0]!.ok).toBe(false);
+    expect(warnReport.checks[0]!.detail).toContain("balance");
+
+    // E12: the 50-token transfer simulates clean against the live chain state.
+    // Fetch the LIVE nonce — chain state persists across tests in this file.
+    const liveNonce = await publicClient.readContract({
+      address: managerAddress,
+      abi: SESSION_KEY_MANAGER_ABI,
+      functionName: "getNonce",
+      args: [agent.address],
+    });
+    const scope = {
+      expiresAt: Math.floor(Date.now() / 1000) + 3600,
+      windowSeconds: 600,
+      perActionCap: 10n ** 17n,
+      perWindowCap: 2n * 10n ** 17n,
+      merkleRoot: ("0x" + "00".repeat(32)) as `0x${string}`,
+      countersignAbove: 0n,
+      enforceNativeDelta: false,
+      tokenWatchlist: [],
+    };
+    const sim = await client.simulateExecution({
+      account: agent,
+      request: { ...transferRequest(50n * 10n ** 18n), nonce: liveNonce },
+      scope,
+    });
+    expect(sim).toEqual({ ok: true });
+  }, 45000);
 });

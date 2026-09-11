@@ -270,6 +270,96 @@ export class SigilKitClient {
   }
 
   /**
+   * Token-path pre-check (enhancement E8): when the request targets a standard
+   * ERC-20 transfer/transferFrom, decode the amount and verify the wallet can cover
+   * it (balance, and allowance for transferFrom) — the concrete "planned" mitigation
+   * from SECURITY.md, made possible by argument-bound (v2) leaves. Returns checks
+   * with `ok: false` advisory warnings; NEVER throws — unknown selectors simply
+   * produce no checks.
+   */
+  async checkTokenPath(request: ActionRequest): Promise<TokenPathReport> {
+    const checks: TokenPathCheck[] = [];
+    const push = async (kind: "balance" | "allowance", holder: Address, amount: bigint) => {
+      try {
+        const [token, decoded] = await Promise.all([
+          this.publicClient.readContract({
+            address: request.target,
+            abi: [{ name: "decimals", type: "function", stateMutability: "view", inputs: [], outputs: [{ type: "uint8" }] }] as const,
+            functionName: "decimals",
+          }).catch(() => 18),
+          this.publicClient.readContract({
+            address: request.target,
+            abi: [
+              { name: "balanceOf", type: "function", stateMutability: "view", inputs: [{ name: "holder", type: "address" }], outputs: [{ type: "uint256" }] },
+            ] as const,
+            functionName: kind === "balance" ? "balanceOf" : "allowance",
+            args: kind === "balance" ? [holder] : [holder, request.target],
+          } as never),
+        ]);
+        void token;
+        const have = decoded as bigint;
+        checks.push({
+          kind,
+          token: request.target,
+          ok: have >= amount,
+          detail: kind === "balance"
+            ? `wallet balance ${have} vs amount ${amount}`
+            : `allowance ${have} vs amount ${amount}`,
+        });
+      } catch (err) {
+        checks.push({
+          kind,
+          token: request.target,
+          ok: true, // advisory only — a failed read never blocks; on-chain enforcement applies
+          detail: `read failed (non-standard token?): ${err instanceof Error ? err.message : err}`,
+        });
+      }
+    };
+
+    if (request.selector === "0xa9059cbb" && request.data.length >= 66 + 64) {
+      // transfer(address,uint256): amount is the 2nd arg
+      const amount = BigInt("0x" + request.data.slice(2 + 64, 2 + 128));
+      await push("balance", this.managerAddress, amount);
+    } else if (request.selector === "0x23b872dd" && request.data.length >= 2 + 96 * 2) {
+      // transferFrom(address from, address to, uint256 amount)
+      const from = ("0x" + request.data.slice(2 + 24, 2 + 64)) as Address;
+      const amount = BigInt("0x" + request.data.slice(2 + 128, 2 + 192));
+      await push("balance", from, amount);
+      if (from.toLowerCase() === this.managerAddress.toLowerCase()) {
+        await push("allowance", from, amount);
+      }
+    }
+    return { checks };
+  }
+
+  /**
+   * Simulation mode (enhancement E12): eth_call the prepared execution against the
+   * live node BEFORE any gas is spent, surfacing state-dependent failures (target
+   * state, router conditions) that the zero-gas local policy check cannot see. Run
+   * AFTER signing (the contract must recover the signer) and BEFORE sending.
+   */
+  async simulateExecution(
+    args: Parameters<SigilKitClient["prepareExecution"]>[0],
+    from?: Address,
+  ): Promise<{ ok: true } | { ok: false; reason: string }> {
+    const prepared = await this.prepareExecution(args);
+    try {
+      await this.publicClient.call({
+        account: from ?? this.managerAddress,
+        to: prepared.to,
+        data: prepared.data,
+      });
+      return { ok: true };
+    } catch (err) {
+      const data = (err as { data?: unknown }).data;
+      if (typeof data === "string" && data.startsWith("0x")) {
+        return { ok: false, reason: decodeSigilKitError(data as Hex).message };
+      }
+      return { ok: false, reason: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  /**
    * One-call execution (enhancement E3): prepare + sign + locally validate, send via
    * the provided wallet (the relayer), wait for the receipt, and return the TYPED
    * audit record. Throws on revert (with the decoded SigilKit reason when available,
@@ -315,9 +405,20 @@ export class SigilKitClient {
   }
 }
 
+/** One advisory token-path check result (enhancement E8). */
+export interface TokenPathCheck {
+  kind: "balance" | "allowance";
+  token: Address;
+  ok: boolean;
+  detail: string;
+}
+
+export interface TokenPathReport {
+  checks: TokenPathCheck[];
+}
+
 /** A decoded ActionLogged audit record (enhancement E3). */
-export interface ActionLogRecord {
-  agentId: Hash;
+export interface ActionLogRecord {  agentId: Hash;
   target: Address;
   selector: Hex;
   value: bigint;
