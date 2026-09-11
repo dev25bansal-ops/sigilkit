@@ -189,6 +189,24 @@ jobs:
           path: packages/core/test-results/
           if-no-files-found: ignore
 
+  # 9b. Nightly — Echidna property fuzzing (independent second fuzzer over the same
+  # invariants; enhancement E19). continue-on-error until it has green history.
+  echidna-nightly:
+    name: Echidna property fuzzing (nightly)
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '17 3 * * *'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with: { submodules: recursive }
+      - uses: crytic/echidna-action@v2
+        with:
+          files: contracts/test/EchidnaProperties.t.sol
+          contract: SessionKeyManagerEchidna
+          config: echidna.yaml
+          solc-version: 0.8.36
+          echidna-version: v2.2.5
+
   # 9. Canary — monthly `nightly` toolchain check so future Foundry flag/config drift
   #    (like the removed --invariant-runs) is caught here, not by a red PR gate.
   foundry-canary:

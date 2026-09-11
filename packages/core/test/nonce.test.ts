@@ -64,3 +64,27 @@ describe("NonceGate", () => {
     expect(result).toEqual({ audited: true });
   });
 });
+
+import { InMemoryLeaseStore } from "../src/index.js";
+
+describe("NonceGate with a LeaseStore (E18: cross-worker coordination seam)", () => {
+  it("rejects a run when another worker holds the lease", async () => {
+    const store = new InMemoryLeaseStore();
+    const gateA = new NonceGate(store);
+    const gateB = new NonceGate(store); // second "worker" sharing the store
+    let release: (() => void) | undefined;
+    const held = gateA.run(KEY_A, () => new Promise((r) => (release = () => r(null))));
+    await new Promise((r) => setTimeout(r, 5));
+    await expect(gateB.run(KEY_A, async () => "should not run")).rejects.toThrow("busy in another worker");
+    release!();
+    await held;
+    await expect(gateB.run(KEY_A, async () => "ok now")).resolves.toBe("ok now");
+  });
+
+  it("expired leases free the key (TTL safety net)", async () => {
+    const store = new InMemoryLeaseStore();
+    expect(store.acquire(KEY_A, 10)).toBe(true);
+    await new Promise((r) => setTimeout(r, 15));
+    expect(store.acquire(KEY_A, 10)).toBe(true); // expired → acquirable again
+  });
+});

@@ -1,0 +1,8 @@
+# Echidna config for the SigilKit properties port (enhancement E19).
+# Run: echidna contracts/test/EchidnaProperties.t.sol SessionKeyManagerEchidna --config echidna.yaml
+testMode: property
+testLimit: 50000
+corpusDir: echidna-corpus
+coverage: true
+sequenceLength: 100
+shrinkingSequenceLength: 5000

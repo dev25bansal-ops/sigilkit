@@ -19,7 +19,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "demo": "tsx src/cli.ts",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "fleet": "tsx src/fleet.ts"
   },
   "dependencies": {
     "@sigilkit/core": "*",

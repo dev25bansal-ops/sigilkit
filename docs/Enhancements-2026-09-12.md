@@ -2,6 +2,19 @@
 
 **Date:** 2026-09-12 · **Baseline:** `master` @ `38fe1cd` (post-remediation; all 23 closed issues from `docs/Issues-Catalog-2026-09-11.md` reflected)
 
+> ## ✅ EXECUTION STATUS (2026-09-12, end of implementation day)
+>
+> **19 of 20 items implemented and verified** (commits `1b3ad72` → HEAD). E15
+> (sliding-window damping) is intentionally NOT built — its own trade-off note says
+> "build only if a design partner asks"; the honest tumbling-window documentation
+> (S3), the WindowCharged event (E1), and the indexer's window reconciliation cover
+> the underlying need.
+>
+> Measured final state: **Foundry 86/86 unit** across 9 suites + **4/4 invariant
+> suites** (256 runs) + **11/11 Halmos specs**; **TS 75 passed / 1 skipped** across
+> core (67), indexer (3), mcp (5); all three packages + demo build and lint clean;
+> ABI drift gate green; golden-vector cross-language pins green.
+
 Method: component-by-component review of the current implementation against the product thesis ("scoped, capped, audited agent execution"), the vault's recorded opportunities, and the gaps left deliberately open by the remediation. Every item states the concrete change, the benefit, and the honest trade-off. Cross-references to the catalog use its IDs (S1, A3, …).
 
 ---

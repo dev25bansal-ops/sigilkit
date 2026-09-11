@@ -25,7 +25,8 @@ session-key management with on-chain spend caps, and a mandatory audit trail per
 
 | Layer | Status |
 |---|---|
-| Foundry unit + fuzz | ✅ 54 tests (20 manager + 22 ERC-7579 module + 7 executor + 5 governance) |
+| Foundry unit + fuzz | ✅ 86 tests across 9 suites (manager 23 · 7579 module 24 · executor 7 · delegator 6 · graduated authority 9 · governance 5 · ERC-1271 keys 4 · account-execute E2E 4 · golden vectors 4) |
+| Echidna property fuzzing | ✅ 4 properties (independent second fuzzer, nightly) |
 | Foundry invariant (INV-1/2/4, handler-only fuzzing incl. admin transitions) | ✅ 4 suites × 256 runs × 500 calls |
 | Fork smoke (Base) | ✅ 1 test — runs nightly against a live Base fork (chainid + chain-bound domain separator + live state) |
 | Halmos symbolic (spend-cap core + Merkle boundaries + auth paths) | ✅ 11 specs (`halmos --match-contract Halmos`) — replay, nonce accounting, request expiry, denylist gating, window-cap |
@@ -33,7 +34,7 @@ session-key management with on-chain spend caps, and a mandatory audit trail per
 | Slither static analysis | ✅ run; all findings triaged in [`SECURITY.md`](SECURITY.md) |
 | TS SDK vs on-chain E2E (Anvil) | ✅ sign → relay → enforce → `ActionLogged` verified in receipt |
 | Cross-wallet signing parity | ✅ viem ↔ ethers ↔ hand-rolled reference encoder, byte-identical digests + signatures |
-| CI | ✅ 9 jobs (4 PR-gated: unit, invariant, Slither, TS+coverage; nightly: deep fuzz, Base fork; weekly: live wallet harnesses; monthly: Foundry canary; release: Halmos). Runs on GitHub once pushed |
+| CI | ✅ 10 jobs (4 PR-gated: unit, invariant, Slither, TS+coverage; nightly: deep fuzz, Base fork, Echidna; weekly: live wallet harnesses; monthly: Foundry canary; release: Halmos + tag-gated npm publish). Runs on GitHub once pushed |
 
 ## Repository layout
 
@@ -41,15 +42,19 @@ session-key management with on-chain spend caps, and a mandatory audit trail per
 sigilkit/
 ├─ contracts/                 # Foundry lib (forge-installable): src/ + test/ + script/
 │  ├─ src/
-│  │  ├─ ActionLogger.sol     # mandatory audit event (INV-3)
+│  │  ├─ ActionLogger.sol     # mandatory audit event (INV-3) + WindowCharged
 │  │  ├─ SpendPolicy.sol      # per-action + fixed-window (tumbling) caps (INV-1)
-│  │  ├─ MerkleWhitelist.sol  # sorted-pair whitelist verification
-│  │  ├─ SessionKeyManager.sol# session keys, scope, rotation, denylist (INV-2, INV-4)
-│  │  └─ SessionKey7579Module.sol # ERC-7579 VALIDATION module for Kernel/Safe
+│  │  ├─ MerkleWhitelist.sol  # sorted-pair whitelist verification (v2 argument-bound leaves)
+│  │  ├─ SessionKeyManager.sol# session keys, scope, rotation, denylist, countersign, balance-delta (INV-2, INV-4)
+│  │  ├─ SessionKey7579Module.sol # ERC-7579 VALIDATION module for Kernel/Safe
+│  │  ├─ ActionLog7579Executor.sol # ERC-7579 EXECUTOR: audit at execution time
+│  │  └─ SigilKitDelegator.sol # EIP-7702-native agent wallet (the EOA delegates to it)
 │  ├─ test/                   # unit + invariant + Halmos specs + fork smoke
 │  └─ script/Deploy.s.sol     # deploy (SIGILKIT_OWNER_KEY required; no default key)
 ├─ packages/core/             # @sigilkit/core — TS SDK (EIP-712 signing, EIP-7702, Merkle, client)
-├─ packages/demo-agent/       # @sigilkit/demo-agent — autonomous treasury bot demo
+├─ packages/demo-agent/       # @sigilkit/demo-agent — autonomous treasury bot demo (+ fleet mode)
+├─ packages/indexer/          # @sigilkit/indexer — ActionLog → SQLite spend reports
+├─ packages/mcp/              # @sigilkit/mcp — MCP server: propose/validate/audit tools
 ├─ vault/                     # Obsidian research + build-plan knowledge base
 └─ .github/workflows/ci.yml   # CI (unit, invariant, Slither, TS, nightly Base-fork, Halmos gate)
 ```

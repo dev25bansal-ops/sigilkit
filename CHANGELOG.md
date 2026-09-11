@@ -9,6 +9,38 @@ Remediation of the 2026-09-11 issues catalog (`docs/Issues-Catalog-2026-09-11.md
 catalog issues closed in code; the remaining item (A1: creating the public GitHub repository
 and first CI run) is a single publish action.
 
+### Added — Contracts (enhancements wave, 2026-09-12)
+- `SigilKitDelegator.sol` — EIP-7702-native agent wallet: an EOA delegates to it and
+  gains the full enforcement core with value flowing from its own balance (E13).
+- `WindowCharged` event — observable window accounting for reconciliation/indexing (E1).
+- Graduated authority — `Scope.countersignAbove` + owner `RequestApproval` countersign
+  for large actions; owner's own key exempt (E10).
+- Balance-delta enforcement — optional `Scope.enforceNativeDelta` + 8-token watchlist;
+  inner calls cannot siphon beyond declared amounts (E11).
+- ERC-1271 smart-account session keys — signature = `address(keyContract) || sig` (E17).
+- Per-tuple Merkle proofs unlock batching under whitelists in the 7579 module (E16).
+
+### Added — TypeScript & packages
+- `SigilKitClient.execute` — one-call prepare/sign/send/confirm returning the typed
+  `ActionLogRecord`; `parseActionLogged` (E3).
+- `decodeSigilKitError` / `decorateWithDecodedRevert` — named revert decoding (E4).
+- `checkTokenPath` — balance/allowance pre-checks for standard token calls (E8).
+- `simulateExecution` — eth_call simulation before sending (E12).
+- `NonceGate` + `LeaseStore`/`InMemoryLeaseStore` — per-key serialization with a
+  cross-worker coordination seam (E18).
+- Inner-call revert bubbling: recognizable reasons pass through; unknown stay
+  `InnerCallFailed` (E2).
+- `@sigilkit/indexer` — ActionLog/WindowCharged → SQLite spend reports + CLI (E9).
+- `@sigilkit/mcp` — MCP server: validate_request / build_scope / decode_error /
+  audit_query tools for agent frameworks (E14).
+
+### Added — Toolchain
+- Golden-vector corpus (`vectors/`) consumed by BOTH the TS and Foundry suites (E7).
+- Compiler-generated ABI JSONs with a vitest + CI drift gate (E5).
+- Tag-gated npm publish workflow with provenance (E6).
+- Echidna properties contract + nightly job — a second independent fuzzer (E19).
+- Fleet demo (`npm run fleet`): two agents sharing one key through the NonceGate (E20).
+
 ### Breaking — Contracts
 - **Whitelist leaf format v2 (S1):** leaves now commit the calldata —
   `keccak256(abi.encode(target, selector, argsHash))` with `argsHash = keccak256(calldata)`;

@@ -125,13 +125,59 @@ export interface SigilKitClientConfig {
  * Coordination is in-process only (the client stays stateless across machines); for
  * multi-process fleets, serialize per key upstream or use distinct keys per agent.
  * Failures do not poison the queue — the next run proceeds regardless.
+ *
+ * For MULTIPLE processes sharing one key, inject a cross-process {@link LeaseStore}
+ * (e.g. a Redis SETNX adapter — acquire = `SET key owner NX PX ttl`, release = a
+ * check-and-del): the gate then rejects runs that cannot take the lease instead of
+ * racing. The documented default remains one key per agent process — zero
+ * coordination is better than coordination.
  */
+export interface LeaseStore {
+  /** Returns true when the lease is held by this caller; false when busy. */
+  acquire(key: Address, ttlMs: number): boolean | Promise<boolean>;
+  release(key: Address): void | Promise<void>;
+}
+
+/** Single-process lease store (the default when none is injected). */
+export class InMemoryLeaseStore implements LeaseStore {
+  private held = new Map<Address, number>(); // key -> expiry ms
+
+  acquire(key: Address, ttlMs: number): boolean {
+    const now = Date.now();
+    const until = this.held.get(key) ?? 0;
+    if (until > now) return false;
+    this.held.set(key, now + ttlMs);
+    return true;
+  }
+
+  release(key: Address): void {
+    this.held.delete(key);
+  }
+}
+
 export class NonceGate {
   private chains = new Map<Address, Promise<unknown>>();
 
+  constructor(private readonly leases?: LeaseStore) {}
+
   run<T>(key: Address, fn: () => Promise<T>): Promise<T> {
     const prev = this.chains.get(key) ?? Promise.resolve();
-    const next = prev.then(fn, fn); // run regardless of the previous run's outcome
+    const exec = async (): Promise<T> => {
+      if (this.leases) {
+        // A lease that cannot be taken promptly is a real cross-worker concurrency
+        // violation, not a transient state — fail loudly rather than race.
+        if (!(await this.leases.acquire(key, 30_000))) {
+          throw new Error(`SigilKit NonceGate: key ${key} is busy in another worker`);
+        }
+        try {
+          return await fn();
+        } finally {
+          await this.leases.release(key);
+        }
+      }
+      return fn();
+    };
+    const next = prev.then(exec, exec); // run regardless of the previous run's outcome
     this.chains.set(
       key,
       next.catch(() => undefined), // keep the chain alive on errors
