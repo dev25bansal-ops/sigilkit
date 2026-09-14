@@ -6,13 +6,13 @@ import { actionRequestDigest, parseActionRequest, validateAgainstScope, targetLe
 import type { ActionRequest } from "../src/index.js";
 
 const VALID: ActionRequest = {
-  agentId: "0x" + "33".repeat(32),
+  agentId: ("0x" + "33".repeat(32)) as `0x${string}`,
   target: "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",
   selector: "0x32145f90",
   value: 10n ** 16n,
   nonce: 0n,
   expiry: 1787654400,
-  rationaleHash: "0x" + "44".repeat(32),
+  rationaleHash: ("0x" + "44".repeat(32)) as `0x${string}`,
   data: "0x12345678",
 };
 
@@ -25,7 +25,7 @@ describe("adversarial fuzz: SDK public functions", () => {
 
   it("digest: zero-length and huge data both hash correctly", () => {
     const empty = actionRequestDigest({ request: { ...VALID, data: "0x" }, chainId: 1, verifyingContract: "0x5FbDB2315678afecb367f032d93F642f64180aa3" });
-    const huge = actionRequestDigest({ request: { ...VALID, data: "0x" + "ab".repeat(4096) }, chainId: 1, verifyingContract: "0x5FbDB2315678afecb367f032d93F642f64180aa3" });
+    const huge = actionRequestDigest({ request: { ...VALID, data: ("0x" + "ab".repeat(4096)) as `0x${string}` }, chainId: 1, verifyingContract: "0x5FbDB2315678afecb367f032d93F642f64180aa3" });
     expect(empty).toMatch(/^0x[0-9a-f]{64}$/);
     expect(huge).toMatch(/^0x[0-9a-f]{64}$/);
   });
@@ -59,7 +59,7 @@ describe("adversarial fuzz: SDK public functions", () => {
 
   it("merkle: proof for every leaf in trees of size 1..17 verifies", () => {
     for (let n = 1; n <= 17; n++) {
-      const leaves = Array.from({ length: n }, (_, i) => targetLeaf("0x" + i.toString(16).padStart(40, "0"), "0x32145f90"));
+      const leaves = Array.from({ length: n }, (_, i) => targetLeaf(("0x" + i.toString(16).padStart(40, "0")) as `0x${string}`, "0x32145f90"));
       const root = merkleRoot(leaves);
       for (const leaf of leaves) {
         const proof = merkleProof(leaves, leaf) as `0x${string}`[];
