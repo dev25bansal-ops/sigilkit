@@ -418,7 +418,18 @@ export class SigilIndexer {
     const head = await client.getBlockNumber();
     const safeHead = head - BigInt(this.confirmations);
     const end = toBlock ?? (safeHead > 0n ? safeHead : 0n);
-    if (end < start) return 0;
+    if (end < start) {
+      // Distinguish "caught up" from "confirmations clipped the range": on short
+      // chains (local dev, fresh testnets) a large confirmations default can push
+      // safeHead below the requested start, silently indexing nothing.
+      if (toBlock === undefined && head < start + BigInt(this.confirmations)) {
+        console.warn(
+          `[sigilkit-indexer] head=${head} < start=${start} + confirmations=${this.confirmations}: ` +
+            `backfill window is empty. Pass --confirmations 0 for local/dev chains.`,
+        );
+      }
+      return 0;
+    }
 
     const logs = await this.fetchLogsChunked(client, managerAddress, start, end);
     const stored = this.ingestLogs(logs);
