@@ -37,16 +37,23 @@ function leavesFor(n: number): Hash[] {
 }
 
 describe("multi-level Merkle proofs (SDK ↔ on-chain sorted-pair scheme)", () => {
-  it("proofs for every tree size 1..32 verify against the reference verifier", () => {
-    for (let n = 1; n <= 32; n++) {
-      const leaves = leavesFor(n);
-      const root = merkleRoot(leaves);
-      for (const leaf of leaves) {
-        const proof = merkleProof(leaves, leaf);
-        expect(verifyRef(proof, root, leaf), `size=${n} leaf=${leaf}`).toBe(true);
+  it(
+    "proofs for every tree size 1..32 verify against the reference verifier",
+    () => {
+      for (let n = 1; n <= 32; n++) {
+        const leaves = leavesFor(n);
+        const root = merkleRoot(leaves);
+        for (const leaf of leaves) {
+          const proof = merkleProof(leaves, leaf);
+          expect(verifyRef(proof, root, leaf), `size=${n} leaf=${leaf}`).toBe(true);
+        }
       }
-    }
-  });
+    },
+    // 1..32 tree sizes × per-leaf proof = many keccak256 calls; under v8 coverage
+    // instrumentation (CI `test:coverage`) each is traced, so 5s default is too tight
+    // on a loaded runner. Give it headroom instead of flaking the PR gate.
+    30_000,
+  );
 
   it("max-depth proofs have exactly ceil(log2(n)) elements for powers of two", () => {
     expect(merkleProof(leavesFor(32), leavesFor(32)[0]!).length).toBe(5);
