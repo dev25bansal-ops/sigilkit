@@ -216,8 +216,20 @@ export async function handleMessage(msg: {
       const name = params.name as string;
       const tool = TOOLS.find((t) => t.name === name);
       if (!tool) return error(-32602, `unknown tool: ${name}`);
+      // Enforce the tool's declared `required` fields before dispatch: the JSON-RPC
+      // layer does not validate them, and a missing argument would otherwise surface
+      // as a cryptic TypeError from inside the handler (e.g. "reading 'slice'").
+      const args = (params.arguments ?? {}) as Record<string, unknown>;
+      const required = (tool.inputSchema as { required?: string[] }).required ?? [];
+      const missing = required.filter((k) => args[k] === undefined);
+      if (missing.length > 0) {
+        return respond({
+          content: [{ type: "text", text: `missing required argument(s): ${missing.join(", ")}` }],
+          isError: true,
+        });
+      }
       try {
-        const result = await tool.run((params.arguments ?? {}) as Record<string, unknown>);
+        const result = await tool.run(args);
         return respond({
           content: [{ type: "text", text: JSON.stringify(result, (_, v) => (typeof v === "bigint" ? v.toString() : v), 2) }],
         });
