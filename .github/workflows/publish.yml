@@ -52,8 +52,9 @@ jobs:
             echo "::endgroup::"
           done
 
-      # Publish in dependency order (mcp -> indexer -> core), skipping any version that is
-      # already on the registry so re-running a tag is safe.
+      # Publish in dependency order (core -> indexer -> mcp): core is the leaf
+      # dependency, indexer builds on it, mcp on both. Skipping any version already
+      # on the registry makes re-running a tag safe.
       - name: Publish (dependency order)
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
