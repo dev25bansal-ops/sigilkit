@@ -182,9 +182,12 @@ jobs:
       # PERF-4: the budget assertions in GasBudget.t.sol / the 7579 batch test are the
       # hard PR gate. This nightly step reports *drift* on every other test's gas, so a
       # creeping regression is visible without making unrelated PRs fail.
+      # `.*Invariant` is excluded on purpose: invariant lines carry a `reverts:` count
+      # that is seed-dependent (changes every run), so including them makes the drift
+      # report permanently noisy. Only the deterministic unit-test gas lines are snapshotted.
       - name: Gas snapshot drift (report only)
         run: |
-          forge snapshot --no-match-contract '.*Fork'
+          forge snapshot --no-match-contract '.*Invariant|.*Fork'
           if ! git diff --quiet .gas-snapshot; then
             echo "### Gas snapshot changed" >> "$GITHUB_STEP_SUMMARY"
             echo '```diff' >> "$GITHUB_STEP_SUMMARY"
