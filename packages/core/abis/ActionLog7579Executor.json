@@ -102,7 +102,7 @@
     "name": "setAgentId",
     "inputs": [
       {
-        "name": "agentId",
+        "name": "boundAgentId",
         "type": "bytes32",
         "internalType": "bytes32"
       }
