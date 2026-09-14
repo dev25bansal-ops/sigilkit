@@ -1,9 +1,9 @@
 # Security Notes — Slither Triage (2026-08-24)
 
-`slither contracts/src` reports **12 findings across 5 contracts, zero high-severity bugs**
-(re-run after the Aug-24 remediation pass added the module caller gate, uninstall gate,
-EIP-2 low-s rejection, batch bounds, and derived ERC-7201 slot; the earlier
-`uninitialized-local` info finding is fixed). Every remaining finding is a known, deliberate
+`slither contracts/src` reports **24 findings across 7 contracts, zero high-severity bugs**
+(re-run 2026-09-14 after the E14-E20 components (executor, delegator, lease adapters)
+landed; two new-surface findings FIXED in code: zero-address withdraw burn
+(SessionKeyManager) and zero-target value burn (ActionLog7579Executor)). Every remaining finding is a known, deliberate
 design pattern of an agent-action executor. This file is the reference the CI Slither gate and
 future auditors should check against.
 

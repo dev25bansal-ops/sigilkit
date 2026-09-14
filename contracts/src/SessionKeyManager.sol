@@ -181,7 +181,10 @@ contract SessionKeyManager is ActionLogger {
     /// @notice Owner-only treasury recovery (issues catalog S6): the only sanctioned way
     ///         to move funds out besides scoped agent execution. Denylisted from session
     ///         keys by default like the other admin selectors.
+    /// @dev Slither missing-zero-check: a zero `to` would permanently burn the funds
+    ///      (no burn semantics intended), so it is rejected outright.
     function withdraw(address payable to, uint256 amount) external onlyOwner {
+        if (to == address(0)) revert WithdrawFailed();
         (bool ok,) = to.call{value: amount}("");
         if (!ok) revert WithdrawFailed();
         emit TreasuryWithdrawal(to, amount);

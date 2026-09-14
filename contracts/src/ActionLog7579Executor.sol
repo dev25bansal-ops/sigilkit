@@ -108,6 +108,7 @@ contract ActionLog7579Executor is ActionLogger {
     {
         if (msg.sender != account) revert NotAccount();
         if (msg.value != value) revert ExecutionFailed();
+        if (target == address(0)) revert ExecutionFailed(); // zero target would burn value
         ExecutorStorage storage s = _s();
         if (s.reentrancyLocked) revert ExecutionFailed();
         bytes32 auditId = s.agentIds[msg.sender];
