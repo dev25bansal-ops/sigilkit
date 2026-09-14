@@ -57,8 +57,47 @@ Calldata cannot observe nested/internal token transfers inside the target call, 
 `request.value` may undercount actual outflow for targets that pull tokens mid-call.
 Mitigations: trusted-target allowlists (e.g. routers that settle via permit2 without arbitrary
 pulls), post-hoc reconciliation off-chain against cumulative `ActionLogged` records, and
-argument-bound whitelist leaves. An SDK-side ERC-20 allowance pre-check is **planned but not
-implemented** — do not rely on it.
+argument-bound whitelist leaves. An SDK-side ERC-20 pre-check **is implemented**
+(`SigilKitClient.checkTokenPath`, enhancement E8) — it is **advisory only**: it reads
+`balanceOf(from)` and, for `transferFrom` where the manager is not the owner,
+`allowance(from, managerAddress)`, and never blocks a request. On-chain enforcement remains the
+only authority; do not treat a passing pre-check as a guarantee.
+
+## Executor audit attribution (`ActionLog7579Executor`)
+
+`ActionLogged.agentId` on the 7579 executor path is an **account-asserted** claim, not a
+third-party attestation. The binding is strictly self-scoped: `onInstall`/`setAgentId` write
+`agentIds[msg.sender]`, and `execute` requires `msg.sender == account` while reading
+`agentIds[msg.sender]`. No address can therefore forge another account's attribution — but an
+account **can relabel itself at any time**. Operators that need a trustworthy agent identity must
+pin the binding at install time and treat later `AgentBound` events as governance-relevant.
+
+**Audit selector for calls that carry no selector.** `bytes4(callData)` silently right-pads input
+shorter than 4 bytes: empty calldata becomes `0x00000000` — which collides with ERC-165's reserved
+selector space — and 2-byte calldata becomes `0xab000000`, indistinguishable in the log from a
+genuine selector. The executor therefore records `bytes4(keccak256(callData))` whenever calldata is
+shorter than a selector; empty calldata is audited as `0xc5d24601` (the well-known `keccak256("")`
+prefix). An indexer can always distinguish "no real selector" from a real `0x00000000` call, and
+short payloads no longer collapse onto one another. Calls with 4+ bytes are audited with their
+true selector, unchanged.
+
+## EIP-7702 delegator: the implementation address must stay inert
+
+`SigilKitDelegator` is deployed **once per chain** as the canonical delegation target. Its
+constructor passes `address(this)` as the owner, so the implementation contract owns *itself*:
+no external account can ever be its owner, `initializeSelfOwned()` on the implementation reverts
+`AlreadyInitialized`, and every `onlyOwner` path (`grantSessionKey`, `transferOwnership`, …)
+reverts `NotOwner` because nobody can present themselves as `msg.sender == address(impl)`.
+
+**Operational rule:** never initialize, proxy, or delegate *into* the implementation address in a
+way that gives it an owner. Delegation must target the canonical implementation directly
+(`0xef0100 || implementation`); the EOA then calls `initializeSelfOwned()` in its own context, and
+its own storage holds the owner. Regression tests:
+`SigilKitDelegator.t.sol::test_Implementation_IsSelfOwnedAndUninitializable`,
+`…InitializeSelfOwnedReverts`, `…AdminPathsAreUnreachable`, `…HasNoScopes`.
+
+Delegation itself is revoked with the SDK's `signRevocation` (an authorization naming address 0),
+which clears the account's code entirely.
 
 ## Whitelist leaf format v2 (argument binding)
 
@@ -70,6 +109,17 @@ the selector, matching the pre-v2 behavior. `keccak256` of real data is never ze
 never collide. `SessionKeyManager._targetAllowed` / `SessionKey7579Module._whitelisted` accept a
 proof against either form. Leaf format v2 supersedes the v0.1.0 preimage
 (`abi.encode(target, selector)`); pre-mainnet this is a breaking root-format change by design.
+
+## Disclosure policy (TD-7)
+
+SigilKit follows a 90-day coordinated-disclosure window. Report vulnerabilities through the
+machine-readable channel defined in [`.well-known/security.txt`](.well-known/security.txt)
+(RFC 9116): the GitHub Security Advisories page of the `sigilkit/sigilkit` repository is the
+primary Contact, and this file is the Policy document. Reports received via that channel are
+triaged within 7 days; fixes ship in the next patch release, with credit to the reporter unless
+they prefer otherwise. The `security.txt` `Expires` field is set 12 months out and is re-validated
+by `scripts/check-doc-counts.mjs` on every CI run — an expired or malformed `security.txt` fails
+the workflow-lint job, so the disclosure channel cannot silently rot.
 
 ---
 *Generated from `slither .` runs of 2026-08-22/23 (slither-analyzer on solc 0.8.36 output).*

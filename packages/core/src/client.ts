@@ -106,6 +106,36 @@ export interface SigilKitClientConfig {
   chain: Chain;
   /** Optional custom RPC URL; defaults to the chain's public RPCs. */
   rpcUrl?: string;
+  /**
+   * Optional pre-built viem PublicClient. When supplied it is used verbatim, which
+   * lets callers provide a batching/fallback transport (see `fallback([...])`) or a
+   * stubbed client in tests. Takes precedence over `rpcUrl`.
+   */
+  publicClient?: PublicClient;
+  /**
+   * Optional cross-process lease store backing {@link NonceGate} (ARCH-6). Supply one when
+   * several processes on the same host may share a session key — see
+   * `@sigilkit/core/lease-fs` for a dependency-free implementation. For a distributed
+   * fleet, implement {@link LeaseStore} over a real lock service.
+   */
+  leaseStore?: LeaseStore;
+}
+
+/** Arguments accepted by {@link SigilKitClient.prepareExecution}. */
+export type PrepareExecutionArgs = Parameters<SigilKitClient["prepareExecution"]>[0];
+
+/**
+ * The signed, relayer-ready payload produced by `prepareExecution`. Pass this straight
+ * to `sendPrepared` / `simulateExecution` to avoid re-running the pre-flight (PERF-3):
+ * the recommended simulate-then-execute flow used to fetch the nonce and window state
+ * twice, doubling pre-flight RPC cost and widening the nonce race between the two reads.
+ */
+export type PreparedExecution = ExecuteArgs & { to: Address; data: Hex };
+
+/** True when a value is an already-prepared payload rather than fresh prepare args. */
+function isPreparedExecution(v: PrepareExecutionArgs | PreparedExecution): v is PreparedExecution {
+  const o = v as Partial<PreparedExecution>;
+  return typeof o.to === "string" && typeof o.data === "string" && o.signature !== undefined;
 }
 
 /**
@@ -126,11 +156,18 @@ export interface SigilKitClientConfig {
  * multi-process fleets, serialize per key upstream or use distinct keys per agent.
  * Failures do not poison the queue — the next run proceeds regardless.
  *
- * For MULTIPLE processes sharing one key, inject a cross-process {@link LeaseStore}
- * (e.g. a Redis SETNX adapter — acquire = `SET key owner NX PX ttl`, release = a
- * check-and-del): the gate then rejects runs that cannot take the lease instead of
- * racing. The documented default remains one key per agent process — zero
- * coordination is better than coordination.
+ * For MULTIPLE processes sharing one key, inject a cross-process {@link LeaseStore} via
+ * `SigilKitClientConfig.leaseStore`: the gate then rejects runs that cannot take the lease
+ * instead of racing. Two implementations ship today —
+ *
+ *  - `FileLeaseStore` (`@sigilkit/core/lease-fs`): atomic-mkdir leases, for several workers
+ *    on ONE host, with TTL recovery after a crashed holder. Dependency-free.
+ *  - anything you write against this interface for a distributed fleet (Redis `SET key owner
+ *    NX PX ttl` + check-and-delete release, etcd, orchestrator leader election). A shared
+ *    filesystem is NOT a reliable cross-host mutex — use a real lock service.
+ *
+ * The documented default remains one key per agent process — zero coordination is better
+ * than coordination.
  */
 export interface LeaseStore {
   /** Returns true when the lease is held by this caller; false when busy. */
@@ -199,15 +236,18 @@ export class SigilKitClient {
    * Per-key execution queue — see {@link NonceGate}. Wrap prepare + send + confirm in
    * `client.nonceGate.run(key, …)` when one key may have concurrent in-flight actions.
    */
-  readonly nonceGate = new NonceGate();
+  readonly nonceGate: NonceGate;
 
   constructor(config: SigilKitClientConfig) {
     this.managerAddress = config.managerAddress;
     this.chain = config.chain;
-    this.publicClient = createPublicClient({
-      chain: config.chain,
-      transport: config.rpcUrl ? http(config.rpcUrl) : http(),
-    });
+    this.publicClient =
+      config.publicClient ??
+      createPublicClient({
+        chain: config.chain,
+        transport: config.rpcUrl ? http(config.rpcUrl) : http(),
+      });
+    this.nonceGate = new NonceGate(config.leaseStore);
   }
 
   /**
@@ -322,35 +362,47 @@ export class SigilKitClient {
    * from SECURITY.md, made possible by argument-bound (v2) leaves. Returns checks
    * with `ok: false` advisory warnings; NEVER throws — unknown selectors simply
    * produce no checks.
+   *
+   * Spender semantics (BUG-4): the manager performs the inner call, so at the token
+   * contract `msg.sender == managerAddress`. A `transferFrom(from, …)` therefore needs
+   * `allowance(from, managerAddress)` — NOT `allowance(from, token)`. When `from` IS the
+   * manager, no allowance is required at all, so no allowance check is emitted.
+   *
+   * Cost (PERF-1): no `decimals()` probe (the result was unused), and the checks run
+   * concurrently rather than serially — at most 2 round-trips in parallel.
    */
   async checkTokenPath(request: ActionRequest): Promise<TokenPathReport> {
     const checks: TokenPathCheck[] = [];
-    const push = async (kind: "balance" | "allowance", holder: Address, amount: bigint) => {
+
+    const readAmount = async (
+      kind: "balance" | "allowance",
+      holder: Address,
+      amount: bigint,
+      spender?: Address,
+    ): Promise<void> => {
       try {
-        const [token, decoded] = await Promise.all([
-          this.publicClient.readContract({
-            address: request.target,
-            abi: [{ name: "decimals", type: "function", stateMutability: "view", inputs: [], outputs: [{ type: "uint8" }] }] as const,
-            functionName: "decimals",
-          }).catch(() => 18),
-          this.publicClient.readContract({
-            address: request.target,
-            abi: [
-              { name: "balanceOf", type: "function", stateMutability: "view", inputs: [{ name: "holder", type: "address" }], outputs: [{ type: "uint256" }] },
-            ] as const,
-            functionName: kind === "balance" ? "balanceOf" : "allowance",
-            args: kind === "balance" ? [holder] : [holder, request.target],
-          } as never),
-        ]);
-        void token;
-        const have = decoded as bigint;
+        const have =
+          kind === "balance"
+            ? await this.publicClient.readContract({
+                address: request.target,
+                abi: ERC20_BALANCE_OF_ABI,
+                functionName: "balanceOf",
+                args: [holder],
+              })
+            : await this.publicClient.readContract({
+                address: request.target,
+                abi: ERC20_ALLOWANCE_ABI,
+                functionName: "allowance",
+                args: [holder, spender ?? this.managerAddress],
+              });
         checks.push({
           kind,
           token: request.target,
           ok: have >= amount,
-          detail: kind === "balance"
-            ? `wallet balance ${have} vs amount ${amount}`
-            : `allowance ${have} vs amount ${amount}`,
+          detail:
+            kind === "balance"
+              ? `wallet balance ${have} vs amount ${amount}`
+              : `allowance(${holder} → ${spender ?? this.managerAddress}) ${have} vs amount ${amount}`,
         });
       } catch (err) {
         checks.push({
@@ -362,19 +414,25 @@ export class SigilKitClient {
       }
     };
 
+    const pending: Array<Promise<void>> = [];
+
     if (request.selector === "0xa9059cbb" && request.data.length >= 66 + 64) {
-      // transfer(address,uint256): amount is the 2nd arg
+      // transfer(address,uint256): the manager is msg.sender, so its balance is debited.
       const amount = BigInt("0x" + request.data.slice(2 + 64, 2 + 128));
-      await push("balance", this.managerAddress, amount);
+      pending.push(readAmount("balance", this.managerAddress, amount));
     } else if (request.selector === "0x23b872dd" && request.data.length >= 2 + 96 * 2) {
       // transferFrom(address from, address to, uint256 amount)
       const from = ("0x" + request.data.slice(2 + 24, 2 + 64)) as Address;
       const amount = BigInt("0x" + request.data.slice(2 + 128, 2 + 192));
-      await push("balance", from, amount);
-      if (from.toLowerCase() === this.managerAddress.toLowerCase()) {
-        await push("allowance", from, amount);
+      // `from`'s balance is debited regardless of who submits.
+      pending.push(readAmount("balance", from, amount));
+      // An allowance is only needed when the manager is spending SOMEONE ELSE's tokens.
+      if (from.toLowerCase() !== this.managerAddress.toLowerCase()) {
+        pending.push(readAmount("allowance", from, amount, this.managerAddress));
       }
     }
+
+    await Promise.all(pending);
     return { checks };
   }
 
@@ -383,12 +441,19 @@ export class SigilKitClient {
    * live node BEFORE any gas is spent, surfacing state-dependent failures (target
    * state, router conditions) that the zero-gas local policy check cannot see. Run
    * AFTER signing (the contract must recover the signer) and BEFORE sending.
+   *
+   * Accepts EITHER fresh prepare args OR an already-{@link PreparedExecution} payload.
+   * Passing the prepared payload is the cheap path (PERF-3): it performs a single
+   * pre-flight instead of two, so the nonce the simulation saw is the nonce that gets
+   * sent. Prefer {@link executeSimulated}, which wires this together correctly.
    */
   async simulateExecution(
-    args: Parameters<SigilKitClient["prepareExecution"]>[0],
+    argsOrPrepared: PrepareExecutionArgs | PreparedExecution,
     from?: Address,
   ): Promise<{ ok: true } | { ok: false; reason: string }> {
-    const prepared = await this.prepareExecution(args);
+    const prepared = isPreparedExecution(argsOrPrepared)
+      ? argsOrPrepared
+      : await this.prepareExecution(argsOrPrepared);
     try {
       await this.publicClient.call({
         account: from ?? this.managerAddress,
@@ -415,10 +480,39 @@ export class SigilKitClient {
    * concurrent in-flight actions.
    */
   async execute(
-    args: Parameters<SigilKitClient["prepareExecution"]>[0],
+    args: PrepareExecutionArgs,
     wallet: WalletClient,
   ): Promise<{ receipt: TransactionReceipt; audit: ActionLogRecord }> {
+    return this.sendPrepared(await this.prepareExecution(args), wallet);
+  }
+
+  /**
+   * Simulate-then-execute in one call (PERF-3): prepares ONCE, eth_calls the exact
+   * payload, and only then sends it. Rejects with the decoded reason when the
+   * simulation fails, so no gas is spent on a transaction the chain would revert.
+   */
+  async executeSimulated(
+    args: PrepareExecutionArgs,
+    wallet: WalletClient,
+    from?: Address,
+  ): Promise<{ receipt: TransactionReceipt; audit: ActionLogRecord }> {
     const prepared = await this.prepareExecution(args);
+    const sim = await this.simulateExecution(prepared, from);
+    if (!sim.ok) {
+      throw new Error(`SigilKit simulation rejection (no gas spent): ${sim.reason}`);
+    }
+    return this.sendPrepared(prepared, wallet);
+  }
+
+  /**
+   * Sends an already-prepared payload through `wallet` and confirms the audit event.
+   * Public so a prepared payload can be re-sent by a different relayer, or after a
+   * simulation, without repeating the nonce/window pre-flight.
+   */
+  async sendPrepared(
+    prepared: PreparedExecution,
+    wallet: WalletClient,
+  ): Promise<{ receipt: TransactionReceipt; audit: ActionLogRecord }> {
     if (!wallet.account) {
       throw new Error("SigilKit execute: wallet client must carry an account (the relayer)");
     }
@@ -451,6 +545,37 @@ export class SigilKitClient {
   }
 }
 
+/**
+ * Minimal ERC-20 read surfaces for the token-path pre-check (E8).
+ *
+ * Declared as two SEPARATE, correctly-shaped fragments. Previously a single
+ * `balanceOf`-shaped fragment (one `address` input) was reused for `allowance` and
+ * force-cast with `as never`, which suppressed the type error that would have caught
+ * the wrong-spender bug below (BUG-4 / CQ-2).
+ */
+const ERC20_BALANCE_OF_ABI = [
+  {
+    type: "function",
+    name: "balanceOf",
+    stateMutability: "view",
+    inputs: [{ name: "holder", type: "address" }],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+] as const;
+
+const ERC20_ALLOWANCE_ABI = [
+  {
+    type: "function",
+    name: "allowance",
+    stateMutability: "view",
+    inputs: [
+      { name: "owner", type: "address" },
+      { name: "spender", type: "address" },
+    ],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+] as const;
+
 /** One advisory token-path check result (enhancement E8). */
 export interface TokenPathCheck {
   kind: "balance" | "allowance";
@@ -464,7 +589,8 @@ export interface TokenPathReport {
 }
 
 /** A decoded ActionLogged audit record (enhancement E3). */
-export interface ActionLogRecord {  agentId: Hash;
+export interface ActionLogRecord {
+  agentId: Hash;
   target: Address;
   selector: Hex;
   value: bigint;
@@ -473,6 +599,13 @@ export interface ActionLogRecord {  agentId: Hash;
   timestamp: number;
   txHash: Hash;
   blockNumber: bigint;
+  /**
+   * Index of the log within its transaction. Together with `txHash` this is the
+   * natural key for a lossless audit store: two actions emitted in the same
+   * transaction share a txHash, block number and timestamp, so any key that omits
+   * the log index silently collapses them (BUG-5).
+   */
+  logIndex: number;
 }
 
 /**
@@ -502,6 +635,7 @@ export function parseActionLogged(logs: Log[]): ActionLogRecord | null {
       // Receipt logs are always mined; null is only possible on pending log objects.
       txHash: log.transactionHash as Hash,
       blockNumber: log.blockNumber as bigint,
+      logIndex: Number(log.logIndex ?? 0),
     };
   }
   return null;

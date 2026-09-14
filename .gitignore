@@ -48,3 +48,9 @@ packages/core/test-results/
 
 # Logs
 *.log
+
+# Generated artifacts (CQ-6). The whitepaper's source of truth is
+# docs/WHITEPAPER-v2.1.md plus SigilKit_Whitepaper.txt — both plain text, both diffable.
+# The PDF is a derived export and was a 1.5 MB binary in history with no diff value;
+# keep it on disk locally, regenerate it for a release, attach it to the release.
+SigilKit_Whitepaper.pdf

@@ -40,6 +40,9 @@ contract DeployDeterministic is Script {
         vm.startBroadcast(broadcasterKey);
         (bool ok, bytes memory ret) = DEPLOYER_PROXY.call(abi.encodePacked(salt, initCode));
         if (!ok) revert("CREATE2 deploy failed");
+        // CREATE2 returns exactly 20 bytes; narrowing bytes20 -> uint160 -> address is
+        // lossless. The cast is the standard extraction, not a truncation.
+        // forge-lint: disable-next-line(unsafe-typecast)
         address deployed = address(uint160(bytes20(ret)));
         manager = SessionKeyManager(payable(deployed));
         vm.stopBroadcast();

@@ -63,7 +63,7 @@ contract HalmosAuthTest is Test {
         uint256 value,
         bytes4 selector,
         bytes memory data
-    ) internal view returns (SessionKeyManager.ActionRequest memory) {
+    ) internal pure returns (SessionKeyManager.ActionRequest memory) {
         return SessionKeyManager.ActionRequest({
             agentId: keccak256("halmos-auth"),
             target: address(0x1234),

@@ -2,8 +2,13 @@
  * validateAgainstScope unit tests — including the Q5 off-by-one alignment with the
  * contract: the on-chain check reverts when `block.timestamp > request.expiry`, so a
  * request is valid THROUGH its expiry second; the local pre-check now matches exactly.
+ *
+ * BUG-3 (2026-09-12): the scope-expiry check had the same class of defect — it used
+ * `nowSec >= scope.expiresAt` while the contract uses `block.timestamp > expiresAt`,
+ * so the client refused a request in the key's final valid second. The boundary tests
+ * below pin both sides of that edge with a frozen clock.
  */
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { validateAgainstScope, type ActionRequest, type Scope } from "../src/index.js";
 import type { Hash, Hex } from "viem";
 
@@ -86,5 +91,31 @@ describe("validateAgainstScope (zero-gas pre-check)", () => {
       windowState: { windowStart: nowSec - SCOPE.windowSeconds - 10, spentThisWindow: 4500n * 10n ** 15n },
     });
     expect(res).toEqual({ ok: true });
+  });
+});
+
+describe("scope-expiry boundary (BUG-3 regression pin)", () => {
+  // SCOPE.expiresAt === 1_900_000_000; freeze the clock on that exact second.
+  const NOW = 1_900_000_000;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW * 1000);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("accepts a request at exactly scope.expiresAt (contract reverts only when >)", () => {
+    const r = request({ expiry: NOW + 600 });
+    expect(validateAgainstScope({ request: r, scope: SCOPE })).toEqual({ ok: true });
+  });
+
+  it("rejects a request one second past scope.expiresAt", () => {
+    const r = request({ expiry: NOW + 600 });
+    expect(validateAgainstScope({ request: r, scope: { ...SCOPE, expiresAt: NOW - 1 } })).toEqual({
+      ok: false,
+      reason: "scope hard-expired",
+    });
   });
 });

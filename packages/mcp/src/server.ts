@@ -137,7 +137,7 @@ export const TOOLS: ToolDef[] = [
   {
     name: "audit_query",
     description:
-      "Queries the indexer's SQLite database (built by @sigilkit/indexer): cumulative spend per agent, recent audited actions, or a summary. Read-only.",
+      "Queries the indexer's SQLite database (built by @sigilkit/indexer): cumulative spend per agent, recent audited actions, or a summary. Strictly read-only: the database is opened with SQLite's readOnly flag, so no directory, table, index or row is ever created or modified. Pass chainId to scope a query to one chain; omit it to aggregate across every chain in the store.",
     inputSchema: {
       type: "object",
       required: ["db"],
@@ -145,25 +145,37 @@ export const TOOLS: ToolDef[] = [
         db: { type: "string", description: "Path to the indexer SQLite database" },
         query: { type: "string", enum: ["spend", "actions", "summary"], description: "Default: summary" },
         agentId: { type: "string" },
-        chainId: { type: "number" },
+        chainId: {
+          type: "number",
+          description: "Optional chain filter. Omit to aggregate across all chains in the store.",
+        },
       },
     },
     run: (args) => {
       const db = String(args.db);
-      if (!existsSync(db) && db !== ":memory:") return { error: `database not found: ${db}` };
-      const ix = new SigilIndexer(db, Number(args.chainId ?? 31337));
-      const query = String(args.query ?? "summary");
-      if (query === "spend") {
-        const agentId = args.agentId as Hash | undefined;
-        if (!agentId) return { error: "spend needs agentId" };
-        return { agentId, totalWei: ix.spendByAgent(agentId).toString() };
+      if (!existsSync(db)) return { error: `database not found: ${db}` };
+      // BUG-9: this tool advertises itself as read-only, so it must not create
+      // directories, run DDL, or write a single row. readOnly opens with SQLite's
+      // readOnly flag and skips mkdir/migrate/schema entirely.
+      const filter = args.chainId === undefined ? undefined : Number(args.chainId);
+      const ix = new SigilIndexer(db, filter ?? 0, { readOnly: true });
+      try {
+        const query = String(args.query ?? "summary");
+        if (query === "spend") {
+          const agentId = args.agentId as Hash | undefined;
+          if (!agentId) return { error: "spend needs agentId" };
+          return { agentId, chainId: filter ?? null, totalWei: ix.spendByAgent(agentId, filter).toString() };
+        }
+        if (query === "actions") {
+          const agentId = args.agentId as Hash | undefined;
+          if (!agentId) return { error: "actions needs agentId" };
+          return { agentId, chainId: filter ?? null, actions: ix.actionsForAgent(agentId, filter) };
+        }
+        return { summary: ix.summary(filter), chains: ix.chainIds() };
+      } finally {
+        // Always release the handle — Windows keeps an exclusive file lock otherwise.
+        ix.close();
       }
-      if (query === "actions") {
-        const agentId = args.agentId as Hash | undefined;
-        if (!agentId) return { error: "actions needs agentId" };
-        return { actions: ix.actionsForAgent(agentId) };
-      }
-      return { summary: ix.summary() };
     },
   },
 ];

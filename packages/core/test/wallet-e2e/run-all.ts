@@ -1,14 +1,14 @@
 /**
  * Wallet conformance entry point: runs both the MetaMask and Coinbase Smart
- * Wallet harnesses in one process. Exits non-zero on any failure.
+ * Wallet harnesses sequentially. Each suite self-manages its own Anvil node,
+ * so this file is a thin sequential runner with no shared infrastructure.
+ * Exits non-zero on any failure.
  */
-import { spawn, type ChildProcess } from "node:child_process";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { spawn } from "node:child_process";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const ANVIL = process.env.ANVIL_BIN || join(homedir(), ".foundry", "bin", "anvil");
-const TSX = process.env.TSX_BIN || join(homedir(), ".bun", "bin", "tsx") ||
-  join(homedir(), "AppData", "Roaming", "npm", "tsx.cmd");
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 interface SuiteResult {
   suite: string;
@@ -18,7 +18,14 @@ interface SuiteResult {
 
 function runSuite(name: string, file: string): Promise<SuiteResult> {
   return new Promise<SuiteResult>((resolve) => {
-    const proc = spawn(TSX, [file], { shell: true, stdio: "pipe" });
+    // `npx tsx` resolves the repo-local node_modules/.bin/tsx reliably; a
+    // hard-coded home-dir path does not exist on a fresh checkout.
+    // cwd = __dirname so the suite's relative paths (metamask/, dapp.html) resolve.
+    const proc = spawn("npx", ["tsx", file], {
+      shell: true,
+      cwd: __dirname,
+      stdio: "pipe",
+    });
     let out = "";
     proc.stdout.on("data", (b) => (out += b.toString()));
     proc.stderr.on("data", (b) => (out += b.toString()));
@@ -26,42 +33,25 @@ function runSuite(name: string, file: string): Promise<SuiteResult> {
   });
 }
 
-async function waitForRpc(url: string, timeoutMs = 30000): Promise<void> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    try {
-      const res = await fetch(url, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_chainId", params: [] }),
-      });
-      if (res.ok) return;
-    } catch {
-      /* not up */
-    }
-    await new Promise((r) => setTimeout(r, 250));
-  }
-  throw new Error("anvil did not start in time");
-}
-
 async function main() {
-  const anvil = spawn(ANVIL, ["--port", "8545", "--silent"], { stdio: "ignore" });
-  try {
-    await waitForRpc("http://127.0.0.1:8545");
+  console.log("[1/2] MetaMask harness (Anvil + Chromium + MetaMask 12.5.0 extension)");
+  const metamask = await runSuite("MetaMask", join(__dirname, "run.ts"));
+  console.log(metamask.output);
 
-    const metamask = await runSuite("MetaMask", "run.ts");
-    console.log("=".repeat(60));
-    console.log(metamask.output);
-    const coinbase = await runSuite("Coinbase Smart Wallet", "coinbase.ts");
-    console.log("=".repeat(60));
-    console.log(coinbase.output);
+  console.log("[2/2] Coinbase Smart Wallet harness (Anvil + on-chain designator)");
+  const coinbase = await runSuite("Coinbase Smart Wallet", join(__dirname, "coinbase.ts"));
+  console.log(coinbase.output);
 
-    const failed = [metamask, coinbase].filter((r) => r.exitCode !== 0).length;
-    console.log("=".repeat(60));
-    console.log(`[overall] ${failed === 0 ? "ALL GREEN" : `${failed} suite(s) failed`}`);
-    process.exit(failed);
-  } finally {
-    anvil.kill();
+  console.log("=".repeat(60));
+  const failed = [metamask, coinbase].filter((r) => r.exitCode !== 0);
+  if (failed.length === 0) {
+    console.log("[overall] ALL GREEN");
+    process.exit(0);
+  } else {
+    for (const f of failed) {
+      console.error(`[FAIL] ${f.suite} (exit ${f.exitCode})`);
+    }
+    process.exit(1);
   }
 }
 

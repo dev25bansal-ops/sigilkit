@@ -1,0 +1,16 @@
+# Contracts whose compiler-generated ABI is committed under packages/core/abis/.
+#
+# Single source of truth for the ABI drift gate (E5): the CI regeneration loop in
+# .github/workflows/ci.yml and the vitest drift gate in
+# packages/core/test/abi-drift.test.ts BOTH read this file, so a contract cannot be
+# added to one side of the gate without the other.
+#
+# Regression this prevents (BUG-2, 2026-09-12): SigilKitDelegator.json was committed
+# and consumed by the drift test, but was missing from the CI regeneration loop — so a
+# change to SigilKitDelegator.sol could land with a stale committed ABI and still pass.
+#
+# One contract name per line. Blank lines and # comments are ignored.
+SessionKeyManager
+SessionKey7579Module
+ActionLog7579Executor
+SigilKitDelegator

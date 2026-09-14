@@ -138,8 +138,56 @@ contract SigilKitDelegatorTest is Test {
         assertEq(eoa.balance, eoaBefore - 0.2 ether, "value must flow from the EOA balance");
     }
 
-    function test_UninitializedEoa_IsInert() public {
-        // A freshly-delegated EOA that never initialized: no scopes can exist, so the
+    // ------------------------------------------------------------------
+    // SEC-6: the canonical IMPLEMENTATION contract must be permanently inert.
+    // ------------------------------------------------------------------
+
+    /// @dev The deployed implementation is what EOAs delegate TO. It must never be
+    ///      usable as a live wallet: its own storage must have no owner that can act.
+    function test_Implementation_IsSelfOwnedAndUninitializable() public view {
+        // The constructor passes address(this) as the owner, so the implementation owns
+        // itself — no external account can ever be its owner.
+        assertEq(impl.owner(), address(impl), "implementation must own itself");
+        assertTrue(address(impl) != address(0));
+    }
+
+    function test_Implementation_InitializeSelfOwnedReverts() public {
+        // Even the one-shot initializer cannot run on the implementation, because the
+        // constructor already set owner != address(0).
+        vm.expectRevert(SigilKitDelegator.AlreadyInitialized.selector);
+        impl.initializeSelfOwned();
+    }
+
+    function test_Implementation_AdminPathsAreUnreachable() public {
+        // Nobody can present themselves as `address(impl)`, so every onlyOwner path reverts.
+        vm.prank(agent);
+        vm.expectRevert(SessionKeyManager.NotOwner.selector);
+        impl.grantSessionKey(
+            agent,
+            SessionKeyManager.Scope({
+                expiresAt: uint48(block.timestamp + 1 days),
+                windowSeconds: 1 hours,
+                perActionCap: 1 ether,
+                perWindowCap: 1 ether,
+                merkleRoot: bytes32(0),
+                countersignAbove: 0,
+                enforceNativeDelta: false,
+                tokenWatchlist: new address[](0)
+            })
+        );
+
+        vm.prank(eoa);
+        vm.expectRevert(SessionKeyManager.NotOwner.selector);
+        impl.transferOwnership(eoa);
+    }
+
+    function test_Implementation_HasNoScopes() public view {
+        // No key can ever be granted on the implementation, so its execution path is dead.
+        assertEq(impl.getNonce(agent), 0);
+        assertEq(impl.getWindowState(agent).windowStart, 0);
+    }
+
+    function test_UninitializedEoa_IsInert() public {        // A freshly-delegated EOA that never initialized: no scopes can exist, so the
         // execution path always reverts KeyUnknown — delegation alone grants nothing.
         address payable fresh = payable(vm.addr(0xC0DE));
         vm.deal(fresh, 1 ether);

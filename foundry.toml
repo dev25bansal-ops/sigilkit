@@ -11,6 +11,14 @@ optimizer_runs = 200
 verbosity = 3
 ffi = false
 fs_permissions = [{ access = "read", path = "./" }]
+# CQ-1: a compiler warning or lint finding is a build failure. The repo previously carried
+# nine ungated solc warnings (shadowed declarations, `this` in a constructor, a
+# needlessly-`view` helper) plus 31 ungated linter findings (12 `block-timestamp`,
+# 19 `unsafe-typecast`) — including several in production code. Every remaining occurrence
+# now carries an explicit `// forge-lint: disable-next-line(...)` with a written
+# justification, so a NEW one anywhere fails the build. Inherited by every profile below.
+# (`deny_warnings` is the deprecated spelling of this key.)
+deny = "warnings"
 
 [profile.default.fuzz]
 runs = 256

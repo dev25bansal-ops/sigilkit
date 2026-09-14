@@ -251,6 +251,10 @@ contract SessionKeyManagerTest is Test {
             _makeRequest(address(counter), counter.poke.selector, 0 ether, abi.encode(1));
         (bool ok, bytes memory ret) = _execute(req);
         assertFalse(ok, "expired key should fail");
+        // Test fixture: the revert payload is asserted to be KeyExpired. `bytes4(ret)` may
+        // right-pad a short payload, which is fine here because the `||` fallback accepts any
+        // payload of at least 4 bytes and this assertion is diagnostic, not a security check.
+        // forge-lint: disable-next-line(unsafe-typecast)
         assertTrue(bytes4(ret) == SessionKeyManager.KeyExpired.selector || ret.length >= 4);
     }
 
@@ -297,12 +301,57 @@ contract SessionKeyManagerTest is Test {
         SessionKeyManager.ActionRequest memory req =
             _makeRequest(address(counter), counter.poke.selector, 0 ether, abi.encode(1));
         bytes32 ds = skm.DOMAIN_SEPARATOR();
-        bytes memory badSig = _signRequest(0xDEAD, req, ds); // not the granted key
+        bytes memory badSig = _signRequest(0xDEAD, req, ds); // a valid signature, but not the granted key
 
-        (bool ok, bytes memory ret) = address(skm).call(
-            abi.encodeWithSelector(skm.executeWithSessionKey.selector, req, badSig, new bytes32[](0))
+        // SEC-5: this test previously called the 4-argument entrypoint with only 3 encoded
+        // arguments and asserted a bare `assertFalse(ok)`. It therefore "passed" because the
+        // ABI decoder rejected the malformed calldata — not because the signer was rejected —
+        // and would have kept passing if signature recovery were removed entirely.
+        //
+        // The contract recovers the (wrong) signer successfully, finds no scope for it, and
+        // reverts KeyUnknown. Pin exactly that.
+        vm.expectRevert(SessionKeyManager.KeyUnknown.selector);
+        skm.executeWithSessionKey(req, badSig, new bytes32[](0), "");
+    }
+
+    /// @dev The other rejection branch: a signature that is not even well-formed.
+    function test_RejectsMalformedSignature() public {
+        vm.prank(vm.addr(OWNER_KEY));
+        skm.grantSessionKey(agent, defaultScope);
+
+        SessionKeyManager.ActionRequest memory req =
+            _makeRequest(address(counter), counter.poke.selector, 0 ether, abi.encode(1));
+
+        // 64 bytes — cannot be a 65-byte (r,s,v) ECDSA signature.
+        bytes memory shortSig = new bytes(64);
+
+        vm.expectRevert(SessionKeyManager.InvalidSignature.selector);
+        skm.executeWithSessionKey(req, shortSig, new bytes32[](0), "");
+    }
+
+    /// @dev Guard against the entrypoint's arity drifting out from under the tests: an
+    ///      under-encoded call must fail loudly rather than silently "revert for free".
+    function test_ExecuteWithSessionKey_ArityIsFour() public {
+        vm.prank(vm.addr(OWNER_KEY));
+        skm.grantSessionKey(agent, defaultScope);
+
+        SessionKeyManager.ActionRequest memory req =
+            _makeRequest(address(counter), counter.poke.selector, 0 ether, abi.encode(1));
+        bytes memory sig = _signRequest(AGENT_KEY, req, skm.DOMAIN_SEPARATOR());
+
+        // 3 args instead of 4: must NOT succeed.
+        (bool ok3,) = address(skm).call(
+            abi.encodeWithSelector(skm.executeWithSessionKey.selector, req, sig, new bytes32[](0))
         );
-        assertFalse(ok, "wrong signer should fail");
+        assertFalse(ok3, "an under-encoded call must not execute");
+
+        // 4 args: succeeds — proving the 3-arg form above failed on arity, not on policy.
+        (bool ok4,) = address(skm).call(
+            abi.encodeWithSelector(
+                skm.executeWithSessionKey.selector, req, sig, new bytes32[](0), bytes("")
+            )
+        );
+        assertTrue(ok4, "the correctly-encoded call must execute");
     }
 
     function test_RejectsValueFromRelayer() public {

@@ -117,10 +117,17 @@ contract GoldenVectorsTest is Test {
 
     /// @dev Minimal RLP: scalars (minimal big-endian), fixed 20-byte address, 3-item
     ///      list with a single-byte length prefix (all vector cases stay under 56 bytes).
+    ///
+    ///      Every `uint8(...)` below is guarded by the branch that reaches it:
+    ///      `v < 0x80` for the scalar, `payload < 56` (require) for the list prefix, and
+    ///      `len <= 32` by construction for `_beBytes`. The casts narrow a value already
+    ///      proven to fit, which is exactly the RLP encoding this fixture must reproduce.
     function _rlpScalar(uint256 v) internal pure returns (bytes memory) {
         if (v == 0) return hex"80";
+        // forge-lint: disable-next-line(unsafe-typecast)
         if (v < 0x80) return abi.encodePacked(uint8(v));
         uint256 len = _byteLen(v);
+        // forge-lint: disable-next-line(unsafe-typecast)
         return abi.encodePacked(uint8(uint8(0x80 + len)), _beBytes(v, len));
     }
 
@@ -131,6 +138,7 @@ contract GoldenVectorsTest is Test {
     function _rlpList(bytes memory a, bytes memory b, bytes memory c) internal pure returns (bytes memory) {
         uint256 payload = a.length + b.length + c.length;
         require(payload < 56, "vector payloads must stay in single-byte list prefix range");
+        // forge-lint: disable-next-line(unsafe-typecast)
         return abi.encodePacked(uint8(uint8(0xc0 + payload)), a, b, c);
     }
 
@@ -144,6 +152,8 @@ contract GoldenVectorsTest is Test {
     function _beBytes(uint256 v, uint256 len) internal pure returns (bytes memory) {
         bytes memory out = new bytes(len);
         for (uint256 i = 0; i < len; ++i) {
+            // `len` comes from _byteLen, so 8*i < 256 and the shifted byte fits in uint8.
+            // forge-lint: disable-next-line(unsafe-typecast)
             out[len - 1 - i] = bytes1(uint8(v >> (8 * i)));
         }
         return out;

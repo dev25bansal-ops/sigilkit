@@ -8,30 +8,74 @@ concurrency:
   group: publish-${{ github.ref }}
   cancel-in-progress: false
 
+# `--provenance` needs an OIDC token; contents:read is the minimum for checkout.
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  FOUNDRY_VERSION: "v1.7.1"
+
 jobs:
-  publish-core:
-    name: Publish @sigilkit/core (tag-gated)
+  publish:
+    name: Publish packages (tag-gated)
     runs-on: ubuntu-latest
     environment: npm
     steps:
       - uses: actions/checkout@v4
         with: { submodules: recursive }
       - uses: foundry-rs/foundry-toolchain@v1
-        with: { version: "v1.7.1" }
+        with: { version: "${{ env.FOUNDRY_VERSION }}" }
       - uses: actions/setup-node@v4
         with: { node-version: "24", cache: npm, registry-url: "https://registry.npmjs.org" }
       - run: npm ci
-      # Full gate: contracts + SDK must be green for THIS tag before anything ships.
+
+      # ---- full gate: nothing ships unless the whole repo is green for THIS tag ----
+      - name: Validate workflows and documented counts
+        run: |
+          node scripts/validate-workflows.mjs
+          node scripts/check-doc-counts.mjs
       - run: forge test --no-match-contract '.*Invariant|.*Fork'
       - run: forge test --match-contract '.*Invariant'
-      - run: npm run build --workspaces
       - run: npm run lint --workspaces
-      - run: npm test --workspace @sigilkit/core
-      - name: Pack preview
-        run: npm pack --dry-run --workspace @sigilkit/core
-      - name: Publish with provenance
-        run: npm publish --provenance --access public --workspace @sigilkit/core
+      - run: npm run build --workspaces
+      - run: npm test --workspaces --if-present
+
+      # ARCH-1: preview EVERY publishable package, not just core. A package that cannot pack
+      # cleanly (missing dist, stray files, no files[] allowlist) must fail here, not after
+      # it is on the registry.
+      - name: Pack preview (all publishable packages)
+        run: |
+          for p in core indexer mcp; do
+            echo "::group::pack preview @sigilkit/$p"
+            npm pack --dry-run --workspace "@sigilkit/$p"
+            echo "::endgroup::"
+          done
+
+      # Publish in dependency order (mcp -> indexer -> core), skipping any version that is
+      # already on the registry so re-running a tag is safe.
+      - name: Publish (dependency order)
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-      - name: Record published version
-        run: echo "Published $(node -p "require('./packages/core/package.json').version") from ${GITHUB_REF}" >> "$GITHUB_STEP_SUMMARY"
+        run: |
+          set -euo pipefail
+          for p in core indexer mcp; do
+            ver="$(node -p "require('./packages/$p/package.json').version")"
+            if npm view "@sigilkit/$p@$ver" version >/dev/null 2>&1; then
+              echo "@sigilkit/$p@$ver already published — skipping"
+              continue
+            fi
+            echo "::group::publishing @sigilkit/$p@$ver"
+            npm publish --provenance --access public --workspace "@sigilkit/$p"
+            echo "::endgroup::"
+          done
+
+      - name: Record published versions
+        run: |
+          {
+            echo "### Published from ${GITHUB_REF}"
+            echo
+            for p in core indexer mcp; do
+              echo "- \`@sigilkit/$p@$(node -p "require('./packages/$p/package.json').version")\`"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"

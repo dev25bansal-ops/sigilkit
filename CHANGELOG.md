@@ -3,13 +3,97 @@
 All notable changes to SigilKit are documented here. Format based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows semver.
 
-## [Unreleased] — 2026-09-11
+## [Unreleased]
 
-Remediation of the 2026-09-11 issues catalog (`docs/Issues-Catalog-2026-09-11.md`): 23 of 24
-catalog issues closed in code; the remaining item (A1: creating the public GitHub repository
-and first CI run) is a single publish action.
+### 2026-09-12 — issues-catalog remediation (`docs/Issues-Catalog-2026-09-12.md`)
 
-### Added — Contracts (enhancements wave, 2026-09-12)
+All 42 items in the 2026-09-12 catalog addressed.
+
+**Fixed — CI (the critical one)**
+- `ci.yml` was **invalid YAML**: a mis-indented step (line 185) made the whole file
+  unparseable, so GitHub rejected it and **all jobs were silently dead**. Re-indented.
+- New `workflow-lint` job: parses every workflow with a real YAML parser and asserts the
+  structural shape GitHub requires, so this class of defect cannot recur (`scripts/validate-workflows.mjs`).
+- ABI drift gate now regenerates **all four** contracts from a shared list
+  (`scripts/abi-targets.txt`) — `SigilKitDelegator` was consumed by the gate but omitted from
+  the regeneration loop, so its committed ABI could drift undetected.
+- CI now runs the indexer and mcp test suites and lints mcp (previously ungated).
+- Added `.gitattributes` so the ABI byte-diff gate is platform-stable.
+
+**Fixed — contracts**
+- `test_RejectsWrongSigner` now pins the expected custom error instead of asserting a bare revert.
+- `SigilKitDelegator` implementation-inertness documented in `SECURITY.md` with a regression test.
+- Empty-calldata audit selector documented as the explicit `0x00000000` sentinel.
+
+**Fixed — SDK (`@sigilkit/core`)**
+- `validateAgainstScope` scope-expiry boundary aligned to the contract (`>` not `>=`) — the
+  client no longer refuses a request in the key's final valid second (BUG-3).
+- `checkTokenPath` queried `allowance(from, token)` instead of `allowance(from, manager)` and
+  only in the case where no allowance is needed at all; it also issued a discarded `decimals()`
+  probe. Rewritten with correct spender semantics, no `as never` cast, and concurrent reads (BUG-4).
+- `ActionLogRecord` now carries `logIndex` — the natural key for a lossless audit store.
+- `SigilKitClientConfig` accepts an optional pre-built `publicClient` (custom/fallback transport
+  or test stub).
+
+**Fixed — indexer (`@sigilkit/indexer`)**
+- Lossless: rows keyed by `(chain_id, tx_hash, log_index)`; N actions in one transaction now
+  produce N rows (was collapsing same-shape siblings).
+- Idempotent: every write is an upsert on that key — re-indexing never duplicates rows.
+- Resumable: the sync cursor persists in `sync_state`; a restart resumes instead of jumping to
+  the head and silently skipping blocks.
+- Reorg-aware: `block_hash` stored, `removed` logs deleted, `rollbackTo()`, and polling stops
+  `confirmations` blocks behind the head.
+- Resilient: `getLogs` chunked to `maxBlockRange` with exponential backoff.
+- Multi-chain: `chain_id` is a per-query filter; one store can hold several chains.
+- Read-only mode (`{ readOnly: true }`) performs no mkdir, DDL or writes; `close()` added.
+- Legacy databases migrate in place on open (no audit data lost).
+
+**Fixed — MCP (`@sigilkit/mcp`)**
+- `audit_query` is now genuinely read-only (it previously ran `CREATE TABLE`/`mkdir` while
+  advertising "Read-only"), and always releases its database handle.
+
+**Fixed — packaging & docs**
+- Per-package `engines`, `files`, `publishConfig`; internal deps pinned to `^0.1.0`
+  (were `"*"`, which resolves to whatever core version is newest at install time).
+- `publish.yml` now publishes `@sigilkit/indexer` and `@sigilkit/mcp`, not just core.
+- Whitepaper: "audited" removed (no external audit has occurred); stale counts corrected.
+- README/CHANGELOG counts now verified against the toolchain by `npm run check:docs`
+  (`scripts/check-doc-counts.mjs`: README totals, CI job counts, per-suite breakdown sum).
+- `docs/STATUS.md` is the single source of truth for which planning doc is active (TD-4);
+  `vault/README.md` records the deliberate keep-with-boundary decision for research notes (TD-8).
+- Whitepaper footer re-dated to September 2026 (was "August 2026" though authored
+  2026-09-11); this CHANGELOG's `Unreleased` section carries the `2026-09-12` remediation
+  date, superseding the stale `2026-09-11` header (TD-10).
+
+**Tech-debt gates closed (TD-1/2/5/6/7/9)**
+- TD-1 (≡ PERF-4): `contracts/test/GasBudget.t.sol` bounds the enforcement hot path;
+  `.gas-snapshot` committed, nightly drift reported — see Verification below.
+- TD-2: v8 coverage thresholds in every package (`core` 88/74, `indexer` 70/65,
+  `mcp` 70/50, `demo-agent` 90/60 lines/branches); `npm run test:coverage` in all four
+  package.json scripts; CI runs coverage for every workspace, not just core.
+- TD-5: weekly wallet-e2e job caches Playwright Chromium + the pinned MetaMask 12.5.0
+  bundle — no more 21.7 MB re-download per run.
+- TD-6: all three `continue-on-error` waivers get dated removal criteria in `ci.yml`
+  comments + `docs/CI-WAIVERS.md` (the tracked register; expires 2026-10-12 / 2026-10-31 /
+  2026-11-30 — no waiver outlives Q3 2026 without a written justification).
+- TD-7: gitleaks secret-scan CI job (pinned v8.30.1, SHA256-verified, `.gitleaks.toml`
+  tuned for Anvil dev keys) + `SECURITY.md` disclosure policy + staged RFC 9116
+  `.well-known/security.txt` (Contact/Expires/Policy), freshness-guarded by
+  `check-doc-counts.mjs` on every run. No mailto: yet — the repo has no domain; the
+  GitHub Security Advisories channel is primary until publication.
+- TD-9: `workflow-lint` job (YAML parse + structural shape) + actionlint — the BUG-1
+  class (invalid workflow YAML disabling all CI) fails fast instead of failing silent.
+- TD-3: `.github/dependabot.yml` — weekly grouped npm updates (whole monorepo shares one
+  lockfile; `@sigilkit/*` internal pins ignored by design) + monthly GitHub-Actions
+  updates. Internal deps stay `^0.1.0` pinned (SEC-2); the committed `package-lock.json`
+  is the drift record `npm ci` enforces.
+
+### 2026-09-11 — first remediation wave (`docs/Issues-Catalog-2026-09-11.md`)
+
+23 of 24 catalog issues closed in code; the remaining item (A1: creating the public GitHub
+repository and first CI run) is a single publish action.
+
+### Added — Contracts (enhancements wave)
 - `SigilKitDelegator.sol` — EIP-7702-native agent wallet: an EOA delegates to it and
   gains the full enforcement core with value flowing from its own balance (E13).
 - `WindowCharged` event — observable window accounting for reconciliation/indexing (E1).
@@ -88,12 +172,20 @@ and first CI run) is a single publish action.
   deployment via the canonical proxy (A2/T5).
 
 ### Verification
-- 55 Foundry tests: 54 unit/fuzz + 4 invariant suites (now fuzzing admin transitions) + 1
-  Base fork smoke.
-- 11 Halmos symbolic specs: 6 spend-cap/Merkle core + 5 auth-path (replay, nonce accounting,
+- **91 Foundry unit/fuzz tests across 10 suites**, plus **4 invariant suites** (handler-only
+  fuzzing incl. admin transitions) and **1 Base fork smoke test**.
+  `npm run check:docs` verifies this count against `forge test --list`.
+- **Gas budgets (PERF-4)**: `contracts/test/GasBudget.t.sol` bounds the enforcement hot path
+  (simple execute 112,805 · whitelisted 115,418 · native-value 139,385 gas) and
+  `test_Gas_ValidateMaxBatch_WithinVerificationBudget` bounds worst-case ERC-4337 validation
+  (8-tuple batch: 58,813 gas, against a 120k ceiling). `.gas-snapshot` is committed and
+  drift is reported nightly.
+- **11 Halmos symbolic specs**: 6 spend-cap/Merkle core + 5 auth-path (replay, nonce accounting,
   request expiry, denylist gating, window cap) over a recover-seam harness.
-- 43 TS tests (incl. account-execute 7579 E2E on the contract side, pinned-leaf and nonce-gate
-  suites); coverage floors: 88% lines / 74% branches.
+- **TypeScript**: `@sigilkit/core` 83 (+1 skipped), `@sigilkit/indexer` 12, `@sigilkit/mcp` 7 —
+  incl. account-execute 7579 E2E, pinned-leaf, nonce-gate, token-path spender-semantics and
+  simulate-once suites; core coverage floors: 88% lines / 74% branches.
+- Echidna property fuzzing (4 properties) as an independent second fuzzer.
 
 ## [0.1.0] — 2026-08-23
 

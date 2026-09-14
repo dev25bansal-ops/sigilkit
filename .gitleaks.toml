@@ -1,0 +1,30 @@
+# Gitleaks configuration (SEC-4 / TD-7).
+#
+# The repo legitimately contains Anvil's well-known development keys so that
+# `npm run demo` and the Anvil conformance tests work with zero setup. Those literals are
+# PUBLIC and universally known — every Anvil install prints them — so scanning should
+# ignore exactly those two values and stay meaningful for everything else.
+#
+# Keep this allowlist as narrow as possible: it matches the key VALUES, not whole files
+# (except test fixtures), so a real secret pasted anywhere still gets caught.
+
+title = "SigilKit gitleaks config"
+
+[extend]
+# Inherit the full default ruleset, then narrow it.
+useDefault = true
+
+[allowlist]
+description = "Anvil development keys (public) and wallet-e2e test fixtures"
+
+# The two public Anvil dev keys, as literal values. Any other 32-byte hex key is flagged.
+regexes = [
+  '''0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80''',
+  '''0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d''',
+]
+
+# Test fixtures and the downloaded MetaMask extension bundle (gitignored, but scanned when
+# present in a working tree).
+paths = [
+  '''packages/core/test/wallet-e2e/.*''',
+]

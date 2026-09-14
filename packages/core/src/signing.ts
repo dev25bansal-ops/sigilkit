@@ -271,16 +271,23 @@ function sortedPairHash(a: Hash, b: Hash): Hash {
 }
 
 /**
- * Local pre-flight check mirroring SpendPolicy.enforce — rejects policy violations
+ * Local pre-flight check mirroring the on-chain enforcement core — rejects policy violations
  * BEFORE any signature is created (zero gas, ~5ms), per the whitepaper data flow.
  *
- * Checks, in order:
- *  1. scope hard expiry (`scope.expiresAt`) — independent of the request's own expiry
- *  2. per-action spend cap
- *  3. per-window spend cap (against the current window state when available)
- *  4. request expiry
- *  5. Merkle target whitelist membership when the scope has a non-zero merkleRoot
- *     and a proof was supplied locally (on-chain verification still applies)
+ * CONFORMANCE CONTRACT (CQ-5). Every check below is a mirror of a specific on-chain check,
+ * and each is pinned by a boundary test so the two cannot silently diverge:
+ *
+ *  | # | check                       | on-chain counterpart                                   | boundary test |
+ *  |---|-----------------------------|--------------------------------------------------------|---------------|
+ *  | 1 | scope hard expiry           | `SessionKeyManager`: `block.timestamp > scope.expiresAt`| `validate.test.ts` "scope-expiry boundary" |
+ *  | 2 | per-action cap              | `SpendPolicy.enforce`: `value > perActionCap`          | `validate.test.ts` |
+ *  | 3 | per-window cap              | `SpendPolicy.enforce`: `projected > perWindowCap`      | `validate.test.ts` |
+ *  | 4 | request expiry              | `SessionKeyManager`: `block.timestamp > request.expiry`| `validate.test.ts` "Q5" |
+ *  | 5 | Merkle target whitelist     | `SessionKeyManager._targetAllowed` (pinned OR wildcard)| `merkle.test.ts` |
+ *
+ * Comparisons are written in the same direction and with the same inclusivity as the
+ * contract (`>` means "strictly past", so equality is still valid). This is advisory only:
+ * on-chain enforcement remains the sole authority.
  */
 export function validateAgainstScope(args: {
   request: ActionRequest;
@@ -291,7 +298,12 @@ export function validateAgainstScope(args: {
   const { request, scope, windowState } = args;
   const nowSec = Math.floor(Date.now() / 1000);
 
-  if (nowSec >= scope.expiresAt) {
+  // Mirrors the contract's `block.timestamp > scope.expiresAt` revert
+  // (SessionKeyManager._validate): the key is valid THROUGH its expiry second, so
+  // `nowSec == scope.expiresAt` is still accepted on-chain. Using `>=` here rejected a
+  // request one second before the chain would, so the client refused transactions the
+  // enforcement core would have allowed (BUG-3, fixed 2026-09-12).
+  if (nowSec > scope.expiresAt) {
     return { ok: false, reason: "scope hard-expired" };
   }
 

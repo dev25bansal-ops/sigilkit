@@ -8,11 +8,19 @@
 
 ## Abstract
 
-SigilKit is an open-source (MIT), audited toolkit for **agent-native wallets**: scoped session-key
+SigilKit is an open-source (MIT) toolkit for **agent-native wallets**: scoped session-key
 management with on-chain spend caps, fixed-window (tumbling) rate limits, argument-bound (calldata-committing) Merkle target whitelists, a
 mandatory per-action audit event, an EIP-7702 authorization library with three-way signing
 conformance, and an ERC-7579 validation module bringing the same scope enforcement to Kernel /
 Safe{Core} accounts.
+
+> **⚠ Audit status — read this before relying on any security claim.** SigilKit has **not** been
+> externally audited. No third party has reviewed these contracts. What exists today is
+> *verification tooling*, not an audit: 91 Foundry unit/fuzz tests, handler-only invariant suites
+> (INV-1..4), an independent Echidna property fuzzer, 11 Halmos symbolic specs over the spend-cap
+> core and auth paths, Slither triage, and gas budgets on the enforcement hot path. An external
+> audit (Cantina/Sherlock contest plus a private review) is outstanding and is a prerequisite for
+> mainnet deployment. Treat this as pre-audit software.
 
 **⚠ Revised thesis (replaces "the standard library nobody built").** Shared infrastructure already
 exists — `base/eip-7702-proxy`, RhinoStone ModuleKit (ERC-7579), ZeroDev Kernel, session-key
@@ -61,12 +69,17 @@ installable via `forge install` / npm.
 ## Implementation status
 
 All locally-buildable scope is complete and committed (see `CHANGELOG.md`): contracts + ERC-7579
-module, TS SDK with three-way digest conformance, live demo agent, 38 Foundry tests, invariant
-suites, 6 Halmos specs, Slither triage, 6-job CI, publish-ready packages.
-
-Remaining before public launch: external audit (Cantina/Sherlock + private review), Base Sepolia →
-mainnet deployment under 2-of-3 Safe + TimelockController, Immunefi bounty ($50k critical ceiling,
-realistic low-end for wallet-class contracts), real-wallet conformance legs, npm publication.
+module, TS SDK with three-way digest conformance, live demo agent, **101 Foundry unit/fuzz tests
+across 10 suites** (manager 25 · 7579 module 25 · executor 11 · delegator 10 · graduated authority
+9 · governance 5 · ERC-1271 keys 4 · account-execute E2E 4 · golden vectors 4 · gas budget 4)
+(plus 4 invariant suites and a Base fork smoke test), **TypeScript: `@sigilkit/core` 83 (+1
+skipped), `@sigilkit/indexer` 12, `@sigilkit/mcp` 7** (incl. account-execute 7579 E2E, pinned-leaf,
+nonce-gate, token-path spender-semantics, simulate-once suites) with v8 coverage floors in every
+package, gas budgets on the enforcement hot path and the worst-case ERC-4337 batch, invariant
+suites, 11 Halmos specs, Slither triage, **13-job CI across 2 workflows** (12 in `ci.yml`, 1
+tag-gated publish), publish-ready packages. Counts are checked against the toolchain by
+`npm run check:docs` (`scripts/check-doc-counts.mjs` — README totals, CI job counts,
+per-suite breakdown sum — plus the `security.txt` freshness guard).
 
 ---
-*SigilKit contributors · August 2026 · MIT*
+*SigilKit contributors · September 2026 · MIT*

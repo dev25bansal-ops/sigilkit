@@ -117,6 +117,8 @@ contract SessionKeyManagerInvariant is Test {
             // Valid scope with random (non-tightening) caps.
             scope = SessionKeyManager.Scope({
                 expiresAt: uint48(block.timestamp + 30 days + (scopeSeed % 300 days)),
+                // Fixture: `scopeSeed % 23 hours` is bounded well below uint48's range.
+                // forge-lint: disable-next-line(unsafe-typecast)
                 windowSeconds: 1 hours + uint48(scopeSeed % 23 hours),
                 perActionCap: 0.5 ether + (scopeSeed % 2 ether),
                 perWindowCap: 0,
@@ -161,6 +163,8 @@ contract SessionKeyManagerInvariant is Test {
         vm.prank(owner);
         skm.rotateSessionKey(oldKey, newKey, _scopeTemplate(), overlapEnds);
         _syncScopeGhost(newKey);
+        // Ghost-model mirror of the contract's overlap rule — time-based by design.
+        // forge-lint: disable-next-line(block-timestamp)
         if (overlapEnds <= block.timestamp) {
             _markRevoked(oldKey);
         }
@@ -301,12 +305,16 @@ contract SessionKeyManagerInvariant is Test {
     function _expectedOutcome(address a, uint256 value) internal view returns (bool) {
         if (skm.isSelectorDenied(counter.poke.selector)) return false; // INV-4 denylist
         SessionKeyManager.Scope memory s = skm.getScope(a);
+        // Ghost-model mirror of INV-2 (key expiry) — time-based by design.
+        // forge-lint: disable-next-line(block-timestamp)
         if (block.timestamp > s.expiresAt) return false; // INV-2
         if (skm.isRevoked(a)) return false; // INV-2
         if (value > s.perActionCap) return false; // per-action cap
 
         SpendPolicy.WindowState memory w = skm.getWindowState(a);
         uint256 base =
+            // Ghost-model mirror of the INV-1 window-rollover rule — time-based by design.
+            // forge-lint: disable-next-line(block-timestamp)
             (w.windowStart != 0 && block.timestamp < uint256(w.windowStart) + s.windowSeconds)
                 ? w.spentThisWindow
                 : 0;

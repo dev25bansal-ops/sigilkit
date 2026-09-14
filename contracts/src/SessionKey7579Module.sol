@@ -165,6 +165,9 @@ contract SessionKey7579Module {
 
     function _grant(address account, address key, Scope memory scope) internal {
         if (key == address(0)) revert KeyUnknown();
+        // Grant-time sanity check: the expiry must be in the future. Time-based by design;
+        // validator drift of seconds cannot grant a key that is already expired.
+        // forge-lint: disable-next-line(block-timestamp)
         if (uint256(scope.expiresAt) <= block.timestamp) revert KeyExpired(); // expiry in past
         if (scope.perActionCap == 0 || scope.perWindowCap < scope.perActionCap) {
             revert MalformedExecutionData();
@@ -206,6 +209,9 @@ contract SessionKey7579Module {
         Scope storage scope = s.scopes[account][signer];
         if (scope.expiresAt == 0) revert KeyUnknown();
         if (s.revoked[account][signer]) revert KeyRevoked();
+        // INV-2: key hard expiry. Time-based by design; validator drift of seconds only
+        // tightens or loosens the key's final moments, never the spend caps.
+        // forge-lint: disable-next-line(block-timestamp)
         if (block.timestamp > scope.expiresAt) revert KeyExpired();
 
         // --- Decode the execution payload (ERC-7579 callData convention) ---
@@ -303,6 +309,10 @@ contract SessionKey7579Module {
         // verify against the pinned leaf (commits keccak256(data)) or the wildcard
         // leaf (argsHash == 0 — any calldata for this target+selector).
         bytes32 argsHash = keccak256(data);
+        // `bytes4(data)` extracts the selector for leaf matching. Truncation is intended and
+        // must match the SDK's `targetLeaf` byte-for-byte, which applies the identical cast —
+        // the whitelist only accepts a leaf the owner built with this same convention.
+        // forge-lint: disable-next-line(unsafe-typecast)
         if (MerkleWhitelist.verify(proof, root, keccak256(abi.encode(target, bytes4(data), argsHash))))
         {
             return true;
@@ -310,6 +320,8 @@ contract SessionKey7579Module {
         if (
             argsHash != bytes32(0)
                 && MerkleWhitelist.verify(
+                    // Same selector-extraction convention as above (wildcard leaf).
+                    // forge-lint: disable-next-line(unsafe-typecast)
                     proof, root, keccak256(abi.encode(target, bytes4(data), bytes32(0)))
                 )
         ) {

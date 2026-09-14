@@ -281,6 +281,9 @@ contract SessionKey7579ModuleTest is Test {
             signFor(address(account), opHash, new bytes32[](0))
         );
         op.sender = address(account);
+        // `hex"cafebabe"` is exactly 4 bytes, so the cast is a widening/label change, not a
+        // truncation — it only names the selector for the expected-revert matcher.
+        // forge-lint: disable-next-line(unsafe-typecast)
         vm.expectRevert(abi.encodeWithSelector(SessionKey7579Module.SelectorDenied.selector, bytes4(hex"cafebabe")));
         account.validate(op, opHash);
     }
@@ -585,6 +588,9 @@ contract SessionKey7579ModuleTest is Test {
 
         SessionKey7579Module.ExecTuple[] memory maxBatch = new SessionKey7579Module.ExecTuple[](8);
         for (uint256 i = 0; i < maxBatch.length; ++i) {
+            // Test fixture: distinct small target addresses (1..8) — the narrowing is bounded
+            // by the loop index and cannot truncate.
+            // forge-lint: disable-next-line(unsafe-typecast)
             maxBatch[i] = SessionKey7579Module.ExecTuple(address(uint160(i + 1)), 0, hex"");
         }
         bytes32 okHash = keccak256("sec5-ok");
@@ -595,6 +601,8 @@ contract SessionKey7579ModuleTest is Test {
 
         SessionKey7579Module.ExecTuple[] memory tooBig = new SessionKey7579Module.ExecTuple[](9);
         for (uint256 i = 0; i < tooBig.length; ++i) {
+            // Test fixture: bounded loop index, cannot truncate.
+            // forge-lint: disable-next-line(unsafe-typecast)
             tooBig[i] = SessionKey7579Module.ExecTuple(address(uint160(i + 1)), 0, hex"");
         }
         bytes32 badHash = keccak256("sec5-bad");
@@ -604,6 +612,40 @@ contract SessionKey7579ModuleTest is Test {
 
         vm.expectRevert(SessionKey7579Module.MalformedExecutionData.selector);
         account.validate(bad, badHash);
+    }
+
+    /// @dev PERF-4: bounds the ERC-4337 verification-gas cost of the worst-case batch.
+    ///
+    ///      This is the failure mode that actually bites in production: a bundler
+    ///      simulates `validateUserOp` and rejects the userOp outright when validation
+    ///      exceeds its verification-gas ceiling — with no on-chain trace and no CI
+    ///      signal, because nothing measured it. MAX_BATCH_SIZE (8) and
+    ///      MAX_TOTAL_PROOF_ELEMENTS (32) are static proxies for a gas bound that was
+    ///      never measured; this test supplies the real one.
+    function test_Gas_ValidateMaxBatch_WithinVerificationBudget() public {
+        installWithScope();
+
+        SessionKey7579Module.ExecTuple[] memory maxBatch = new SessionKey7579Module.ExecTuple[](8);
+        for (uint256 i = 0; i < maxBatch.length; ++i) {
+            // Test fixture: distinct small target addresses (1..8) — the narrowing is bounded
+            // by the loop index and cannot truncate.
+            // forge-lint: disable-next-line(unsafe-typecast)
+            maxBatch[i] = SessionKey7579Module.ExecTuple(address(uint160(i + 1)), 0, hex"");
+        }
+        bytes32 opHash = keccak256("gas-max-batch");
+        PackedUserOperation memory op =
+            makeUserOp(batchCallData(maxBatch), signFor(address(account), opHash, new bytes32[](0)));
+        op.sender = address(account);
+
+        uint256 before = gasleft();
+        uint256 vd = account.validate(op, opHash);
+        uint256 used = before - gasleft();
+
+        assertEq(vd, packedSuccess(EXPIRES_AT), "max batch should validate");
+        emit log_named_uint("gas: validateUserOp (8-tuple batch)", used);
+        // Typical bundler ceilings are ~150-200k; the budget is set below that so a
+        // regression fails here rather than as a silent production rejection.
+        assertLt(used, 120_000, "8-tuple validation exceeded the 4337 verification-gas budget");
     }
 
     function test_MerkleLibStillVerifiedByHalmosSuite_RegressionGuard() public pure {

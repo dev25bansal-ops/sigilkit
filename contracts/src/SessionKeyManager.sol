@@ -137,12 +137,17 @@ contract SessionKeyManager is ActionLogger {
         emit OwnershipTransferred(address(0), owner_);
         // Deny self-administration from session keys by default (defense in depth; these are
         // already onlyOwner-gated).
-        _setSelectorDenied(this.grantSessionKey.selector, true);
-        _setSelectorDenied(this.revokeSessionKey.selector, true);
-        _setSelectorDenied(this.rotateSessionKey.selector, true);
-        _setSelectorDenied(this.transferOwnership.selector, true);
-        _setSelectorDenied(this.setSelectorDenied.selector, true);
-        _setSelectorDenied(this.withdraw.selector, true);
+        //
+        // CQ-1: use the contract-qualified selector form rather than `this.f.selector`.
+        // `this` in a constructor trips solc warning 5805 ("external functions cannot be
+        // called while constructing") — the selectors are compile-time constants, so the
+        // qualified form is both warning-free and clearer about intent.
+        _setSelectorDenied(SessionKeyManager.grantSessionKey.selector, true);
+        _setSelectorDenied(SessionKeyManager.revokeSessionKey.selector, true);
+        _setSelectorDenied(SessionKeyManager.rotateSessionKey.selector, true);
+        _setSelectorDenied(SessionKeyManager.transferOwnership.selector, true);
+        _setSelectorDenied(SessionKeyManager.setSelectorDenied.selector, true);
+        _setSelectorDenied(SessionKeyManager.withdraw.selector, true);
     }
 
     receive() external payable {} // fund the wallet so agents can spend from it
@@ -214,6 +219,10 @@ contract SessionKeyManager is ActionLogger {
         s.revoked[newKey] = false;
         emit SessionKeyGranted(newKey, newScope.expiresAt);
         if (oldKey != address(0)) {
+            // Rotation overlap: if the overlap already elapsed, revoke the old key outright.
+            // Time-based by design; validator drift of seconds only affects whether the old
+            // key is revoked now or expires naturally at `overlapEnds`.
+            // forge-lint: disable-next-line(block-timestamp)
             if (overlapEnds <= block.timestamp) {
                 s.revoked[oldKey] = true;
                 emit SessionKeyRevoked(oldKey);
@@ -226,6 +235,8 @@ contract SessionKeyManager is ActionLogger {
 
     function _validateScope(address key, Scope calldata scope) internal view {
         if (key == address(0)) revert InvalidScope();
+        // Grant-time sanity check: the expiry must be in the future. Time-based by design.
+        // forge-lint: disable-next-line(block-timestamp)
         if (uint256(scope.expiresAt) <= block.timestamp) revert InvalidScope(); // expiry in past
         if (scope.perActionCap == 0) revert InvalidScope(); // value cap zero
         if (scope.perWindowCap < scope.perActionCap) revert InvalidScope(); // window below action cap
@@ -274,7 +285,13 @@ contract SessionKeyManager is ActionLogger {
         Scope storage scope = s.scopes[signer];
         if (scope.expiresAt == 0) revert KeyUnknown();
         if (s.revoked[signer]) revert KeyRevoked();
+        // INV-2: key hard expiry, and the request's own expiry. Both are time-based by
+        // design; a validator shifting the clock by seconds can only tighten or loosen the
+        // final moments of a key — it cannot exceed the spend caps, which are enforced
+        // independently below.
+        // forge-lint: disable-next-line(block-timestamp)
         if (block.timestamp > scope.expiresAt) revert KeyExpired(); // INV-2
+        // forge-lint: disable-next-line(block-timestamp)
         if (block.timestamp > request.expiry) revert RequestExpired();
 
         // --- Graduated authority (E10): owner countersign for large actions ---
@@ -424,6 +441,9 @@ contract SessionKeyManager is ActionLogger {
     function _revertInnerCall(bytes memory reason) internal pure {
         if (reason.length >= 4) {
             // Canonical selectors: Error(string) = 0x08c379a0, Panic(uint256) = 0x4e487b71.
+            // The length check above guarantees a full selector is present, so the cast
+            // truncates padding, not data.
+            // forge-lint: disable-next-line(unsafe-typecast)
             bytes4 sel = bytes4(reason);
             if (
                 sel == 0x08c379a0 || sel == 0x4e487b71
@@ -500,6 +520,9 @@ contract SessionKeyManager is ActionLogger {
             if (
                 ok
                     && ret.length >= 32
+                    // The `ret.length >= 32` guard above makes both casts safe: the first
+                    // reads the whole first word, the second its leading 4 bytes.
+                    // forge-lint: disable-next-line(unsafe-typecast)
                     && (uint256(bytes32(ret)) == uint256(0x1626ba7e) || bytes4(ret) == bytes4(0x1626ba7e))
             ) {
                 return keyContract;

@@ -25,6 +25,29 @@ env:
   FOUNDRY_VERSION: "v1.7.1"
 
 jobs:
+  # 0. Workflow lint — catches the class of defect that silently disabled every job
+  #    below (a mis-indented step made ci.yml unparseable; GitHub rejects the whole
+  #    file, not just the offending step). Runs first so it fails fastest.
+  workflow-lint:
+    name: Workflow lint (actionlint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { submodules: recursive }
+      - uses: foundry-rs/foundry-toolchain@v1
+        with: { version: "${{ env.FOUNDRY_VERSION }}" }
+      - uses: actions/setup-node@v4
+        with: { node-version: "24", cache: npm }
+      - run: npm ci
+      - name: Validate workflow YAML
+        run: node scripts/validate-workflows.mjs
+      - name: Check documented counts against the toolchain
+        run: node scripts/check-doc-counts.mjs
+      - name: Download actionlint
+        run: bash <(curl -sSf https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
+      - name: Run actionlint
+        run: ./actionlint -color
+
   # 1. Forge unit + fuzz (PR gate) — 2k fuzz runs/test via [profile.ci.fuzz]
   forge-unit:
     name: Forge unit + fuzz
@@ -67,6 +90,25 @@ jobs:
       - run: slither --version
       - run: slither contracts/src --fail-high
 
+  # 3b. Secret scanning (SEC-4/TD-7) — the repo intentionally contains Anvil's public dev
+  #     keys, so scanning must be tuned (.gitleaks.toml) rather than absent. Runs on the
+  #     full history so a secret cannot hide in an earlier commit.
+  secret-scan:
+    name: Secret scanning (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - name: Install gitleaks (pinned + checksum-verified)
+        run: |
+          curl -sSfL -o gitleaks.tar.gz \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  gitleaks.tar.gz" | sha256sum -c -
+          tar -xzf gitleaks.tar.gz gitleaks
+          ./gitleaks version
+      - name: Scan full history
+        run: ./gitleaks detect --config .gitleaks.toml --redact --no-banner --verbose
+
   # 4. TS SDK — typecheck, lint, build both workspaces, conformance against Anvil (PR gate)
   ts-sdk:
     name: TS SDK conformance (Anvil)
@@ -79,19 +121,47 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: "24", cache: npm }
       - run: npm ci
-      - run: npm run lint --workspace @sigilkit/core
-      - run: npm run lint --workspace @sigilkit/demo-agent
-      - run: npm run lint --workspace @sigilkit/indexer
+      # CQ-3: lint and test EVERY workspace, not just core. The indexer and mcp suites
+      # (and mcp's typecheck) were previously never run in CI — which is exactly where the
+      # audit-trail data-integrity bugs lived. `publish.yml` already used --workspaces,
+      # so the two workflows disagreed on the gate; they now agree.
+      - run: npm run lint --workspaces
       - run: npm run build --workspaces
-      - run: npm test --workspace @sigilkit/core
+      - run: npm test --workspaces --if-present
+      # TD-2: coverage thresholds for EVERY workspace, not just core. The vitest configs in
+      # each package pin the measured floors (indexer 70/65, mcp 70/50, demo-agent 90/60),
+      # so any drop below them fails the PR instead of shipping silently untested —
+      # the indexer/mcp gap is exactly where BUG-5/6/7 lived.
       - run: npm run test:coverage --workspace @sigilkit/core
+      - run: npm run test:coverage --workspace @sigilkit/indexer
+      - run: npm run test:coverage --workspace @sigilkit/mcp
+      - run: npm run test:coverage --workspace @sigilkit/demo-agent
+      - name: Upload vitest coverage summaries
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: vitest-coverage
+          path: packages/*/coverage/
+          if-no-files-found: ignore
+      # ARCH-5: every publishable package must pack cleanly on every PR. `files[]` gaps,
+      # a missing dist/ or a stray test file otherwise only surface at release time.
+      - name: Pack preview (all publishable packages)
+        run: |
+          for p in core indexer mcp; do
+            npm pack --dry-run --workspace "@sigilkit/$p" > /dev/null
+            echo "ok: @sigilkit/$p packs"
+          done
       # ABI drift gate (E5): regenerate compiler ABIs and fail if the committed files
-      # are stale relative to the contracts in this PR.
+      # are stale relative to the contracts in this PR. The contract list lives in
+      # scripts/abi-targets.txt — the same file the vitest drift gate reads, so the two
+      # sides of the gate cannot drift apart (regression: BUG-2 omitted SigilKitDelegator).
       - name: Regenerate contract ABIs
         run: |
-          for c in SessionKeyManager SessionKey7579Module ActionLog7579Executor; do
-            forge inspect contracts/src/$c.sol:$c abi --json > packages/core/abis/$c.json
-          done
+          while IFS= read -r c; do
+            c="${c%%#*}"; c="$(echo "$c" | tr -d '[:space:]')"
+            [ -z "$c" ] && continue
+            forge inspect "contracts/src/$c.sol:$c" abi --json > "packages/core/abis/$c.json"
+          done < scripts/abi-targets.txt
       - name: Fail on ABI drift
         run: git diff --exit-code packages/core/abis
 
@@ -109,6 +179,18 @@ jobs:
         with: { version: "${{ env.FOUNDRY_VERSION }}" }
       - run: forge test --match-contract '.*Invariant'
       - run: forge coverage --report lcov --report summary
+      # PERF-4: the budget assertions in GasBudget.t.sol / the 7579 batch test are the
+      # hard PR gate. This nightly step reports *drift* on every other test's gas, so a
+      # creeping regression is visible without making unrelated PRs fail.
+      - name: Gas snapshot drift (report only)
+        run: |
+          forge snapshot --no-match-contract '.*Fork'
+          if ! git diff --quiet .gas-snapshot; then
+            echo "### Gas snapshot changed" >> "$GITHUB_STEP_SUMMARY"
+            echo '```diff' >> "$GITHUB_STEP_SUMMARY"
+            git diff .gas-snapshot >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: forge-lcov
@@ -158,7 +240,10 @@ jobs:
   # 8. Weekly — live wallet conformance harnesses (MetaMask 12.5.0 + Coinbase designator).
   # Real browsers + a real extension: heads-up Chromium on ubuntu (xvfb not needed —
   # Playwright launches headed Chromium fine with --no-sandbox on Linux runners).
-  # Non-blocking (continue-on-error) until it has a few green weeks of history.
+  # TD-6 REMOVAL CRITERION (tracked: remove `continue-on-error` on or after 2026-10-12
+  # if the four scheduled runs of 2026-09-15/22/29 and 2026-10-06 were green; if any
+  # run fails, fix it before the next one instead of extending the waiver. This waiver
+  # exists only while the harness has no green history; it must not outlive Q3 2026.)
   wallet-e2e-weekly:
     name: Wallet conformance (weekly)
     if: github.event_name == 'workflow_dispatch' || github.event.schedule == '23 4 * * 1'
@@ -172,17 +257,32 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: "24", cache: npm }
       - run: npm ci
+      # CQ-6/TD-5: the harness pulls a 21.7 MB extension bundle and a Chromium build on every
+      # run. Both are pinned by version, so cache them — this job is the slowest and least
+      # reliable in the pipeline, and re-downloading is pure flake surface.
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - run: npx playwright install chromium --with-deps
+      - name: Cache pinned MetaMask 12.5.0 extension
+        id: metamask-cache
+        uses: actions/cache@v4
+        with:
+          path: packages/core/test/wallet-e2e/metamask
+          key: metamask-chrome-12.5.0
       - name: Fetch pinned MetaMask 12.5.0 extension
+        if: steps.metamask-cache.outputs.cache-hit != 'true'
         run: |
           cd packages/core/test/wallet-e2e
-          curl -L -o metamask.zip \
+          curl -sSfL -o metamask.zip \
             "https://github.com/MetaMask/metamask-extension/releases/download/v12.5.0/metamask-chrome-12.5.0.zip"
-          unzip -o metamask.zip -d metamask
+          unzip -q -o metamask.zip -d metamask
           rm metamask.zip
       - run: npx tsx test/wallet-e2e/run-all.ts
         working-directory: packages/core
-           - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: wallet-e2e-log
@@ -190,7 +290,10 @@ jobs:
           if-no-files-found: ignore
 
   # 9b. Nightly — Echidna property fuzzing (independent second fuzzer over the same
-  # invariants; enhancement E19). continue-on-error until it has green history.
+  # invariants; enhancement E19). TD-6 REMOVAL CRITERION: remove `continue-on-error`
+  # after 14 consecutive green nightly runs (i.e. on or after 2026-09-26 if every run
+  # since 2026-09-12 passed); a red nightly is a real finding — triage it, don't extend
+  # the waiver.
   echidna-nightly:
     name: Echidna property fuzzing (nightly)
     if: github.event_name == 'workflow_dispatch' || github.event.schedule == '17 3 * * *'

@@ -46,6 +46,9 @@ contract HalmosTest is Test {
         view
         returns (bool)
     {
+        // Symbolic mirror of SpendPolicy's window-rollover predicate — time-based by design,
+        // so `block.timestamp` is the modelled clock rather than a manipulable input.
+        // forge-lint: disable-next-line(block-timestamp)
         return w.windowStart == 0 || block.timestamp >= uint256(w.windowStart) + windowSeconds;
     }
 
@@ -116,6 +119,8 @@ contract HalmosTest is Test {
         vm.assume(perActionCap > 0);
         vm.assume(value <= perActionCap);
         vm.assume(w.windowStart != 0);
+        // Symbolic precondition: model the window as already rolled. Time-based by design.
+        // forge-lint: disable-next-line(block-timestamp)
         vm.assume(block.timestamp >= uint256(w.windowStart) + windowSeconds); // rolled
         vm.assume(w.spentThisWindow > perWindowCap); // stale window is "poisoned"
         vm.assume(perWindowCap < 2 ** 200);

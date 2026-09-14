@@ -85,6 +85,8 @@ async function anvilRpc(
 async function main() {
   console.log(`[anvil] starting on :8545`);
   const anvil = spawn(ANVIL, ["--port", "8545", "--silent"], { stdio: "ignore" });
+  anvil.unref();
+  anvil.on("error", () => { /* anvil may already be gone; ignore spawn errors */ });
   await waitForRpc(ANVIL_URL);
 
   const publicClient = createPublicClient({ chain: foundry, transport: http(ANVIL_URL) });
@@ -172,7 +174,9 @@ async function main() {
   const failed = results.filter((r) => !r.pass).length;
 
   anvil.kill();
-  process.exit(failed > 0 ? 1 : 0);
+  // Give libuv a beat to settle the closed child handle before exiting; otherwise
+  // Windows raises STATUS_STACK_BUFFER_OVERRUN (0xC0000409) on the async handle.
+  setTimeout(() => process.exit(failed > 0 ? 1 : 0), 250);
 }
 
 main().catch((err) => {

@@ -8,21 +8,17 @@
  */
 import { execFileSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createPublicClient, createWalletClient, encodeFunctionData, http, toHex, type Hash } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { foundry } from "viem/chains";
 import { SigilKitClient, SESSION_KEY_MANAGER_ABI, type ActionLogRecord, type Scope } from "@sigilkit/core";
+// SEC-4: shared demo config — the Anvil dev keys are allowlisted in .gitleaks.toml.
+import { AGENT_KEY, ANVIL_URL, FORGE, OWNER_KEY } from "./devkeys.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "..", "..", "..");
-const ANVIL_URL = "http://127.0.0.1:8545";
-const FORGE = process.env.FORGE_BIN || join(homedir(), ".foundry", "bin", "forge");
-// WELL-KNOWN Anvil dev keys - DEMO ONLY, never use on funded chains
-const OWNER_KEY = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
-const AGENT_KEY = "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d";
 
 const sh = (cmd: string, args: string[], env?: Record<string, string>) =>
   execFileSync(cmd, args, {

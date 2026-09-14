@@ -23,6 +23,20 @@ contract BrokenTarget {
     }
 }
 
+/// @dev Accepts any call, including empty calldata — used to exercise the audit
+///      selector derivation for calls that carry no real selector (SEC-3).
+contract Sink {
+    uint256 public hits;
+
+    receive() external payable {
+        hits++;
+    }
+
+    fallback() external payable {
+        hits++;
+    }
+}
+
 /// @dev Stand-in for a 7579 smart account: it installs/uses the executor in its own
 ///      context (msg.sender == account on every module call).
 contract ExecutorUser {
@@ -123,6 +137,72 @@ contract ActionLog7579ExecutorTest is Test {
         // The reentrant target is the account itself: r.poke re-enters execute().
         vm.expectRevert(ActionLog7579Executor.ExecutionFailed.selector);
         r.run(address(r), 0, abi.encodeWithSelector(ReentrantUser.poke.selector, 1));
+    }
+
+    // ------------------------------------------------------------------
+    // SEC-3: audit selector derivation + agentId trust boundary
+    // ------------------------------------------------------------------
+
+    /// @dev Empty calldata must NOT be audited as 0x00000000 (ERC-165's reserved space).
+    function test_Execute_EmptyCalldata_RecordsDerivedSelectorNotZero() public {
+        user.install(executor, abi.encode(AGENT_ID));
+        Sink sink = new Sink();
+
+        bytes4 expected = bytes4(keccak256(hex""));
+        assertEq(expected, bytes4(0xc5d24601), "sanity: bytes4(keccak256('')) is the known constant");
+        assertTrue(expected != bytes4(0), "the derived selector must not be the ambiguous zero sentinel");
+
+        vm.expectEmit(true, true, true, true, address(executor));
+        emit ActionLogger.ActionLogged(
+            AGENT_ID, address(sink), expected, 0, bytes32(0), uint48(block.timestamp)
+        );
+        user.run(executor, address(sink), 0, hex"");
+        assertEq(sink.hits(), 1, "the call itself must still land");
+    }
+
+    /// @dev Calldata shorter than a selector must be distinguishable from empty calldata.
+    function test_Execute_ShortCalldata_RecordsDistinctDerivedSelector() public {
+        user.install(executor, abi.encode(AGENT_ID));
+        Sink sink = new Sink();
+
+        bytes memory shortCd = hex"dead";
+        bytes4 expected = bytes4(keccak256(shortCd));
+        assertTrue(expected != bytes4(keccak256(hex"")), "short and empty calldata must differ");
+
+        vm.expectEmit(true, true, true, true, address(executor));
+        emit ActionLogger.ActionLogged(
+            AGENT_ID, address(sink), expected, 0, bytes32(0), uint48(block.timestamp)
+        );
+        user.run(executor, address(sink), 0, shortCd);
+    }
+
+    /// @dev A real (>= 4 byte) calldata payload is still audited with its true selector.
+    function test_Execute_RealCalldata_RecordsTrueSelector() public {
+        user.install(executor, abi.encode(AGENT_ID));
+        vm.expectEmit(true, true, true, true, address(executor));
+        emit ActionLogger.ActionLogged(
+            AGENT_ID, address(counter), counter.poke.selector, 0, bytes32(0), uint48(block.timestamp)
+        );
+        user.run(executor, address(counter), 0, abi.encodeWithSelector(counter.poke.selector, 1));
+    }
+
+    /// @dev The agentId binding is self-scoped: nobody can label someone else's executions.
+    function test_SetAgentId_IsSelfScoped() public {
+        bytes32 attackerId = keccak256("attacker");
+
+        // This test contract binds an id — for ITSELF only.
+        executor.setAgentId(attackerId);
+        assertEq(executor.agentId(address(this)), attackerId);
+        assertEq(executor.agentId(address(user)), bytes32(0), "user's binding must be untouched");
+
+        // `user` still cannot execute until it binds its own id.
+        vm.expectRevert(ActionLog7579Executor.EmptyAgentId.selector);
+        user.run(executor, address(counter), 0, hex"");
+
+        // Binding as itself works, and does not disturb anyone else.
+        user.setAgent(executor, AGENT_ID);
+        assertEq(executor.agentId(address(user)), AGENT_ID);
+        assertEq(executor.agentId(address(this)), attackerId);
     }
 }
 

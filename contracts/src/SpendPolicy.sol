@@ -61,6 +61,11 @@ library SpendPolicy {
         uint256 spent = window.spentThisWindow;
 
         // Roll the window forward once it has fully elapsed.
+        // A fixed (tumbling) window is time-based by design, so `block.timestamp` is the
+        // correct clock here. A validator can nudge it by seconds, which shifts a window
+        // boundary — it cannot push the summed spend past `perWindowCap`, because the
+        // projection below is still capped inside whichever window is in effect.
+        // forge-lint: disable-next-line(block-timestamp)
         if (start == 0 || block.timestamp >= uint256(start) + windowSeconds) {
             start = uint48(block.timestamp);
             spent = 0;

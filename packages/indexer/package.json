@@ -3,8 +3,17 @@
   "version": "0.1.0",
   "description": "ActionLog indexer for SigilKit: turns ActionLogged/WindowCharged events into queryable spend reports (SQLite via node:sqlite).",
   "license": "MIT",
-  "private": true,
   "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
@@ -14,11 +23,12 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
     "lint": "tsc --noEmit",
     "cli": "node dist/cli.js"
   },
   "dependencies": {
-    "@sigilkit/core": "*",
+    "@sigilkit/core": "^0.1.0",
     "viem": "^2.55.19"
   },
   "devDependencies": {

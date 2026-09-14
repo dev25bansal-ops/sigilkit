@@ -1,0 +1,18 @@
+# RFC 9116 security.txt for SigilKit (TD-7, Issues-Catalog-2026-09-12).
+#
+# Publication status: the repository declares github.com/sigilkit/sigilkit as its home
+# (see `repository.url` in every packages/*/package.json) but has not been pushed yet
+# (no git remote as of 2026-09-12). This file is staged so that the first public push
+# ships a machine-readable disclosure channel from day one. Both Contact URIs below
+# resolve once that push happens; until then, SECURITY.md (in this repository) is the
+# authoritative contact channel.
+#
+# When a domain exists: serve this at https://<domain>/.well-known/security.txt,
+# add a mailto: Contact line, add an Encryption key line, and update Expires.
+
+Contact: https://github.com/sigilkit/sigilkit/security/advisories/new
+Contact: https://github.com/sigilkit/sigilkit/blob/master/SECURITY.md
+Expires: 2027-09-12T23:59:00Z
+Preferred-Languages: en
+Canonical: https://github.com/sigilkit/sigilkit/blob/master/.well-known/security.txt
+Policy: https://github.com/sigilkit/sigilkit/blob/master/SECURITY.md

@@ -68,6 +68,8 @@ async function test(name: string, fn: () => Promise<void>): Promise<void> {
 async function main() {
   console.log(`[anvil] starting on :8545`);
   anvil = spawn(ANVIL, ["--port", "8545", "--silent"], { stdio: "ignore" });
+  anvil.unref();
+  anvil.on("error", () => { /* anvil may already be gone; ignore spawn errors */ });
   await waitForRpc(ANVIL_URL);
 
   // Start the dapp fixture server (separate port so MetaMask sees an http:// origin
@@ -251,12 +253,13 @@ async function main() {
   await browser.close();
   dappServer?.close();
   anvil?.kill();
-  process.exit(failed > 0 ? 1 : 0);
+  // See coinbase.ts: let libuv settle before exit on Windows.
+  setTimeout(() => process.exit(failed > 0 ? 1 : 0), 250);
 }
 
 main().catch((err) => {
   console.error(err);
   dappServer?.close();
   anvil?.kill();
-  process.exit(1);
+  setTimeout(() => process.exit(1), 250);
 });

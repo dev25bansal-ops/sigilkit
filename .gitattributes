@@ -1,0 +1,22 @@
+# Normalize line endings so the ABI drift gate (E5/BUG-2) compares identical bytes on
+# every platform. Without this, a Windows checkout with core.autocrlf=true can present
+# CRLF where CI's Linux runner sees LF, producing phantom drift (or masking real drift).
+* text=auto eol=lf
+
+# Binary — never normalize.
+*.pdf binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.zip binary
+*.woff binary
+*.woff2 binary
+
+# Committed compiler ABIs must stay byte-stable: `forge inspect --json` emits LF, and
+# .github/workflows/ci.yml diffs these files to detect drift.
+packages/core/abis/*.json text eol=lf
+
+# Golden vectors are consumed byte-for-byte by both the Foundry and TS suites.
+vectors/*.json text eol=lf

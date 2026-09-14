@@ -14,7 +14,7 @@ session-key management with on-chain spend caps, and a mandatory audit trail per
 
 | # | Component | Status | What it does |
 |---|-----------|--------|--------------|
-| 1 | **EIP-7702 Wallet Library** | **Core implemented** | `signAuthorization` / `signRevocation` / `validateAuthorization` with cast-verified RLP digests + viem↔ethers byte-identical signing parity (first cell of the conformance matrix). Live MetaMask 12.5.0 + Coinbase Smart Wallet Playwright harnesses in [`packages/core/test/wallet-e2e/`](packages/core/test/wallet-e2e/README.md) (manual; CI wiring pending). |
+| 1 | **EIP-7702 Wallet Library** | **Core implemented** | `signAuthorization` / `signRevocation` / `validateAuthorization` with cast-verified RLP digests + viem↔ethers byte-identical signing parity (first cell of the conformance matrix). Live MetaMask 12.5.0 + Coinbase Smart Wallet Playwright harnesses in [`packages/core/test/wallet-e2e/`](packages/core/test/wallet-e2e/README.md) — runnable locally, and wired into CI as the weekly (non-blocking) wallet-conformance job. |
 | 2 | **ERC-7579 module** (replaces the bespoke Diamond) | **Implemented** | `SessionKey7579Module.sol` — a VALIDATION module for Kernel/Safe{Core} accounts: scoped session-key userOp authorization with per-action + batch-aware window caps, Merkle whitelists (proofs ride in the signature blob), selector denylists, account-bound EIP-712 domains. |
 | 3 | **Multi-RPC Provider** | Deferred | viem already covers WS reconnect + retry; use viem directly. |
 | 4 | **Agent Session-Key Manager** | **Implemented + formally verified** | `SessionKeyManager.sol` + `SpendPolicy.sol` + `ActionLogger.sol` + `MerkleWhitelist.sol` with on-chain spend caps, per-window rate limits, Merkle target whitelists, and a mandatory `ActionLogged` event per call. |
@@ -25,7 +25,7 @@ session-key management with on-chain spend caps, and a mandatory audit trail per
 
 | Layer | Status |
 |---|---|
-| Foundry unit + fuzz | ✅ 86 tests across 9 suites (manager 23 · 7579 module 24 · executor 7 · delegator 6 · graduated authority 9 · governance 5 · ERC-1271 keys 4 · account-execute E2E 4 · golden vectors 4) |
+| Foundry unit + fuzz | ✅ 101 tests across 10 suites (manager 25 · 7579 module 25 · executor 11 · delegator 10 · graduated authority 9 · governance 5 · ERC-1271 keys 4 · account-execute E2E 4 · golden vectors 4 · gas budget 4) |
 | Echidna property fuzzing | ✅ 4 properties (independent second fuzzer, nightly) |
 | Foundry invariant (INV-1/2/4, handler-only fuzzing incl. admin transitions) | ✅ 4 suites × 256 runs × 500 calls |
 | Fork smoke (Base) | ✅ 1 test — runs nightly against a live Base fork (chainid + chain-bound domain separator + live state) |
@@ -34,7 +34,7 @@ session-key management with on-chain spend caps, and a mandatory audit trail per
 | Slither static analysis | ✅ run; all findings triaged in [`SECURITY.md`](SECURITY.md) |
 | TS SDK vs on-chain E2E (Anvil) | ✅ sign → relay → enforce → `ActionLogged` verified in receipt |
 | Cross-wallet signing parity | ✅ viem ↔ ethers ↔ hand-rolled reference encoder, byte-identical digests + signatures |
-| CI | ✅ 10 jobs (4 PR-gated: unit, invariant, Slither, TS+coverage; nightly: deep fuzz, Base fork, Echidna; weekly: live wallet harnesses; monthly: Foundry canary; release: Halmos + tag-gated npm publish). Runs on GitHub once pushed |
+| CI | ✅ 13 jobs across 2 workflows — `ci.yml` (12): a workflow-lint gate, secret scanning, and 4 PR-gated jobs (unit, invariant, Slither, TS+coverage); nightly (deep fuzz, Base fork, Echidna); weekly (live wallet harnesses); monthly (Foundry canary); release (Halmos). `publish.yml` (1): tag-gated npm publish with provenance. Counts are verified against CI output by `npm run check:docs` |
 
 ## Repository layout
 
@@ -56,7 +56,7 @@ sigilkit/
 ├─ packages/indexer/          # @sigilkit/indexer — ActionLog → SQLite spend reports
 ├─ packages/mcp/              # @sigilkit/mcp — MCP server: propose/validate/audit tools
 ├─ vault/                     # Obsidian research + build-plan knowledge base
-└─ .github/workflows/ci.yml   # CI (unit, invariant, Slither, TS, nightly Base-fork, Halmos gate)
+└─ .github/workflows/ci.yml   # CI (workflow-lint, unit, invariant, Slither, TS, nightly Base-fork, Halmos gate)
 ```
 
 ## Quick start
@@ -75,9 +75,9 @@ the agent's session key, enforced on-chain, and audited via `ActionLogged`.
 ### Contracts (Foundry)
 
 ```bash
-forge install foundry-rs/forge-std   # or: git clone —depth 1 https://github.com/foundry-rs/forge-std lib/forge-std
+forge install foundry-rs/forge-std   # or: git clone --depth 1 https://github.com/foundry-rs/forge-std lib/forge-std
 forge build
-npm test                             # 54 unit + fuzz tests + full TS suite (excludes invariants + fork smoke)
+npm test                             # 101 unit + fuzz tests + full TS suite (excludes invariants + fork smoke)
 forge test --match-contract '.*Invariant'   # invariant suites (4 × 256 runs)
 forge test --match-contract '.*Fork' --fork-url $RPC_BASE   # fork smoke (Base)
 ```

@@ -47,9 +47,11 @@ contract ActionLog7579Executor is ActionLogger {
     ///         `bytes32 agentId` to bind for audit attribution.
     function onInstall(bytes memory data) external {
         if (data.length != 0) {
-            bytes32 agentId = abi.decode(data, (bytes32));
-            _s().agentIds[msg.sender] = agentId;
-            emit AgentBound(msg.sender, agentId);
+            // CQ-1: named `boundAgentId`, not `agentId` — the latter shadows the public
+            // `agentId(address)` view below (solc warning 8760).
+            bytes32 boundAgentId = abi.decode(data, (bytes32));
+            _s().agentIds[msg.sender] = boundAgentId;
+            emit AgentBound(msg.sender, boundAgentId);
         }
     }
 
@@ -59,13 +61,40 @@ contract ActionLog7579Executor is ActionLogger {
     }
 
     /// @notice Binds (or re-binds) the audit agentId used to attribute executions.
-    function setAgentId(bytes32 agentId) external {
-        _s().agentIds[msg.sender] = agentId;
-        emit AgentBound(msg.sender, agentId);
+    /// @dev TRUST BOUNDARY: the binding is strictly self-scoped — it is written under
+    ///      `msg.sender` and read in `execute` as `agentIds[msg.sender]`, where
+    ///      `msg.sender` must equal `account`. An address therefore can only ever label
+    ///      its OWN executions, and cannot forge another account's attribution. What it
+    ///      CAN do is relabel itself at any time, so the agentId in `ActionLogged` is an
+    ///      account-asserted claim, not a third-party attestation. Operators who need a
+    ///      trustworthy agent identity must pin the binding at install time (via
+    ///      `onInstall`) and treat later `AgentBound` events as governance-relevant.
+    /// @dev The parameter is `boundAgentId` rather than `agentId` so it does not shadow the
+    ///      `agentId(address)` view below (solc warning 8760).
+    function setAgentId(bytes32 boundAgentId) external {
+        _s().agentIds[msg.sender] = boundAgentId;
+        emit AgentBound(msg.sender, boundAgentId);
     }
 
     function agentId(address account) external view returns (bytes32) {
         return _s().agentIds[account];
+    }
+
+    /// @dev Selector recorded in the audit event for a call.
+    ///
+    ///      `bytes4(callData)` silently right-pads input shorter than 4 bytes: empty
+    ///      calldata becomes `0x00000000` (which collides with ERC-165's reserved
+    ///      selector space) and 2-byte calldata becomes `0xab000000` — both
+    ///      indistinguishable in the log from a genuine selector. For calldata shorter
+    ///      than a selector we therefore record `bytes4(keccak256(callData))`: a
+    ///      deterministic, reproducible derivation (empty calldata -> `0xc5d24601`, the
+    ///      well-known keccak of the empty string) that is explicitly NOT a real selector,
+    ///      so an indexer can always tell the two cases apart.
+    function _auditSelector(bytes calldata callData) private pure returns (bytes4) {
+        // Both branches truncate deliberately: the first takes a real 4-byte selector, the
+        // second derives a marker from the calldata hash. See the NatSpec above.
+        // forge-lint: disable-next-line(unsafe-typecast)
+        return callData.length >= 4 ? bytes4(callData) : bytes4(keccak256(callData));
     }
 
     /// @notice ERC-7579 executor surface: the ACCOUNT calls this with the call it wants
@@ -91,6 +120,8 @@ contract ActionLog7579Executor is ActionLogger {
         s.reentrancyLocked = false;
 
         // Mandatory audit (INV-3 on the executor path): no silent success.
-        _logAction(auditId, target, bytes4(callData), value, bytes32(0));
+        // SEC-3: `_auditSelector` keeps empty/truncated calldata from masquerading as
+        // 0x00000000 (see its NatSpec).
+        _logAction(auditId, target, _auditSelector(callData), value, bytes32(0));
     }
 }

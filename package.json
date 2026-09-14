@@ -15,10 +15,15 @@
     "build": "npm run build --workspaces --if-present",
     "test": "forge test --no-match-contract '.*Invariant|.*Fork' && npm run test --workspaces --if-present",
     "test:full": "forge test --no-match-contract '.*Fork' && npm run test --workspaces --if-present",
-    "lint": "npm run lint --workspaces --if-present",
+    "lint": "npm run lint:workflows && npm run lint --workspaces --if-present",
+    "lint:workflows": "node scripts/validate-workflows.mjs",
+    "check:docs": "node scripts/check-doc-counts.mjs",
+    "clean": "node scripts/clean.mjs",
     "vectors:generate": "node scripts/generate-vectors.mjs"
   },
   "devDependencies": {
-    "@playwright/test": "^1.62.1"
+    "@playwright/test": "^1.62.1",
+    "@vitest/coverage-v8": "^5.0.0",
+    "yaml": "^2.9.1"
   }
 }

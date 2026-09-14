@@ -7,22 +7,17 @@
  * five strategy ticks — ticks 1 and 3 fire a 0.004 ETH "rebalance" poke.
  */
 import { execFileSync } from "node:child_process";
-import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "..", "..", "..");
-import { createPublicClient, createWalletClient, http, toHex } from "viem";
+import { createPublicClient, createWalletClient, encodeAbiParameters, http, toHex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { foundry } from "viem/chains";
 import { TreasuryAgent } from "./agent.js";
-
-const ANVIL_URL = "http://127.0.0.1:8545";
-const FORGE = join(homedir(), ".foundry", "bin", "forge");
-// WELL-KNOWN Anvil dev keys - DEMO ONLY, never use on funded chains
-const OWNER_KEY = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"; // anvil #0
-const AGENT_KEY = "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d"; // anvil #1
+// SEC-4: RPC/forge paths and the (public, allowlisted) Anvil dev keys live in one module.
+import { AGENT_KEY, ANVIL_URL, FORGE, OWNER_KEY } from "./devkeys.js";
 
 function sh(cmd: string, args: string[], env?: Record<string, string>) {
   // forge resolves contract paths against CWD — always run from the repo root.
@@ -94,7 +89,11 @@ async function main() {
         value: 4n * 10n ** 15n, // 0.004 ETH — within caps
         expiry: Math.floor(Date.now() / 1000) + 120,
         rationaleHash: ("0x" + Buffer.from(`rebalance tick ${tick}`).toString("hex").padStart(64, "0")) as `0x${string}`,
-        data: toHex(new Uint8Array(32).fill(Number(tick))), // poke(tick)
+        // CQ-4: `request.data` is the ARGS ONLY — the manager prepends `request.selector`
+        // itself (SessionKeyManager: abi.encodePacked(request.selector, request.data)). A
+        // left-filled 32-byte buffer would therefore be read as a giant uint256 rather than
+        // the tick; ABI-encode it so the demo does what its own comment claims.
+        data: encodeAbiParameters([{ type: "uint256" }], [BigInt(tick)]), // poke(tick)
       };
     },
   });

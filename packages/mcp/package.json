@@ -3,8 +3,17 @@
   "version": "0.1.0",
   "description": "MCP server exposing SigilKit to agent frameworks: zero-gas request validation, scope building, revert decoding, and audit queries.",
   "license": "MIT",
-  "private": true,
   "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "main": "./dist/server.js",
   "types": "./dist/server.d.ts",
   "bin": { "sigilkit-mcp": "./dist/cli.js" },
@@ -12,11 +21,12 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/cli.js",
     "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
     "lint": "tsc --noEmit"
   },
   "dependencies": {
-    "@sigilkit/core": "*",
-    "@sigilkit/indexer": "*",
+    "@sigilkit/core": "^0.1.0",
+    "@sigilkit/indexer": "^0.1.0",
     "viem": "^2.55.19"
   },
   "devDependencies": {

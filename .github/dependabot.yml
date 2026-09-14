@@ -1,0 +1,55 @@
+# TD-3: dependency-risk review. npm dependencies previously floated on `^` with no
+# automated drift detection — a silent supply-chain risk for a wallet toolkit.
+# This file makes Dependabot (or Renovate, which reads the same conventions) propose
+# grouped, lockfile-backed updates so drift becomes a reviewable PR instead of a
+# surprise at install time. Toolchain pins outside npm (foundry v1.7.1, slither 0.11.6,
+# halmos 0.3.3, echidna v2.2.5, gitleaks v8.30.1) are enforced in the workflows
+# themselves and re-audited whenever they change.
+
+version: 2
+updates:
+  # Root + workspace manifests share one lockfile; a single npm ecosystem entry covers
+  # the whole monorepo (packages/*/package.json are all installed by the root `npm ci`).
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    # Group everything so one review session covers the weekly drift; security bumps
+    # still arrive as their own (urgent) PRs via the default security-updates lane.
+    groups:
+      minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+      # Majors of the two first-party-critical deps deserve individual attention:
+      # viem drives every typed call in @sigilkit/core; typescript drives the build.
+      major-dev:
+        update-types:
+          - "major"
+    open-pull-requests-limit: 10
+    reviewers:
+      - sigilkit/leads
+    labels:
+      - "dependencies"
+      - "needs-ci"
+    # Internal workspace deps are pinned to ^0.1.0 (SEC-2); ignore cross-package bumps
+    # so Dependabot never proposes publishing-order shuffles.
+    ignore:
+      - dependency-name: "@sigilkit/*"
+
+  # GitHub Actions versions (checkout, setup-node, cache, upload-artifact, gitleaks
+  # download, foundry-toolchain, echidna-action).
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: monthly
+    groups:
+      actions-updates:
+        update-types:
+          - "minor"
+          - "patch"
+          - "major"
+    labels:
+      - "ci"
+      - "needs-ci"

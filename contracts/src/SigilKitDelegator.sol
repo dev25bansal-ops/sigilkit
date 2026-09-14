@@ -39,12 +39,13 @@ contract SigilKitDelegator is SessionKeyManager {
         emit OwnershipTransferred(address(0), address(this));
         // Seed the denylist exactly like the manager constructor (defense in depth):
         // even an allow-all-merkle key can never reach administration.
-        _setSelectorDenied(this.grantSessionKey.selector, true);
-        _setSelectorDenied(this.revokeSessionKey.selector, true);
-        _setSelectorDenied(this.rotateSessionKey.selector, true);
-        _setSelectorDenied(this.transferOwnership.selector, true);
-        _setSelectorDenied(this.setSelectorDenied.selector, true);
-        _setSelectorDenied(this.withdraw.selector, true);
-        _setSelectorDenied(this.initializeSelfOwned.selector, true);
+        // CQ-1: contract-qualified selectors (not `this.f.selector`).
+        _setSelectorDenied(SessionKeyManager.grantSessionKey.selector, true);
+        _setSelectorDenied(SessionKeyManager.revokeSessionKey.selector, true);
+        _setSelectorDenied(SessionKeyManager.rotateSessionKey.selector, true);
+        _setSelectorDenied(SessionKeyManager.transferOwnership.selector, true);
+        _setSelectorDenied(SessionKeyManager.setSelectorDenied.selector, true);
+        _setSelectorDenied(SessionKeyManager.withdraw.selector, true);
+        _setSelectorDenied(SigilKitDelegator.initializeSelfOwned.selector, true);
     }
 }
