@@ -103,7 +103,11 @@ async function main() {
   const manifest = {
     manager: managerAddress,
     counter: counterAddress,
-    scope,
+    // JSON.stringify throws on BigInt — coerce every bigint in the scope
+    // generically so new Scope fields can't regress this.
+    scope: JSON.parse(
+      JSON.stringify(scope, (_k, v) => (typeof v === "bigint" ? v.toString() : v)),
+    ),
     sharedKey: agent.address,
     auditedActions: audits.map((a) => ({
       agentId: a.agentId,
