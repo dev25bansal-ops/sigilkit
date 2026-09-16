@@ -32,11 +32,11 @@ jobs:
     name: Workflow lint (actionlint)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with: { submodules: recursive }
       - uses: foundry-rs/foundry-toolchain@v1
         with: { version: "${{ env.FOUNDRY_VERSION }}" }
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with: { node-version: "24", cache: npm }
       - run: npm ci
       - name: Validate workflow YAML
@@ -58,7 +58,7 @@ jobs:
     name: Forge unit + fuzz
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with: { submodules: recursive }
       - uses: foundry-rs/foundry-toolchain@v1
         with: { version: "${{ env.FOUNDRY_VERSION }}" }
@@ -73,7 +73,7 @@ jobs:
     name: Forge invariant (INV-1..4)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with: { submodules: recursive }
       - uses: foundry-rs/foundry-toolchain@v1
         with: { version: "${{ env.FOUNDRY_VERSION }}" }
@@ -84,11 +84,11 @@ jobs:
     name: Slither static analysis
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with: { submodules: recursive }
       - uses: foundry-rs/foundry-toolchain@v1
         with: { version: "${{ env.FOUNDRY_VERSION }}" }
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with: { python-version: "3.12" }
       # 6.x does not exist on PyPI (latest line is 0.11.x); pin the current release.
       - run: pip install slither-analyzer==0.11.6
@@ -102,7 +102,7 @@ jobs:
     name: Secret scanning (gitleaks)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with: { fetch-depth: 0 }
       - name: Install gitleaks (pinned + checksum-verified)
         run: |
@@ -119,11 +119,11 @@ jobs:
     name: TS SDK conformance (Anvil)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with: { submodules: recursive }
       - uses: foundry-rs/foundry-toolchain@v1
         with: { version: "${{ env.FOUNDRY_VERSION }}" }
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with: { node-version: "24", cache: npm }
       - run: npm ci
       # CQ-3: lint and test EVERY workspace, not just core. The indexer and mcp suites
@@ -142,7 +142,7 @@ jobs:
       - run: npm run test:coverage --workspace @sigilkit/mcp
       - run: npm run test:coverage --workspace @sigilkit/demo-agent
       - name: Upload vitest coverage summaries
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: vitest-coverage
@@ -178,7 +178,7 @@ jobs:
     env:
       FOUNDRY_PROFILE: deep
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with: { submodules: recursive }
       - uses: foundry-rs/foundry-toolchain@v1
         with: { version: "${{ env.FOUNDRY_VERSION }}" }
@@ -199,7 +199,7 @@ jobs:
             git diff .gas-snapshot >> "$GITHUB_STEP_SUMMARY"
             echo '```' >> "$GITHUB_STEP_SUMMARY"
           fi
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: forge-lcov
           path: lcov.info
@@ -214,7 +214,7 @@ jobs:
     env:
       RPC_BASE: ${{ secrets.RPC_BASE }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with: { submodules: recursive }
       - id: gate
         if: env.RPC_BASE == ''
@@ -235,11 +235,11 @@ jobs:
     env:
       HALMOS_ALLOW_DOWNLOAD: "1" # required: halmos downloads solc on first run
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with: { submodules: recursive }
       - uses: foundry-rs/foundry-toolchain@v1
         with: { version: "${{ env.FOUNDRY_VERSION }}" }
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with: { python-version: "3.12" }
       - run: pip install halmos==0.3.3
       - run: halmos --version
@@ -258,25 +258,25 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with: { submodules: recursive }
       - uses: foundry-rs/foundry-toolchain@v1
         with: { version: "${{ env.FOUNDRY_VERSION }}" }
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with: { node-version: "24", cache: npm }
       - run: npm ci
       # CQ-6/TD-5: the harness pulls a 21.7 MB extension bundle and a Chromium build on every
       # run. Both are pinned by version, so cache them — this job is the slowest and least
       # reliable in the pipeline, and re-downloading is pure flake surface.
       - name: Cache Playwright browsers
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/ms-playwright
           key: playwright-chromium-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - run: npx playwright install chromium --with-deps
       - name: Cache pinned MetaMask 12.5.0 extension
         id: metamask-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: packages/core/test/wallet-e2e/metamask
           key: metamask-chrome-12.5.0
@@ -290,7 +290,7 @@ jobs:
           rm metamask.zip
       - run: npx tsx test/wallet-e2e/run-all.ts
         working-directory: packages/core
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: wallet-e2e-log
@@ -308,7 +308,7 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with: { submodules: recursive }
       - uses: crytic/echidna-action@v2
         with:
@@ -326,7 +326,7 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with: { submodules: recursive }
       - uses: foundry-rs/foundry-toolchain@v1
         with: { version: nightly }
