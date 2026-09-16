@@ -45,7 +45,7 @@
     "lint": "tsc --noEmit && tsc -p tsconfig.wallet-e2e.json --noEmit"
   },
   "dependencies": {
-    "viem": "^2.55.19"
+    "viem": "^2.56.5"
   },
   "devDependencies": {
     "@types/node": "^24.13.3",
