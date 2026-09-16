@@ -16,7 +16,7 @@ Safe{Core} accounts.
 
 > **⚠ Audit status — read this before relying on any security claim.** SigilKit has **not** been
 > externally audited. No third party has reviewed these contracts. What exists today is
-> *verification tooling*, not an audit: 91 Foundry unit/fuzz tests, handler-only invariant suites
+> *verification tooling*, not an audit: 101 Foundry unit/fuzz tests, a handler-only invariant suite
 > (INV-1..4), an independent Echidna property fuzzer, 11 Halmos symbolic specs over the spend-cap
 > core and auth paths, Slither triage, and gas budgets on the enforcement hot path. An external
 > audit (Cantina/Sherlock contest plus a private review) is outstanding and is a prerequisite for
@@ -26,8 +26,13 @@ Safe{Core} accounts.
 exists — `base/eip-7702-proxy`, RhinoStone ModuleKit (ERC-7579), ZeroDev Kernel, session-key
 managers from Biconomy/ZeroDev, and revoke tooling (`eip7702-clean-delegation`, `calibur`). The
 genuine unmet gap SigilKit fills is the **bundle no one ships**: cross-wallet signing conformance +
-on-chain audit-per-call + formal verification of the spend-policy core, under MIT with everything
-installable via `forge install` / npm.
+on-chain audit-per-call + formal verification of the spend-policy core, under MIT.
+
+> **⚠ Distribution status.** Contracts are installable today via `forge install`. The
+> TypeScript packages are **not** on npm: the `@sigilkit` scope is owned by an unrelated
+> project, so `npm install @sigilkit/core` resolves to their package. Until the namespace is
+> resolved, the SDK, indexer and MCP server are consumed from the repository workspace
+> (`npm run setup`). See `docs/DEPLOYMENT.md` §2.
 
 ## Components (v2.1 scope)
 
@@ -72,14 +77,17 @@ All locally-buildable scope is complete and committed (see `CHANGELOG.md`): cont
 module, TS SDK with three-way digest conformance, live demo agent, **101 Foundry unit/fuzz tests
 across 10 suites** (manager 25 · 7579 module 25 · executor 11 · delegator 10 · graduated authority
 9 · governance 5 · ERC-1271 keys 4 · account-execute E2E 4 · golden vectors 4 · gas budget 4)
-(plus 4 invariant suites and a Base fork smoke test), **TypeScript: `@sigilkit/core` 83 (+1
-skipped), `@sigilkit/indexer` 12, `@sigilkit/mcp` 7** (incl. account-execute 7579 E2E, pinned-leaf,
-nonce-gate, token-path spender-semantics, simulate-once suites) with v8 coverage floors in every
-package, gas budgets on the enforcement hot path and the worst-case ERC-4337 batch, invariant
-suites, 11 Halmos specs, Slither triage, **13-job CI across 2 workflows** (12 in `ci.yml`, 1
-tag-gated publish), publish-ready packages. Counts are checked against the toolchain by
-`npm run check:docs` (`scripts/check-doc-counts.mjs` — README totals, CI job counts,
-per-suite breakdown sum — plus the `security.txt` freshness guard).
+(plus an invariant suite of 4 invariants and a Base fork smoke test), **TypeScript: `@sigilkit/core` 180 (+1
+skipped), `@sigilkit/indexer` 12, `@sigilkit/mcp` 40, `@sigilkit/demo-agent` 12** (incl.
+account-execute 7579 E2E, pinned-leaf, nonce-gate, token-path spender-semantics, simulate-once,
+boundary-validation, CLI, stdio-transport and tool-input validation suites) with v8 coverage
+floors in every package, gas budgets on the enforcement hot path and the worst-case ERC-4337
+batch, the invariant suite, 11 Halmos specs, Slither triage, **13-job CI across 2 workflows** (12 in
+`ci.yml`, 1 tag-gated publish), publish-ready packages, and a one-command developer path
+(`npm run setup` → `npm run verify`). Counts are checked against the toolchain by
+`npm run check:docs` (`scripts/check-doc-counts.mjs` — README **and whitepaper** totals, CI job
+counts, per-suite breakdown sums, plus the `security.txt` freshness guard; `--with-ts` also
+verifies the TypeScript totals).
 
 ---
 *SigilKit contributors · September 2026 · MIT*

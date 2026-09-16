@@ -1,0 +1,74 @@
+name: Feature request
+description: Propose a capability, an API change, or a documentation improvement.
+title: "[feature] "
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        SigilKit is deliberately narrow: scoped, capped, audited agent execution. Proposals
+        that extend that core are welcome; proposals that widen the trust model need a
+        clear argument for why the on-chain guarantee still holds.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Contracts (Solidity)
+        - SDK (@sigilkit/core)
+        - Indexer (@sigilkit/indexer)
+        - MCP server (@sigilkit/mcp)
+        - Demo agent (@sigilkit/demo-agent)
+        - Tooling / CI / docs
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What can you not do today? Describe the situation, not the solution.
+      placeholder: |
+        I run two agent workers on one host sharing a session key, and they occasionally
+        collide on the on-chain nonce even though each process serializes internally.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What would you like to see? Include an API sketch if you have one.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What else did you try or consider, and why is it insufficient?
+    validations:
+      required: false
+
+  - type: dropdown
+    id: trust
+    attributes:
+      label: Does this change the trust model?
+      description: |
+        If yes, explain in "Anything else" how the on-chain enforcement guarantee is
+        preserved. A capability that relies on the agent behaving correctly is not a
+        guarantee — the threat model assumes the agent is compromised.
+      options:
+        - "No — it does not affect what an agent can do"
+        - "Yes — it changes what an agent can do"
+        - "Unsure"
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Anything else
+    validations:
+      required: false

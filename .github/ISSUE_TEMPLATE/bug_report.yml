@@ -1,0 +1,86 @@
+name: Bug report
+description: Something is broken, or behaves differently from the documentation.
+title: "[bug] "
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Please fill this in as completely as you can — the fields
+        below are the ones that usually decide whether a bug is reproducible.
+
+        **Do not report security vulnerabilities here.** See
+        [SECURITY.md](https://github.com/sigilkit/sigilkit/blob/master/SECURITY.md).
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Which part of the project is affected?
+      options:
+        - Contracts (Solidity)
+        - SDK (@sigilkit/core)
+        - Indexer (@sigilkit/indexer)
+        - MCP server (@sigilkit/mcp)
+        - Demo agent (@sigilkit/demo-agent)
+        - Tooling / CI / docs
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you observe, and what did you expect instead?
+      placeholder: |
+        I ran `sigilkit-indexer backfill --manager 0x…` and it exited 1 with
+        "audit database not found". I expected it to create the database.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Exact commands. Include the smallest input that still shows the problem.
+      placeholder: |
+        1. anvil &
+        2. npm run demo -- --ticks 1
+        3. observe: …
+      render: bash
+    validations:
+      required: true
+
+  - type: textarea
+    id: output
+    attributes:
+      label: Full output
+      description: Paste the complete output, not a summary. Re-run with `SIGILKIT_LOG_LEVEL=debug` if it is thin.
+      render: text
+    validations:
+      required: true
+
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: Output of `node --version`, and `forge --version` if contracts are involved.
+      placeholder: "node v24.12.0 · forge 1.7.1"
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: "Windows 11 · macOS 15 · Ubuntu 24.04"
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Anything else
+      description: Recent changes, workarounds you tried, related issues.
+    validations:
+      required: false

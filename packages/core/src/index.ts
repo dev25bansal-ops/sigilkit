@@ -4,3 +4,7 @@ export * from "./client.js";
 export * from "./eip7702.js";
 export * from "./abis.js";
 export * from "./errors.js";
+export * from "./validation.js";
+export * from "./logger.js";
+export * from "./config.js";
+export * from "./cli.js";

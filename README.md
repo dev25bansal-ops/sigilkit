@@ -27,14 +27,14 @@ session-key management with on-chain spend caps, and a mandatory audit trail per
 |---|---|
 | Foundry unit + fuzz | ✅ 101 tests across 10 suites (manager 25 · 7579 module 25 · executor 11 · delegator 10 · graduated authority 9 · governance 5 · ERC-1271 keys 4 · account-execute E2E 4 · golden vectors 4 · gas budget 4) |
 | Echidna property fuzzing | ✅ 4 properties (independent second fuzzer, nightly) |
-| Foundry invariant (INV-1/2/4, handler-only fuzzing incl. admin transitions) | ✅ 4 suites × 256 runs × 500 calls |
+| Foundry invariant (INV-1/2/4, handler-only fuzzing incl. admin transitions) | ✅ 4 invariants in 1 suite × 256 runs × 500 calls |
 | Fork smoke (Base) | ✅ 1 test — runs nightly against a live Base fork (chainid + chain-bound domain separator + live state) |
 | Halmos symbolic (spend-cap core + Merkle boundaries + auth paths) | ✅ 11 specs (`halmos --match-contract Halmos`) — replay, nonce accounting, request expiry, denylist gating, window-cap |
 | Account-execute E2E (7579 convention) | ✅ validate → execute → value lands, window charged once |
 | Slither static analysis | ✅ run; all findings triaged in [`SECURITY.md`](SECURITY.md) |
 | TS SDK vs on-chain E2E (Anvil) | ✅ sign → relay → enforce → `ActionLogged` verified in receipt |
 | Cross-wallet signing parity | ✅ viem ↔ ethers ↔ hand-rolled reference encoder, byte-identical digests + signatures |
-| CI | ✅ 13 jobs across 2 workflows — `ci.yml` (12): a workflow-lint gate, secret scanning, and 4 PR-gated jobs (unit, invariant, Slither, TS+coverage); nightly (deep fuzz, Base fork, Echidna); weekly (live wallet harnesses); monthly (Foundry canary); release (Halmos). `publish.yml` (1): tag-gated npm publish with provenance. Counts are verified against CI output by `npm run check:docs` |
+| CI | ✅ 13 jobs across 2 workflows — `ci.yml` (12): a workflow-lint gate, secret scanning, and 4 PR-gated jobs (unit, invariant, Slither, TS+coverage); nightly (deep fuzz, Base fork, Echidna); weekly (live wallet harnesses); monthly (Foundry canary); release (Halmos). `publish.yml` (1): tag-gated npm publish with provenance. Counts are verified against CI output by `npm run check:docs` (which also guards the whitepaper's prose counts) |
 
 ## Repository layout
 
@@ -52,20 +52,34 @@ sigilkit/
 │  ├─ test/                   # unit + invariant + Halmos specs + fork smoke
 │  └─ script/Deploy.s.sol     # deploy (SIGILKIT_OWNER_KEY required; no default key)
 ├─ packages/core/             # @sigilkit/core — TS SDK (EIP-712 signing, EIP-7702, Merkle, client)
+│  └─ src/{validation,config,logger,cli}.ts  # boundary validation, env config, logging, CLI plumbing
 ├─ packages/demo-agent/       # @sigilkit/demo-agent — autonomous treasury bot demo (+ fleet mode)
 ├─ packages/indexer/          # @sigilkit/indexer — ActionLog → SQLite spend reports
 ├─ packages/mcp/              # @sigilkit/mcp — MCP server: propose/validate/audit tools
+├─ scripts/                   # bootstrap.mjs · verify.mjs · check-doc-counts.mjs · abi-targets.txt
+├─ docs/                      # user + operator docs (see Documentation table above)
 ├─ vault/                     # Obsidian research + build-plan knowledge base
+├─ .env.example               # every supported environment variable, documented
+├─ Dockerfile / docker-compose.yml  # container packaging for the indexer
 └─ .github/workflows/ci.yml   # CI (workflow-lint, unit, invariant, Slither, TS, nightly Base-fork, Halmos gate)
 ```
 
 ## Quick start
 
+```bash
+git clone https://github.com/sigilkit/sigilkit.git && cd sigilkit
+npm run setup      # Node/Foundry check → install from lockfile → build all packages
+npm run verify     # full gate: lint, doc counts, contract tests, TS tests
+```
+
+Needs Node 24+ (`.nvmrc` is committed). Foundry 1.7.x is required only for contracts and
+the demo. Full walkthrough: [docs/GETTING-STARTED.md](docs/GETTING-STARTED.md).
+
 ### Demo agent (the whole stack in one command)
 
 ```bash
-anvil &                                # local chain
-cd packages/demo-agent && npm run demo # deploy → grant scoped key → 5 strategy ticks
+anvil &                # local chain
+npm run demo           # deploy → grant scoped key → 5 strategy ticks
 ```
 
 Deploys SessionKeyManager + a Counter target, funds the wallet, grants a 1-hour session key
@@ -78,7 +92,7 @@ the agent's session key, enforced on-chain, and audited via `ActionLogged`.
 forge install foundry-rs/forge-std   # or: git clone --depth 1 https://github.com/foundry-rs/forge-std lib/forge-std
 forge build
 npm test                             # 101 unit + fuzz tests + full TS suite (excludes invariants + fork smoke)
-forge test --match-contract '.*Invariant'   # invariant suites (4 × 256 runs)
+forge test --match-contract '.*Invariant'   # invariant suite (4 invariants × 256 runs)
 forge test --match-contract '.*Fork' --fork-url $RPC_BASE   # fork smoke (Base)
 ```
 
@@ -99,6 +113,45 @@ Safe as the owner address.
 ```bash
 npm install
 npm test --workspace @sigilkit/core    # cross-language conformance vs. Anvil
+```
+
+### Services
+
+> **Not yet published to npm.** The `@sigilkit` scope on npm belongs to an unrelated project
+> (a different "sigilkit"), so `npm install @sigilkit/core` today would fetch *someone else's*
+> package. Until the scope is resolved, consume these from a clone:
+>
+> ```bash
+> git clone https://github.com/sigilkit/sigilkit.git && cd sigilkit && npm run setup
+> ```
+
+```bash
+# Audit trail: events → SQLite, then query it (read-only)
+node packages/indexer/dist/cli.js backfill --manager 0xYourManager --confirmations 0
+node packages/indexer/dist/cli.js spend --agent 0x<32-byte-agent-id> --json
+
+# MCP server for agent frameworks (stdio) — or `npm run mcp`
+node packages/mcp/dist/cli.js --help
+```
+
+## Documentation
+
+| Document | Contents |
+|---|---|
+| [docs/GETTING-STARTED.md](docs/GETTING-STARTED.md) | Prerequisites, install, first run, SDK/indexer/MCP usage |
+| [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | Every environment variable and CLI flag, with defaults |
+| [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Contracts, npm publishing, running the indexer/MCP services, rollback |
+| [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Symptom → cause → fix for common failures |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Dev setup, conventions, change recipes, PR process |
+| [SECURITY.md](SECURITY.md) | Threat model, Slither triage, disclosure policy |
+| [docs/STATUS.md](docs/STATUS.md) | Which planning document is authoritative |
+| [CHANGELOG.md](CHANGELOG.md) | Release history |
+
+One-command entry points:
+
+```bash
+npm run setup     # check toolchain, install from lockfile, build every package
+npm run verify    # workflow lint + doc counts + typecheck + contract tests + TS tests
 ```
 
 ## Security model

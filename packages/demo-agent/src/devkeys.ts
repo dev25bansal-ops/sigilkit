@@ -17,10 +17,19 @@
  */
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { loadDotEnv } from "@sigilkit/core/config";
+
+// This module reads the environment while it is being imported, so `.env` has to be loaded
+// here — a call from `main()` would already be too late for the constants below.
+loadDotEnv();
 
 export const ANVIL_URL = process.env.SIGILKIT_RPC_URL ?? "http://127.0.0.1:8545";
 
-export const FORGE = process.env.FORGE_BIN ?? join(homedir(), ".foundry", "bin", "forge");
+// Foundry installs `forge.exe` on Windows, so the bare name would resolve to a
+// non-existent file and `npm run demo` would fail before it started.
+const FORGE_BINARY = process.platform === "win32" ? "forge.exe" : "forge";
+
+export const FORGE = process.env.FORGE_BIN ?? join(homedir(), ".foundry", "bin", FORGE_BINARY);
 
 /** Anvil's public development keys. See the module docstring before changing these. */
 export const ANVIL_DEV_KEYS = {

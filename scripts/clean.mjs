@@ -17,18 +17,19 @@ import { fileURLToPath } from "node:url";
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const DRY = process.argv.includes("--dry");
 
+/** Workspace packages — kept in one place so per-package artifacts cannot drift apart. */
+const PACKAGES = ["core", "indexer", "mcp", "demo-agent"];
+
 /** Generated paths, relative to the repo root. Never add a tracked source path here. */
 const TARGETS = [
   "out",
   "cache",
   "broadcast",
   "coverage",
-  "packages/core/dist",
-  "packages/core/coverage",
+  ...PACKAGES.map((p) => `packages/${p}/dist`),
+  // Every package writes a coverage report; listing only core left three behind.
+  ...PACKAGES.map((p) => `packages/${p}/coverage`),
   "packages/core/test-results",
-  "packages/indexer/dist",
-  "packages/mcp/dist",
-  "packages/demo-agent/dist",
   "packages/demo-agent/fleet-manifest.json",
   "packages/core/test/wallet-e2e/metamask",
   "packages/core/test/wallet-e2e/metamask.zip",

@@ -1,14 +1,16 @@
 # RFC 9116 security.txt for SigilKit (TD-7, Issues-Catalog-2026-09-12).
 #
-# Publication status: the repository declares github.com/sigilkit/sigilkit as its home
-# (see `repository.url` in every packages/*/package.json) but has not been pushed yet
-# (no git remote as of 2026-09-12). This file is staged so that the first public push
-# ships a machine-readable disclosure channel from day one. Both Contact URIs below
-# resolve once that push happens; until then, SECURITY.md (in this repository) is the
-# authoritative contact channel.
+# Publication status (verified 2026-09-15): the repository declares
+# github.com/sigilkit/sigilkit as its home (see `repository.url` in every
+# packages/*/package.json), and it is NOT publicly reachable — an anonymous request for both
+# the repo and the owner returns HTTP 404 (the repo does not exist yet, or is still private).
 #
-# When a domain exists: serve this at https://<domain>/.well-known/security.txt,
-# add a mailto: Contact line, add an Encryption key line, and update Expires.
+# Consequence: the Contact and Policy URIs below are dead links until the repository is public.
+# They are written out anyway so the first public push ships a machine-readable disclosure
+# channel on day one. Until then, SECURITY.md in this repository is the authoritative channel.
+#
+# Before public launch: confirm the repository resolves at the declared URL, then replace the
+# advisory Contact with a mailto: you control, add an Encryption key line, and refresh Expires.
 
 Contact: https://github.com/sigilkit/sigilkit/security/advisories/new
 Contact: https://github.com/sigilkit/sigilkit/blob/master/SECURITY.md

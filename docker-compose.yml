@@ -1,0 +1,62 @@
+# SigilKit services.
+#
+#   cp .env.example .env          # then set SIGILKIT_MANAGER and SIGILKIT_RPC_URL
+#   docker compose up --build
+#
+# Two services share one SQLite file on a named volume:
+#   indexer — the only writer (SQLite allows a single writer)
+#   mcp     — read-only queries, exposed over stdio for an agent framework
+#
+# The MCP service is defined for completeness; it is normally spawned by the agent
+# framework itself rather than run as a daemon (see docs/DEPLOYMENT.md).
+
+services:
+  indexer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: sigilkit-indexer:local
+    # `backfill` once, then `watch`. Override the command to do only one.
+    command: ["watch", "--manager", "${SIGILKIT_MANAGER:?set SIGILKIT_MANAGER in .env}"]
+    environment:
+      SIGILKIT_RPC_URL: ${SIGILKIT_RPC_URL:-http://host.docker.internal:8545}
+      SIGILKIT_MANAGER: ${SIGILKIT_MANAGER:-}
+      SIGILKIT_DB_PATH: /data/audit.db
+      SIGILKIT_INDEXER_CHAIN_ID: ${SIGILKIT_INDEXER_CHAIN_ID:-31337}
+      SIGILKIT_CONFIRMATIONS: ${SIGILKIT_CONFIRMATIONS:-12}
+      SIGILKIT_MAX_BLOCK_RANGE: ${SIGILKIT_MAX_BLOCK_RANGE:-2000}
+      SIGILKIT_LOG_LEVEL: ${SIGILKIT_LOG_LEVEL:-info}
+      SIGILKIT_LOG_FORMAT: ${SIGILKIT_LOG_FORMAT:-json}
+    volumes:
+      - sigilkit-data:/data
+    restart: unless-stopped
+    # On Linux, reach an Anvil running on the host:
+    # extra_hosts: ["host.docker.internal:host-gateway"]
+    healthcheck:
+      # The store must exist and be readable. Cheap, and catches a wedged volume.
+      test: ["CMD", "node", "-e", "require('node:fs').accessSync(process.env.SIGILKIT_DB_PATH)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: sigilkit-indexer:local
+    entrypoint: ["node", "packages/mcp/dist/cli.js"]
+    command: ["--log-level", "${SIGILKIT_LOG_LEVEL:-info}"]
+    environment:
+      SIGILKIT_DB_PATH: /data/audit.db
+      SIGILKIT_LOG_LEVEL: ${SIGILKIT_LOG_LEVEL:-info}
+    volumes:
+      # Read-only: audit_query never writes, so it cannot corrupt the store.
+      - sigilkit-data:/data:ro
+    stdin_open: true
+    depends_on:
+      - indexer
+    profiles: ["mcp"] # opt in: docker compose --profile mcp up
+
+volumes:
+  sigilkit-data:

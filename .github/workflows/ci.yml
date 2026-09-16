@@ -41,6 +41,11 @@ jobs:
       - run: npm ci
       - name: Validate workflow YAML
         run: node scripts/validate-workflows.mjs
+      # The image is the one deliverable CI cannot build cheaply, so check its static
+      # invariants (COPY sources exist, .dockerignore does not exclude them, ENTRYPOINT
+      # resolves) here rather than discovering a broken image at release time.
+      - name: Check container packaging
+        run: node scripts/check-dockerfile.mjs
       - name: Check documented counts against the toolchain
         run: node scripts/check-doc-counts.mjs
       - name: Download actionlint

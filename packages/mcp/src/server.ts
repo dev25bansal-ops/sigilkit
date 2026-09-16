@@ -12,16 +12,40 @@
  */
 import { createInterface } from "node:readline";
 import { existsSync } from "node:fs";
+import { createRequire } from "node:module";
 import type { Address, Hash, Hex } from "viem";
 import {
+  assertAddress,
+  assertBigInt,
+  assertHash32,
+  assertHex,
+  assertNonEmptyString,
+  assertOneOf,
+  assertUint,
+  createLogger,
   decodeSigilKitError,
   parseActionRequest,
   targetLeaf,
   merkleRoot,
   validateAgainstScope,
+  ValidationError,
+  type Logger,
   type Scope,
 } from "@sigilkit/core";
 import { SigilIndexer } from "@sigilkit/indexer";
+import { readEnvChoice } from "@sigilkit/core/config";
+import { LOG_FORMATS, LOG_LEVELS } from "@sigilkit/core/logger";
+
+const pkg = createRequire(import.meta.url)("../package.json") as { version: string };
+
+/** MCP speaks JSON-RPC over stdout, so all diagnostics go to stderr. */
+const defaultLogger: Logger = createLogger({
+  scope: "mcp",
+  level: readEnvChoice(process.env, "SIGILKIT_LOG_LEVEL", LOG_LEVELS, "info"),
+  format: readEnvChoice(process.env, "SIGILKIT_LOG_FORMAT", LOG_FORMATS, "text"),
+  out: (line) => process.stderr.write(line + "\n"),
+  err: (line) => process.stderr.write(line + "\n"),
+});
 
 interface ToolDef {
   name: string;
@@ -30,27 +54,26 @@ interface ToolDef {
   run: (args: Record<string, unknown>) => Promise<unknown> | unknown;
 }
 
-const SCOPE_EXAMPLE: Scope = {
-  expiresAt: 0,
-  windowSeconds: 600,
-  perActionCap: 0n,
-  perWindowCap: 0n,
-  merkleRoot: ("0x" + "0".repeat(64)) as Hash,
-  countersignAbove: 0n,
-  enforceNativeDelta: false,
-  tokenWatchlist: [],
-};
+const ZERO_ROOT = ("0x" + "0".repeat(64)) as Hash;
 
-function coerceScope(raw: Record<string, unknown>): Scope {
+function coerceScope(raw: unknown): Scope {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new ValidationError("scope", "expected an object");
+  }
+  const r = raw as Record<string, unknown>;
+  const watchlist = r.tokenWatchlist ?? [];
+  if (!Array.isArray(watchlist)) {
+    throw new ValidationError("scope.tokenWatchlist", "expected an array of addresses");
+  }
   return {
-    expiresAt: Number(raw.expiresAt ?? 0),
-    windowSeconds: Number(raw.windowSeconds ?? 600),
-    perActionCap: BigInt((raw.perActionCap as string) ?? "0"),
-    perWindowCap: BigInt((raw.perWindowCap as string) ?? "0"),
-    merkleRoot: (raw.merkleRoot as Hash) ?? SCOPE_EXAMPLE.merkleRoot,
-    countersignAbove: BigInt((raw.countersignAbove as string) ?? "0"),
-    enforceNativeDelta: Boolean(raw.enforceNativeDelta ?? false),
-    tokenWatchlist: (raw.tokenWatchlist as Address[]) ?? [],
+    expiresAt: r.expiresAt === undefined ? 0 : assertUint(r.expiresAt, "scope.expiresAt", { min: 0 }),
+    windowSeconds: r.windowSeconds === undefined ? 600 : assertUint(r.windowSeconds, "scope.windowSeconds", { min: 1 }),
+    perActionCap: r.perActionCap === undefined ? 0n : assertBigInt(r.perActionCap, "scope.perActionCap", { min: 0n }),
+    perWindowCap: r.perWindowCap === undefined ? 0n : assertBigInt(r.perWindowCap, "scope.perWindowCap", { min: 0n }),
+    merkleRoot: r.merkleRoot === undefined ? ZERO_ROOT : assertHash32(r.merkleRoot, "scope.merkleRoot"),
+    countersignAbove: r.countersignAbove === undefined ? 0n : assertBigInt(r.countersignAbove, "scope.countersignAbove", { min: 0n }),
+    enforceNativeDelta: r.enforceNativeDelta === undefined ? false : Boolean(r.enforceNativeDelta),
+    tokenWatchlist: watchlist.map((a, i) => assertAddress(a, `scope.tokenWatchlist[${i}]`)),
   };
 }
 
@@ -71,14 +94,21 @@ export const TOOLS: ToolDef[] = [
     },
     run: (args) => {
       const request = parseActionRequest(args.request);
-      const scope = coerceScope(args.scope as Record<string, unknown>);
-      const windowState = args.windowState as { windowStart: number; spentThisWindow: string } | undefined;
+      const scope = coerceScope(args.scope);
+      const rawWindow = args.windowState;
+      if (rawWindow !== undefined && (rawWindow === null || typeof rawWindow !== "object")) {
+        throw new ValidationError("windowState", "expected an object {windowStart, spentThisWindow}");
+      }
+      const ws = rawWindow as Record<string, unknown> | undefined;
       return validateAgainstScope({
         request,
         scope,
         merkleProof: undefined,
-        windowState: windowState
-          ? { windowStart: windowState.windowStart, spentThisWindow: BigInt(windowState.spentThisWindow) }
+        windowState: ws
+          ? {
+              windowStart: assertUint(ws.windowStart ?? 0, "windowState.windowStart", { min: 0 }),
+              spentThisWindow: assertBigInt(ws.spentThisWindow ?? "0", "windowState.spentThisWindow", { min: 0n }),
+            }
           : undefined,
       });
     },
@@ -105,21 +135,35 @@ export const TOOLS: ToolDef[] = [
       },
     },
     run: (args) => {
-      const targets = (args.targets as Array<{ target: string; selector: string }>) ?? [];
-      let root = ("0x" + "0".repeat(64)) as Hash;
+      const rawTargets = args.targets ?? [];
+      if (!Array.isArray(rawTargets)) {
+        throw new ValidationError("targets", "expected an array of {target, selector}");
+      }
+      const targets = rawTargets.map((t, i) => {
+        if (t === null || typeof t !== "object" || Array.isArray(t)) {
+          throw new ValidationError(`targets[${i}]`, "expected an object {target, selector}");
+        }
+        const entry = t as Record<string, unknown>;
+        return {
+          target: assertAddress(entry.target, `targets[${i}].target`),
+          selector: assertHex(entry.selector, `targets[${i}].selector`, { bytes: 4 }),
+        };
+      });
+
+      let root = ZERO_ROOT;
       let leaves: Hex[] = [];
       if (targets.length > 0) {
-        leaves = targets.map((t) => targetLeaf(t.target as Address, t.selector as Hex));
+        leaves = targets.map((t) => targetLeaf(t.target, t.selector));
         root = merkleRoot(leaves);
       }
       return {
         scope: {
-          expiresAt: Number(args.expiresAt),
-          windowSeconds: Number(args.windowSeconds ?? 600),
-          perActionCap: args.perActionCap,
-          perWindowCap: args.perWindowCap,
+          expiresAt: assertUint(args.expiresAt, "expiresAt", { min: 1 }),
+          windowSeconds: args.windowSeconds === undefined ? 600 : assertUint(args.windowSeconds, "windowSeconds", { min: 1 }),
+          perActionCap: assertBigInt(args.perActionCap, "perActionCap", { min: 0n }).toString(),
+          perWindowCap: assertBigInt(args.perWindowCap, "perWindowCap", { min: 0n }).toString(),
           merkleRoot: root,
-          countersignAbove: (args.countersignAbove as string) ?? "0",
+          countersignAbove: args.countersignAbove === undefined ? "0" : assertBigInt(args.countersignAbove, "countersignAbove", { min: 0n }).toString(),
           enforceNativeDelta: Boolean(args.enforceNativeDelta ?? false),
           tokenWatchlist: [],
         },
@@ -132,7 +176,7 @@ export const TOOLS: ToolDef[] = [
     name: "decode_error",
     description: "Decodes SigilKit revert data into a named error with arguments (e.g. PerActionCapExceeded(value, cap)).",
     inputSchema: { type: "object", required: ["data"], properties: { data: { type: "string", description: "0x revert data" } } },
-    run: (args) => decodeSigilKitError(args.data as Hex),
+    run: (args) => decodeSigilKitError(assertHex(args.data, "data")),
   },
   {
     name: "audit_query",
@@ -152,23 +196,21 @@ export const TOOLS: ToolDef[] = [
       },
     },
     run: (args) => {
-      const db = String(args.db);
+      const db = assertNonEmptyString(args.db, "db");
       if (!existsSync(db)) return { error: `database not found: ${db}` };
+      const query = assertOneOf(args.query ?? "summary", "query", ["spend", "actions", "summary"] as const);
+      const filter = args.chainId === undefined ? undefined : assertUint(args.chainId, "chainId", { min: 1 });
       // BUG-9: this tool advertises itself as read-only, so it must not create
       // directories, run DDL, or write a single row. readOnly opens with SQLite's
       // readOnly flag and skips mkdir/migrate/schema entirely.
-      const filter = args.chainId === undefined ? undefined : Number(args.chainId);
-      const ix = new SigilIndexer(db, filter ?? 0, { readOnly: true });
+      const ix = new SigilIndexer(db, filter ?? 0, { readOnly: true, logger: defaultLogger });
       try {
-        const query = String(args.query ?? "summary");
         if (query === "spend") {
-          const agentId = args.agentId as Hash | undefined;
-          if (!agentId) return { error: "spend needs agentId" };
+          const agentId = assertHash32(args.agentId, "agentId");
           return { agentId, chainId: filter ?? null, totalWei: ix.spendByAgent(agentId, filter).toString() };
         }
         if (query === "actions") {
-          const agentId = args.agentId as Hash | undefined;
-          if (!agentId) return { error: "actions needs agentId" };
+          const agentId = assertHash32(args.agentId, "agentId");
           return { agentId, chainId: filter ?? null, actions: ix.actionsForAgent(agentId, filter) };
         }
         return { summary: ix.summary(filter), chains: ix.chainIds() };
@@ -201,7 +243,7 @@ export async function handleMessage(msg: {
       return respond({
         protocolVersion: "2024-11-05",
         capabilities: { tools: {} },
-        serverInfo: { name: "sigilkit-mcp", version: "0.1.0" },
+        serverInfo: { name: "sigilkit-mcp", version: pkg.version },
       });
     case "notifications/initialized":
     case "notifications/cancelled":
@@ -245,21 +287,58 @@ export async function handleMessage(msg: {
   }
 }
 
-/** Stdio entry: newline-delimited JSON-RPC in, responses out. */
-export function serveStdio(input: NodeJS.ReadableStream = process.stdin, output: NodeJS.WritableStream = process.stdout): void {
+/** Stdio entry: newline-delimited JSON-RPC in, responses out. Returns a stop function. */
+export function serveStdio(
+  input: NodeJS.ReadableStream = process.stdin,
+  output: NodeJS.WritableStream = process.stdout,
+  logger: Logger = defaultLogger,
+): () => void {
   const rl = createInterface({ input });
+
+  /** A closed pipe (client exited) must not crash the server with an unhandled EPIPE. */
+  const write = (payload: Record<string, unknown>): void => {
+    try {
+      output.write(`${JSON.stringify(payload)}\n`);
+    } catch (err) {
+      logger.warn("failed to write response; client may have disconnected", {
+        reason: err instanceof Error ? err.message : String(err),
+      });
+    }
+  };
+
   rl.on("line", (line) => {
     const trimmed = line.trim();
     if (!trimmed) return;
-    let msg: Parameters<typeof handleMessage>[0];
+    let msg: unknown;
     try {
       msg = JSON.parse(trimmed);
     } catch {
-      output.write(`${JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "parse error" } })}\n`);
+      write({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "parse error" } });
       return;
     }
-    void handleMessage(msg).then((res) => {
-      if (res) output.write(`${JSON.stringify(res)}\n`);
-    });
+    if (msg === null || typeof msg !== "object" || Array.isArray(msg)) {
+      write({ jsonrpc: "2.0", id: null, error: { code: -32600, message: "invalid request: expected a JSON object" } });
+      return;
+    }
+    void handleMessage(msg as Parameters<typeof handleMessage>[0])
+      .then((res) => {
+        if (res) write(res);
+      })
+      .catch((err: unknown) => {
+        // handleMessage is written not to throw; if it ever does, report it in-band
+        // rather than leaving the client waiting for a response that never comes.
+        const id = (msg as { id?: number | string | null }).id ?? null;
+        logger.error("unhandled error while dispatching request", {}, err);
+        write({
+          jsonrpc: "2.0",
+          id,
+          error: { code: -32603, message: `internal error: ${err instanceof Error ? err.message : String(err)}` },
+        });
+      });
   });
+
+  rl.on("close", () => logger.debug("stdin closed; server idle"));
+
+  logger.info("sigilkit-mcp listening on stdio", { version: pkg.version });
+  return () => rl.close();
 }

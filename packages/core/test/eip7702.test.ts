@@ -146,6 +146,17 @@ describe("eip7702", () => {
       const eoa = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266";
       const impl = "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512";
 
+      const setCode = (address: string, code: string): Promise<void> =>
+        (client.request as (args: { method: string; params: unknown[] }) => Promise<void>)({
+          method: "anvil_setCode",
+          params: [address, code],
+        });
+
+      // `spawnAnvil()` reuses whatever is already listening on 8545, so this account can
+      // carry a designator left by an earlier run. Clear it instead of assuming a pristine
+      // chain — otherwise the suite's result depends on what ran before it.
+      await setCode(eoa, "0x");
+
       // not delegated initially
       expect(await validateAuthorization(client, { address: eoa })).toEqual({
         delegated: false,
@@ -154,10 +165,7 @@ describe("eip7702", () => {
       });
 
       // set 0xef0100 || impl
-      await (client.request as (args: { method: string; params: unknown[] }) => Promise<void>)({
-        method: "anvil_setCode",
-        params: [eoa, ("0xef0100" + impl.slice(2)) as `0x${string}`],
-      });
+      await setCode(eoa, "0xef0100" + impl.slice(2));
       const status = await validateAuthorization(client, { address: eoa });
       expect(status.delegated).toBe(true);
       expect(status.revoked).toBe(false);
@@ -170,13 +178,13 @@ describe("eip7702", () => {
       ).toBe(false);
 
       // explicit revocation designator (0xef0100 || 0x0)
-      await (client.request as (args: { method: string; params: unknown[] }) => Promise<void>)({
-        method: "anvil_setCode",
-        params: [eoa, ("0xef0100" + "00".repeat(20)) as `0x${string}`],
-      });
+      await setCode(eoa, "0xef0100" + "00".repeat(20));
       const revokedStatus = await validateAuthorization(client, { address: eoa });
       expect(revokedStatus.delegated).toBe(true);
       expect(revokedStatus.revoked).toBe(true);
+
+      // Leave the chain as we found it, so a reused Anvil does not leak state forward.
+      await setCode(eoa, "0x");
 
       void stopAnvil;
     });

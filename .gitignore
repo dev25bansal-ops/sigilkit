@@ -55,3 +55,12 @@ packages/core/test-results/
 # keep it on disk locally, regenerate it for a release, attach it to the release.
 SigilKit_Whitepaper.pdf
 fleet-manifest.json
+
+# Local audit stores. The indexer's default output is ./sigilkit-audit.db, so a stray
+# `sigilkit-indexer backfill` would otherwise show up as an untracked binary.
+*.db
+*.db-shm
+*.db-wal
+
+# Docker compose local state
+data/

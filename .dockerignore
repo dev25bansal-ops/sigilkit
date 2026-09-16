@@ -1,0 +1,41 @@
+# Keep the build context small and reproducible. The image builds from source, so
+# local build output and caches are excluded rather than copied.
+.git
+.github
+.workbuddy-ai
+.claude
+.freebuff
+
+node_modules
+**/node_modules
+
+# Foundry artifacts and dependencies (contracts are not built in the image)
+out
+cache
+broadcast
+lib
+
+# Local build output — the image compiles its own
+**/dist
+**/coverage
+*.tsbuildinfo
+
+# Test artifacts
+**/test-results
+**/test/wallet-e2e/metamask
+**/test/wallet-e2e/metamask.zip
+**/test/wallet-e2e/.playwright-profile
+
+# Local state and secrets
+.env
+.env.*
+!.env.example
+data
+*.db
+*.db-shm
+*.db-wal
+
+# Docs and research that the runtime does not need
+vault
+*.pdf
+*.log

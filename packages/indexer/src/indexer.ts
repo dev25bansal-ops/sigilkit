@@ -33,7 +33,7 @@ import {
   type Log,
   type PublicClient,
 } from "viem";
-import { ACTION_LOGGER_ABI, parseActionLogged, type ActionLogRecord } from "@sigilkit/core";
+import { ACTION_LOGGER_ABI, createLogger, parseActionLogged, type ActionLogRecord, type Logger } from "@sigilkit/core";
 
 export interface StoredAction {
   chainId: number;
@@ -80,9 +80,15 @@ export interface SigilIndexerOptions {
   backoffMs?: number;
   /** Max attempts per `eth_getLogs` chunk before giving up on that chunk. Default 5. */
   maxRetries?: number;
+  /**
+   * Logger for progress and poll failures. Defaults to a console-backed logger at
+   * `info`, so an embedder that supplies nothing still sees warnings. Pass
+   * `silentLogger()` to make the indexer completely quiet.
+   */
+  logger?: Logger;
 }
 
-const DEFAULT_OPTIONS: Required<Omit<SigilIndexerOptions, "readOnly">> = {
+const DEFAULT_OPTIONS: Required<Omit<SigilIndexerOptions, "readOnly" | "logger">> = {
   confirmations: 12,
   maxBlockRange: 2_000,
   backoffMs: 1_000,
@@ -103,6 +109,7 @@ export class SigilIndexer {
   private readonly maxBlockRange: number;
   private readonly backoffMs: number;
   private readonly maxRetries: number;
+  private readonly log: Logger;
   private closed = false;
 
   constructor(dbPath: string, chainId: number, options: SigilIndexerOptions = {}) {
@@ -112,6 +119,7 @@ export class SigilIndexer {
     this.maxBlockRange = options.maxBlockRange ?? DEFAULT_OPTIONS.maxBlockRange;
     this.backoffMs = options.backoffMs ?? DEFAULT_OPTIONS.backoffMs;
     this.maxRetries = options.maxRetries ?? DEFAULT_OPTIONS.maxRetries;
+    this.log = options.logger ?? createLogger({ scope: "indexer" });
 
     if (!this.readOnly && dbPath !== ":memory:") mkdirSync(dirname(dbPath), { recursive: true });
     this.db = new DatabaseSync(dbPath, this.readOnly ? { readOnly: true } : {});
@@ -393,10 +401,14 @@ export class SigilIndexer {
         attempt++;
         if (attempt >= this.maxRetries) throw err;
         const delay = this.backoffMs * 2 ** (attempt - 1);
-        console.error(
-          `[sigilkit-indexer] getLogs ${fromBlock}-${toBlock} failed (attempt ${attempt}/${this.maxRetries}), retrying in ${delay}ms:`,
-          err instanceof Error ? err.message : err,
-        );
+        this.log.warn("getLogs failed; retrying", {
+          from: fromBlock.toString(),
+          to: toBlock.toString(),
+          attempt,
+          maxRetries: this.maxRetries,
+          delayMs: delay,
+          reason: err instanceof Error ? err.message : String(err),
+        });
         await sleep(delay);
       }
     }
@@ -423,10 +435,11 @@ export class SigilIndexer {
       // chains (local dev, fresh testnets) a large confirmations default can push
       // safeHead below the requested start, silently indexing nothing.
       if (toBlock === undefined && head < start + BigInt(this.confirmations)) {
-        console.warn(
-          `[sigilkit-indexer] head=${head} < start=${start} + confirmations=${this.confirmations}: ` +
-            `backfill window is empty. Pass --confirmations 0 for local/dev chains.`,
+        this.log.warn(
+          "backfill window is empty: head is below start + confirmations",
+          { head: head.toString(), start: start.toString(), confirmations: this.confirmations },
         );
+        this.log.warn("pass --confirmations 0 for local/dev chains");
       }
       return 0;
     }
@@ -469,10 +482,7 @@ export class SigilIndexer {
         } catch (err) {
           consecutiveFailures++;
           const delay = Math.min(this.backoffMs * 2 ** (consecutiveFailures - 1), 60_000);
-          console.error(
-            `[sigilkit-indexer] poll failed (${consecutiveFailures}):`,
-            err instanceof Error ? err.message : err,
-          );
+          this.log.error("poll failed; backing off", { attempt: consecutiveFailures, delayMs: delay }, err);
           await sleep(delay);
           continue;
         }

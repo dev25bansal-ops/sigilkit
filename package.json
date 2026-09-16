@@ -12,14 +12,23 @@
     "node": ">=24"
   },
   "scripts": {
+    "setup": "node scripts/bootstrap.mjs",
+    "verify": "node scripts/verify.mjs",
+    "verify:quick": "node scripts/verify.mjs --quick",
     "build": "npm run build --workspaces --if-present",
     "test": "forge test --no-match-contract '.*Invariant|.*Fork' && npm run test --workspaces --if-present",
     "test:full": "forge test --no-match-contract '.*Fork' && npm run test --workspaces --if-present",
-    "lint": "npm run lint:workflows && npm run lint --workspaces --if-present",
+    "test:coverage": "npm run test:coverage --workspaces --if-present",
+    "lint": "npm run lint:workflows && npm run lint:docker && npm run lint --workspaces --if-present",
     "lint:workflows": "node scripts/validate-workflows.mjs",
+    "lint:docker": "node scripts/check-dockerfile.mjs",
     "check:docs": "node scripts/check-doc-counts.mjs",
+    "check:docs:full": "node scripts/check-doc-counts.mjs --with-ts",
     "clean": "node scripts/clean.mjs",
-    "vectors:generate": "node scripts/generate-vectors.mjs"
+    "vectors:generate": "node scripts/generate-vectors.mjs",
+    "demo": "npm run demo --workspace @sigilkit/demo-agent --",
+    "fleet": "npm run fleet --workspace @sigilkit/demo-agent --",
+    "mcp": "npm run start --workspace @sigilkit/mcp --"
   },
   "devDependencies": {
     "@playwright/test": "^1.62.1",

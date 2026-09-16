@@ -41,6 +41,12 @@ jobs:
       - run: npm run build --workspaces
       - run: npm test --workspaces --if-present
 
+      # TD-4/TD-10: the whitepaper's prose counts are what an auditor or grant reviewer
+      # reads, and they cannot be derived without running the suites — so verify them here,
+      # at the point of release, rather than trusting them.
+      - name: Verify whitepaper counts (including TypeScript totals)
+        run: node scripts/check-doc-counts.mjs --with-ts
+
       # ARCH-1: preview EVERY publishable package, not just core. A package that cannot pack
       # cleanly (missing dist, stray files, no files[] allowlist) must fail here, not after
       # it is on the registry.
@@ -51,6 +57,40 @@ jobs:
             npm pack --dry-run --workspace "@sigilkit/$p"
             echo "::endgroup::"
           done
+
+      # Preflight: a package name can already exist on the registry without belonging to us.
+      # `@sigilkit/core` is exactly that case — it is published by a different project, so
+      # `npm publish` fails with an opaque E403 only after the whole gate has run. Fail here,
+      # with the reason, instead.
+      - name: Check npm scope ownership
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          me="$(npm whoami)"
+          echo "authenticated as: $me"
+          status=0
+          for p in core indexer mcp; do
+            pkg="@sigilkit/$p"
+            if ! npm view "$pkg" version >/dev/null 2>&1; then
+              echo "ok       $pkg does not exist yet — will be created"
+              continue
+            fi
+            owners="$(npm view "$pkg" maintainers --json 2>/dev/null | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{try{console.log(JSON.parse(s).map(m=>m.name).join(' '))}catch{console.log('')}})")"
+            if [ -z "$owners" ]; then
+              echo "warn     $pkg exists but its maintainers could not be read"
+              continue
+            fi
+            case " $owners " in
+              *" $me "*)
+                echo "ok       $pkg exists and $me maintains it ($owners)" ;;
+              *)
+                echo "::error title=Scope conflict::$pkg already exists on npm and is maintained by: $owners"
+                echo "::error::Publishing as '$me' will fail with E403. Rename the package scope, or publish under a scope you control."
+                status=1 ;;
+            esac
+          done
+          exit $status
 
       # Publish in dependency order (core -> indexer -> mcp): core is the leaf
       # dependency, indexer builds on it, mcp on both. Skipping any version already

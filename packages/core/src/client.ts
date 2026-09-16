@@ -7,6 +7,7 @@ import {
 } from "./signing.js";
 import { decodeSigilKitError, decorateWithDecodedRevert } from "./errors.js";
 import { ACTION_LOGGER_ABI } from "./abis.js";
+import { createLogger, type Logger } from "./logger.js";
 import {
   createPublicClient,
   decodeEventLog,
@@ -119,6 +120,12 @@ export interface SigilKitClientConfig {
    * fleet, implement {@link LeaseStore} over a real lock service.
    */
   leaseStore?: LeaseStore;
+  /**
+   * Where advisory diagnostics go (a degraded window pre-check, a swallowed decode
+   * failure). Defaults to a console logger at `info`; pass `silentLogger()` to keep
+   * library use quiet.
+   */
+  logger?: Logger;
 }
 
 /** Arguments accepted by {@link SigilKitClient.prepareExecution}. */
@@ -238,6 +245,9 @@ export class SigilKitClient {
    */
   readonly nonceGate: NonceGate;
 
+  /** Advisory diagnostics sink (never used for control flow). */
+  private readonly log: Logger;
+
   constructor(config: SigilKitClientConfig) {
     this.managerAddress = config.managerAddress;
     this.chain = config.chain;
@@ -248,6 +258,7 @@ export class SigilKitClient {
         transport: config.rpcUrl ? http(config.rpcUrl) : http(),
       });
     this.nonceGate = new NonceGate(config.leaseStore);
+    this.log = config.logger ?? createLogger({ scope: "sigilkit", level: "info" });
   }
 
   /**
@@ -293,10 +304,9 @@ export class SigilKitClient {
         .then(
           (w) => ({ windowStart: Number(w[0]), spentThisWindow: w[1] }),
           (err: unknown): undefined => {
-            console.warn(
-              "SigilKit: getWindowState unavailable — skipping the local per-window pre-check " +
-                "(on-chain enforcement still applies):",
-              err instanceof Error ? err.message : err,
+            this.log.warn(
+              "getWindowState unavailable — skipping the local per-window pre-check (on-chain enforcement still applies)",
+              { reason: err instanceof Error ? err.message : String(err) },
             );
             return undefined;
           },

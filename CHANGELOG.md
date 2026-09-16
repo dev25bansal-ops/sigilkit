@@ -5,6 +5,150 @@ All notable changes to SigilKit are documented here. Format based on
 
 ## [Unreleased]
 
+### 2026-09-15 — production readiness (developer experience, configuration, validation, docs)
+
+Everything a new user or operator needs to install, configure, run and troubleshoot the
+project without reading the source.
+
+**Added — one-command setup and verification**
+- `npm run setup` (`scripts/bootstrap.mjs`): checks Node ≥ 24 and Foundry, installs from
+  the lockfile, builds every workspace, and prints what it found plus next steps. A missing
+  Foundry is a warning with install instructions, not a failure — the TS packages build
+  without it.
+- `npm run verify` (`scripts/verify.mjs`): workflow lint → doc counts → workspace typecheck
+  → build → Foundry unit+fuzz → TS tests. Steps run independently so one failure does not
+  hide the rest; each is timed and summarised. `--quick` skips the Foundry suites.
+
+**Added — configuration**
+- `.env.example` documenting every supported variable, and `docs/CONFIGURATION.md` as the
+  reference (precedence, defaults, exit codes, per-command flags).
+- **`.env` is now actually loaded.** The docs told users to `cp .env.example .env`, but nothing
+  read the file — every variable set there was silently ignored. Every CLI now loads `.env`
+  then `.env.local` from the working directory at startup (Node's built-in loader, no
+  dependency). A real environment variable always wins, so CI and containers still override it.
+  Precedence is now: flag → real env var → `.env` → default.
+- `packages/core/src/config.ts`: validated environment readers — `readEnvInt`, `readEnvUrl`,
+  `readEnvBool`, `readEnvAddress`, `readEnvPrivateKey`, `readEnvBigInt`, `readEnvChoice`,
+  `requireEnv`, `loadServiceConfig`. A variable that is **set but invalid** is an error, not a
+  silent fallback — including `SIGILKIT_LOG_LEVEL` / `SIGILKIT_LOG_FORMAT`, which previously
+  fell back to the default and made a typo invisible.
+- New variables: `SIGILKIT_LOG_LEVEL`, `SIGILKIT_LOG_FORMAT` (`text`|`json`),
+  `SIGILKIT_DB_PATH`, `SIGILKIT_MANAGER`, `SIGILKIT_INDEXER_CHAIN_ID`,
+  `SIGILKIT_CONFIRMATIONS`, `SIGILKIT_MAX_BLOCK_RANGE`.
+- `.nvmrc` (Node 24) and `.editorconfig` (LF everywhere, so the ABI byte-diff gate and
+  golden vectors stay stable across editors).
+
+**Added — input validation, logging and CLI ergonomics**
+- `packages/core/src/validation.ts`: `assert*`/`is*` helpers whose errors name the field
+  (`managerAddress: expected a 20-byte hex address…`) plus a `ValidationCollector` for
+  reporting every problem at once.
+- `packages/core/src/logger.ts`: leveled logger with `text`/`json` output, scoped children,
+  and a sink that never throws. The SDK and indexer now log through it instead of
+  `console`.
+- `packages/core/src/cli.ts`: one CLI contract for every binary — `--help`/`-h`,
+  `--version`/`-V`, `--flag=value` and `--flag value`, unknown-flag suggestions
+  ("did you mean --db?"), `choices`, required flags, typed validating getters, and exit
+  codes `0` success / `1` runtime / `2` usage. `UserError` prints a single actionable line
+  with an optional hint instead of a stack trace.
+- All three CLIs retrofitted. `sigilkit-indexer` gained `--json` output and `--log-level`, and
+  now validates `--agent`/`--key` **before** opening the database; `sigilkit-mcp` gained
+  `--help`/`--version`/`--log-level` and shuts down cleanly when the client closes the pipe;
+  `sigilkit-demo` gained `--ticks`, `--tick-delay`, `--chain-id` and `--json`, and checks
+  the RPC is reachable before attempting a deploy.
+- MCP tools validate their arguments (addresses, hashes, hex lengths, ranges, enum values)
+  and report the offending field; `initialize` reports the real package version.
+- `@sigilkit/core` exposes `/validation`, `/logger`, `/config` and `/cli` subpaths.
+
+**Added — documentation and packaging**
+- `docs/GETTING-STARTED.md`, `docs/CONFIGURATION.md`, `docs/DEPLOYMENT.md`,
+  `docs/TROUBLESHOOTING.md`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`.
+- README: one-command quick start and a documentation index.
+- Per-package READMEs for `core`, `indexer`, `mcp` and `demo-agent` (previously only two
+  packages had one, and `files[]` advertised a README that did not exist).
+- GitHub issue templates (bug report, feature request), issue-template config, and a pull
+  request template with the project's checklists.
+- `Dockerfile`, `docker-compose.yml` and `.dockerignore` for the indexer/MCP services:
+  multi-stage build, production dependencies only, non-root user, `/data` volume, and a
+  health check.
+- `scripts/check-doc-counts.mjs` now guards the **whitepaper** as well as the README: Foundry
+  totals, suite count, CI job counts and the per-suite breakdown sum are compared against the
+  toolchain, so the numbers an auditor reads cannot drift silently (they already had once:
+  "38 Foundry tests" against a real 86). It also counts the **Halmos specs** statically
+  (`check_` functions across `contracts/test/Halmos*.t.sol` — 6 + 5 = 11, matching the docs),
+  which is verifiable without Halmos installed. `npm run check:docs:full` additionally runs
+  every suite to verify the per-package TypeScript totals; that form runs in the release
+  workflow.
+- `CONTRIBUTING.md` documents the optional verification tools (Halmos 0.3.3, Slither 0.11.6,
+  Echidna v2.2.5) with their exact commands, and notes that their counts are checked statically
+  so a new spec is validated even where the tool is not installed.
+- `scripts/check-dockerfile.mjs` (`npm run lint:docker`, run in the workflow-lint CI job):
+  statically verifies the container packaging — every `COPY` source exists in the build
+  context, no `COPY` source is excluded by `.dockerignore`, and every `ENTRYPOINT`/`CMD` /
+  compose `entrypoint` script resolves. The image is the one deliverable CI cannot build
+  cheaply, so these invariants were previously unchecked and would only fail on a machine
+  with a Docker daemon.
+
+**Fixed**
+- **The documented npm install would have fetched a stranger's package.** `@sigilkit/core`
+  already exists on npm (v0.11.1, an unrelated project that owns the scope), so
+  `npm install @sigilkit/core` resolves to theirs and `npm publish` fails with `E403`.
+  `@sigilkit/indexer` and `@sigilkit/mcp` do not exist at all. The README, GETTING-STARTED,
+  all three package READMEs, the whitepaper and DEPLOYMENT now say so explicitly and give the
+  from-clone commands that work today. `publish.yml` gains a **scope-ownership preflight** that
+  fails with the maintainer list instead of an opaque 403 after the whole gate. Resolving the
+  namespace (rename, or publish under a scope this project controls) is a decision for the
+  maintainers — it is not something a doc change can fix.
+- **The declared repository URL is not publicly reachable.** `github.com/sigilkit/sigilkit`
+  and `github.com/sigilkit` both return HTTP 404 anonymously, so the `git clone` in the README
+  and GETTING-STARTED fails, every `package.json` `repository.url` resolves to nothing, and the
+  `.well-known/security.txt` Contact/Policy URIs (added earlier in this release) are dead links.
+  `docs/DEPLOYMENT.md` gains a "Before public launch" section listing this and the npm-scope
+  conflict as the two blocking prerequisites, with what to do about each. `security.txt` now
+  records the verified state so nobody assumes the channel works.
+- Indexer query commands reported a raw `unable to open database file` for a missing store.
+  They now say `audit database not found: <path>` with the command that would create it, and
+  validate their own arguments first so a typo is reported as a typo.
+- The `getWindowState` degradation warning in the SDK went through `console.warn`; it now
+  goes through the configurable logger.
+- **`npm ci` was broken for every platform except the one the lockfile was generated on.**
+  `package-lock.json` was missing the optional per-platform binaries (`@rollup/rollup-linux-x64-gnu`,
+  `@esbuild/linux-x64`, `@rollup/rollup-darwin-*`, …), so a clean install — including the CI
+  runners — failed with `EUSAGE ... Missing: … from lock file`. Regenerated with npm 11;
+  the diff is additive (the platform packages plus dropped stale `"peer": true` markers) and
+  moves no dependency version. `npm ci --dry-run` now succeeds.
+- `eip7702.test.ts` assumed a pristine chain for a hard-coded EOA. Because `spawnAnvil()`
+  reuses a node already listening on :8545, a previous run's revocation designator made the
+  suite fail depending on what had run before it. The test now clears the account's code
+  first and restores it afterwards, and `spawnAnvil()` announces reuse instead of silently
+  attaching to a dirty chain.
+- `scripts/verify.mjs` and `scripts/bootstrap.mjs` passed an args array together with
+  `shell: true`, which Node 24 deprecates (`DEP0190`). They now build a command string when
+  a shell is required.
+- `scripts/bootstrap.mjs` gains `--install`, for environments where `npm ci` cannot replace
+  `node_modules` (Windows file locks, restricted sandboxes). `npm ci` remains the default,
+  and its failure message points at the flag.
+- `packages/demo-agent/src/devkeys.ts` names `forge.exe` explicitly on Windows rather than
+  relying on `CreateProcess` extension resolution.
+- **`npm run demo -- --ticks 10` silently ignored its flags.** The root `demo` / `fleet` /
+  `mcp` scripts chained into `npm run … --workspace …`, so everything after `--` was appended
+  to the *inner* npm invocation and consumed there — the demo ran with its defaults and no
+  error. Each script now ends with `--`, forwarding arguments to the CLI as documented.
+- `SIGILKIT_LOG_LEVEL` / `SIGILKIT_LOG_FORMAT` were the only variables that fell back
+  silently on an unrecognized value, contradicting the documented "set but invalid is an
+  error" contract. They are now validated like every other setting (values still matched
+  case-insensitively), and `readEnvChoice` is exported for the same job elsewhere.
+- `scripts/clean.mjs` listed `packages/core/coverage` but not the other three packages'
+  coverage directories, so `npm run clean` left them behind once coverage was enabled for
+  every workspace. The per-package artifact lists are now derived from one package list, so
+  they cannot drift apart again.
+
+**Tests**
+- `@sigilkit/core` +83 (validation 18, CLI 30, config 16, logger 19) → 180 passed (+1 skipped).
+- `@sigilkit/mcp` +33 (25 tool-argument + 8 stdio-transport) → 40 passed.
+- Suites: core 180 (+1 skipped) · indexer 12 · mcp 40 · demo-agent 12.
+- Coverage: core 92.5% stmts / 87.9% branches · indexer 72.8/70.9 · mcp 90.7/73.9 ·
+  demo-agent 95.8/78.9 — all above their configured floors.
+
 ### 2026-09-12 — issues-catalog remediation (`docs/Issues-Catalog-2026-09-12.md`)
 
 All 42 items in the 2026-09-12 catalog addressed.
