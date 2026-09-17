@@ -31,8 +31,8 @@ const LABELS = {
   lint: "workflow lint",
   packaging: "container packaging",
   docs: "doc counts",
-  typecheck: "workspace typecheck",
   build: "workspace build",
+  typecheck: "workspace typecheck",
   contracts: "contract tests (unit + fuzz)",
   tests: "TypeScript tests",
 };
@@ -134,8 +134,10 @@ console.log(`${c.bold}SigilKit verification${c.reset}${QUICK ? c.dim + "  (quick
 run(LABELS.lint, process.execPath, ["scripts/validate-workflows.mjs"]);
 run(LABELS.packaging, process.execPath, ["scripts/check-dockerfile.mjs"]);
 run(LABELS.docs, process.execPath, ["scripts/check-doc-counts.mjs"], FORGE ? { env: { FORGE_BIN: FORGE } } : {});
-run(LABELS.typecheck, npmCmd, ["run", "lint", "--workspaces", "--if-present"], { shell: true });
+// Consumers resolve @sigilkit/core through dist/*.d.ts, absent on a fresh checkout.
+// Match CI: generate workspace outputs before checking their dependent types.
 run(LABELS.build, npmCmd, ["run", "build", "--workspaces", "--if-present"], { shell: true });
+run(LABELS.typecheck, npmCmd, ["run", "lint", "--workspaces", "--if-present"], { shell: true });
 
 if (NO_FORGE) {
   skip(LABELS.contracts, QUICK ? "--quick" : "--no-forge");

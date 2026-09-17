@@ -23,6 +23,21 @@ function runVerify(t, extraArgs = [], files = {}) {
   return { status: result.status, stdout: result.stdout, stderr: result.stderr, output: result.stdout + result.stderr };
 }
 
+test("fresh workspace builds declarations before typechecking", (t) => {
+  const r = runVerify(t, ["--only=workspace"], {
+    "package.json": JSON.stringify({ private: true, workspaces: ["packages/*"] }),
+    "packages/fixture/package.json": JSON.stringify({
+      name: "verify-order-fixture", private: true,
+      scripts: { build: "node build.cjs", lint: "node lint.cjs" },
+    }),
+    "packages/fixture/build.cjs": "require('node:fs').writeFileSync('built.d.ts', 'export {};');\n",
+    "packages/fixture/lint.cjs": "if (!require('node:fs').existsSync('built.d.ts')) { console.error('missing declarations'); process.exit(1); }\n",
+  });
+  assert.equal(r.status, 0, r.output);
+  assert.ok(r.stdout.indexOf("▶ workspace build") < r.stdout.indexOf("▶ workspace typecheck"), r.output);
+  assert.match(r.stdout, /All 2 check\(s\) passed\./);
+});
+
 // A stub step so `--only="workflow lint"` has something real (and instant) to run.
 const STUB_LINT = { "scripts/validate-workflows.mjs": "process.exit(0);\n" };
 
