@@ -32,7 +32,7 @@ docs/                user and operator documentation
 ```bash
 npm run verify                       # everything
 npm run verify -- --quick            # skip Foundry (fast loop)
-npm run verify -- --only=docs        # run one step (substring match)
+npm run verify -- --only="doc counts" # run one step (substring match)
 npm test                             # Foundry unit+fuzz, then every TS workspace
 npm test --workspace @sigilkit/core  # one workspace
 npm run test:coverage                # per-package v8 thresholds

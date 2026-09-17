@@ -21,7 +21,24 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
 const QUICK = args.includes("--quick");
 const NO_FORGE = QUICK || args.includes("--no-forge");
-const ONLY = args.find((a) => a.startsWith("--only="))?.slice("--only=".length);
+
+/**
+ * Gate step labels, in execution order — the single source of truth for `--only`
+ * matching, `--only` validation, and the results report. Declared before any step
+ * runs so a selector can be checked against the real label set up front.
+ */
+const LABELS = {
+  lint: "workflow lint",
+  packaging: "container packaging",
+  docs: "doc counts",
+  typecheck: "workspace typecheck",
+  build: "workspace build",
+  contracts: "contract tests (unit + fuzz)",
+  tests: "TypeScript tests",
+};
+const STEPS = Object.values(LABELS);
+
+let ONLY;
 
 const c = {
   reset: "\u001b[0m",
@@ -32,6 +49,37 @@ const c = {
   red: "\u001b[31m",
   cyan: "\u001b[36m",
 };
+
+// ── flag validation ───────────────────────────────────────────────────────────
+// Reject a bad invocation before any step runs, so `--only=<typo>` can never silently
+// run zero steps and exit 0, and `--only=` can never fall back to running everything.
+function abort(message) {
+  process.stderr.write(`${c.red}${c.bold}verify: ${message}${c.reset}\n`);
+  process.stderr.write(`${c.dim}usage: verify [--quick] [--no-forge] [--only=<label>]${c.reset}\n`);
+  process.exit(2);
+}
+
+const strayArgs = args.filter((a) => a !== "--quick" && a !== "--no-forge" && !a.startsWith("--only="));
+if (strayArgs.length > 0) abort(`unrecognized argument(s): ${strayArgs.join(", ")}`);
+
+const onlyFlags = args.filter((a) => a.startsWith("--only="));
+if (onlyFlags.length > 1) abort("--only may be given at most once");
+
+if (onlyFlags.length === 1) {
+  ONLY = onlyFlags[0].slice("--only=".length);
+  if (ONLY.trim() === "") {
+    abort(`--only needs a non-empty selector; known labels: ${STEPS.join(" | ")}`);
+  }
+  const matched = STEPS.filter((label) => label.toLowerCase().includes(ONLY.toLowerCase()));
+  if (matched.length === 0) {
+    abort(`--only=${ONLY} matches no step; known labels: ${STEPS.join(" | ")}`);
+  }
+}
+
+/** True when no selector was given, or when `label` matches the selector. */
+function matchesOnly(label) {
+  return ONLY === undefined || label.toLowerCase().includes(ONLY.toLowerCase());
+}
 
 function resolveForge() {
   if (process.env.FORGE_BIN && existsSync(process.env.FORGE_BIN)) return process.env.FORGE_BIN;
@@ -53,7 +101,7 @@ const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm";
  * directly instead.
  */
 function run(label, cmd, argv, opts = {}) {
-  if (ONLY && !label.toLowerCase().includes(ONLY.toLowerCase())) return null;
+  if (!matchesOnly(label)) return null;
   const started = Date.now();
   process.stdout.write(`\n${c.bold}${c.cyan}▶ ${label}${c.reset}\n${c.dim}$ ${cmd} ${argv.join(" ")}${c.reset}\n`);
   const spawnOpts = {
@@ -77,27 +125,28 @@ function run(label, cmd, argv, opts = {}) {
 const results = [];
 
 function skip(label, why) {
+  if (!matchesOnly(label)) return;
   results.push({ label, passed: true, ms: 0, skipped: true, why });
 }
 
 console.log(`${c.bold}SigilKit verification${c.reset}${QUICK ? c.dim + "  (quick: Foundry suites skipped)" + c.reset : ""}`);
 
-run("workflow lint", process.execPath, ["scripts/validate-workflows.mjs"]);
-run("container packaging", process.execPath, ["scripts/check-dockerfile.mjs"]);
-run("doc counts", process.execPath, ["scripts/check-doc-counts.mjs"], FORGE ? { env: { FORGE_BIN: FORGE } } : {});
-run("workspace typecheck", npmCmd, ["run", "lint", "--workspaces", "--if-present"], { shell: true });
-run("workspace build", npmCmd, ["run", "build", "--workspaces", "--if-present"], { shell: true });
+run(LABELS.lint, process.execPath, ["scripts/validate-workflows.mjs"]);
+run(LABELS.packaging, process.execPath, ["scripts/check-dockerfile.mjs"]);
+run(LABELS.docs, process.execPath, ["scripts/check-doc-counts.mjs"], FORGE ? { env: { FORGE_BIN: FORGE } } : {});
+run(LABELS.typecheck, npmCmd, ["run", "lint", "--workspaces", "--if-present"], { shell: true });
+run(LABELS.build, npmCmd, ["run", "build", "--workspaces", "--if-present"], { shell: true });
 
 if (NO_FORGE) {
-  skip("contract tests (unit + fuzz)", QUICK ? "--quick" : "--no-forge");
+  skip(LABELS.contracts, QUICK ? "--quick" : "--no-forge");
 } else if (!FORGE) {
-  skip("contract tests (unit + fuzz)", "forge not installed");
+  skip(LABELS.contracts, "forge not installed");
   console.log(`\n${c.yellow}!${c.reset} forge not found — skipping contract tests. Install: curl -L https://foundry.paradigm.xyz | bash && foundryup`);
 } else {
-  run("contract tests (unit + fuzz)", FORGE, ["test", "--no-match-contract", ".*Invariant|.*Fork"]);
+  run(LABELS.contracts, FORGE, ["test", "--no-match-contract", ".*Invariant|.*Fork"]);
 }
 
-run("TypeScript tests", npmCmd, ["test", "--workspaces", "--if-present"], { shell: true });
+run(LABELS.tests, npmCmd, ["test", "--workspaces", "--if-present"], { shell: true });
 
 // ── report ────────────────────────────────────────────────────────────────────
 const failed = results.filter((r) => !r.passed);

@@ -151,6 +151,22 @@ for (const line of lines) {
   }
 }
 
+/**
+ * Runtime paths mirror WORKDIR /app. Before a package is built, accept only outputs
+ * backed by its src/ tree (the workspace tsc builds map src/ to dist/). Once dist/
+ * exists, require the output itself so stale or incomplete builds cannot mask typos.
+ */
+function runtimeTargetExists(target) {
+  if (existsSync(join(ROOT, target))) return true;
+  const match = /^packages\/([^/]+)\/dist\/(.+)\.(js|mjs|cjs)$/.exec(target);
+  if (!match) return false;
+  const [, pkg, stem, extension] = match;
+  if (stem.split("/").some((part) => part === "." || part === ".." || part === "")) return false;
+  if (existsSync(join(ROOT, "packages", pkg, "dist"))) return false;
+  const sourceExtension = { js: "ts", mjs: "mts", cjs: "cts" }[extension];
+  return existsSync(join(ROOT, "packages", pkg, "src", `${stem}.${sourceExtension}`));
+}
+
 /** Verifies the node script referenced by ENTRYPOINT/CMD exists (repo-relative). */
 function checkRuntimeTarget(instruction) {
   // Strip the keyword first: both the shell form (`ENTRYPOINT node x.js`) and the JSON form
@@ -166,8 +182,7 @@ function checkRuntimeTarget(instruction) {
     if (m) target = m[1];
   }
   if (!target || !/\.(js|mjs|cjs)$/.test(target)) return;
-  // Runtime paths are relative to WORKDIR /app, which mirrors the repo root.
-  if (!existsSync(join(ROOT, target))) {
+  if (!runtimeTargetExists(target)) {
     problems.push(`${instruction.split(" ")[0]} references a missing script: ${target}`);
   }
 }
@@ -183,7 +198,8 @@ if (existsSync(COMPOSE)) {
   for (const m of compose.matchAll(/entrypoint:\s*\[([^\]]*)\]/g)) {
     const parts = tokenize(m[1]);
     const script = parts.find((p) => /\.(js|mjs|cjs)$/.test(p));
-    if (script && !existsSync(join(ROOT, script))) {
+    if (!script) continue;
+    if (!runtimeTargetExists(script)) {
       problems.push(`docker-compose.yml entrypoint references a missing script: ${script}`);
     }
   }

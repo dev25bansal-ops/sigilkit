@@ -44,8 +44,12 @@ jobs:
       # The image is the one deliverable CI cannot build cheaply, so check its static
       # invariants (COPY sources exist, .dockerignore does not exclude them, ENTRYPOINT
       # resolves) here rather than discovering a broken image at release time.
+      - name: Test container packaging guard
+        run: node --test scripts/check-dockerfile.test.mjs
       - name: Check container packaging
         run: node scripts/check-dockerfile.mjs
+      - name: Test documentation count guard and verification CLI
+        run: node --test scripts/check-doc-counts.test.mjs scripts/verify.test.mjs
       - name: Check documented counts against the toolchain
         run: node scripts/check-doc-counts.mjs
       - name: Download actionlint
@@ -130,8 +134,11 @@ jobs:
       # (and mcp's typecheck) were previously never run in CI — which is exactly where the
       # audit-trail data-integrity bugs lived. `publish.yml` already used --workspaces,
       # so the two workflows disagreed on the gate; they now agree.
-      - run: npm run lint --workspaces
+      # Build BEFORE lint: demo-agent/indexer/mcp typecheck against @sigilkit/core's
+      # dist/*.d.ts (its exports point at dist), which only exists after a build. On a
+      # fresh clone, lint-before-build cannot resolve the module at all (CI-found).
       - run: npm run build --workspaces
+      - run: npm run lint --workspaces
       - run: npm test --workspaces --if-present
       # TD-2: coverage thresholds for EVERY workspace, not just core. The vitest configs in
       # each package pin the measured floors (indexer 70/65, mcp 70/50, demo-agent 90/60),
