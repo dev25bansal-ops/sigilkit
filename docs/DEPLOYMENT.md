@@ -169,7 +169,10 @@ publishing from a laptop.
 
 The indexer is a long-running process that turns audit events into a queryable SQLite
 file. It is safe to restart: the sync cursor is persisted, so it resumes rather than
-rescanning (or skipping).
+rescanning (or skipping) — but resume is **fail-closed**: the cursor's stored
+`end`-block hash is re-validated against the chain before every range fetch, and a
+null (legacy) or mismatched hash stops the process **before any write**. There is
+**no automatic rollback**; see §5 for recovery.
 
 ```bash
 export SIGILKIT_RPC_URL=https://your-rpc
@@ -189,6 +192,11 @@ Operational notes:
   or use `sqlite3 audit.db ".backup backup.db"` for an online copy.
 - **Only one writer.** SQLite allows a single writer; run one `watch` per database. Query
   commands open read-only and can run concurrently with it.
+- **One manager per database (recommended).** Recovery rewinds are scoped by chain, not by
+  manager: `rollbackTo` and the `removed`-log delete both remove rows
+  `WHERE chain_id = ? AND block_number > ?`. If several managers share one store, rewinding
+  one chain rewinds every manager's rows for that chain. Keep one manager per database unless
+  you are prepared to re-index the whole chain.
 - **`--max-range`** controls `eth_getLogs` chunk size. Lower it if your provider caps
   block spans; raise it to catch up faster.
 
@@ -220,7 +228,9 @@ A `Dockerfile` and `docker-compose.yml` are provided for the indexer:
 docker compose up --build
 ```
 
-`docker-compose.yml` mounts `./data` for the SQLite file and reads the same environment
+`docker-compose.yml` keeps the SQLite file on the **named volume `sigilkit-data`**, mounted at
+`/data` — the `indexer` service reads/writes it, and the `mcp` service mounts the same volume
+read-only. There is no host `./data` bind mount. The services read the same environment
 variables documented in [CONFIGURATION.md](CONFIGURATION.md). Set `SIGILKIT_MANAGER` and
 `SIGILKIT_RPC_URL` before starting it.
 
@@ -231,7 +241,7 @@ variables documented in [CONFIGURATION.md](CONFIGURATION.md). Set `SIGILKIT_MANA
 Two things are **declared but not yet real**, and both are prerequisites rather than code
 problems. Neither can be fixed by a change to this repository.
 
-| # | Prerequisite | Current state (verified 2026-09-15) | Why it blocks |
+| # | Prerequisite | Current state (external checks run 2026-09-15 — historical, not re-run for this revision) | Why it blocks |
 |---|---|---|---|
 | 1 | **A public repository at the declared URL** | `github.com/sigilkit/sigilkit` and `github.com/sigilkit` both return **HTTP 404** anonymously — not created yet, or still private | The README/GETTING-STARTED `git clone` fails; `.well-known/security.txt`'s Contact and Policy URIs are dead; `repository.url` in every `package.json` resolves to nothing; the whitepaper's "installable via `forge install`" is not possible |
 | 2 | **An npm namespace this project controls** | `@sigilkit/core` exists on npm at v0.11.1, owned by an unrelated project; `@sigilkit/indexer` and `@sigilkit/mcp` return E404 | `npm install @sigilkit/core` installs someone else's package; `npm publish` fails E403 |
@@ -257,6 +267,6 @@ the whole gate has run.
 |---|---|
 | Bad package version published | `npm deprecate @sigilkit/x@1.2.3 "reason"` — never unpublish; consumers may have locked it. |
 | Indexer produced bad rows | Stop it, `sqlite3 audit.db ".backup pre-fix.db"`, then re-run `backfill --from <block>`; writes are idempotent. |
-| Reorg detected | Automatic: `removed` logs are deleted and polling stays behind the head. To force it, `rollbackTo(block)` then `backfill`. |
+| Reorg detected | **Implemented — fail-closed.** The resume path validates the stored cursor hash (`sync_state.last_block_hash`) against the chain at that exact height and **stops before any write on a mismatch** instead of advancing past the fork (`validateCursor` / `fetchRangeWithStableEnd` in `packages/indexer/src/indexer.ts`). A cursor whose hash is **null** (legacy: written before cursor-hash hardening) or that **mismatches** the chain is refused — no rows are modified and **no automatic rollback runs**; `rollbackTo(block)` is a manual, chain-wide delete. For either case: **preserve a backup** (`sqlite3 audit.db ".backup pre-rebuild.db"`), then rebuild by indexing from the deployment block into a **separate new database** — do not destructively reset the live store. Two caveats: rows are ingested and the cursor advanced as separate statements (**not one atomic transaction**, so a crash between them can leave rows ahead of the cursor), and the stable-`end` check proves only that the *end* header did not change — an RPC is not required to give a coherent snapshot, so a deep reorg inside a fetched range can still mix forks (`removed` logs + stored `block_hash` are the second line of defence). Run one manager per database for recovery (see §3). |
 | Compromised session key | Revoke on-chain via the owner path, then grant a new key. Keys are not upgradeable, but they are revocable. |
 | Compromised owner key | Transfer ownership from the Safe; a single EOA owner means the Safe threshold, not the EOA, is the real control. |

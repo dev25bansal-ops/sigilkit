@@ -40,6 +40,26 @@ Values are matched case-insensitively (`SIGILKIT_LOG_LEVEL=DEBUG` works).
 > local chain and are allowlisted in `.gitleaks.toml` so secret scanning stays meaningful
 > for every other file. Never put a funded key in `.env` for a shared machine.
 
+## SDK lease coordination (constructor options, not environment variables)
+
+`SigilKitClientConfig.leaseStore` accepts only a v2 owner-token adapter. Without it,
+`NonceGate` is an in-process queue. With it, sign/send operations require the same
+client's run-issued context: `client.nonceGate.run(account.address, guard => client.execute(args, wallet, guard))`.
+
+`leaseTtlMs` defaults to 30,000 ms, accepts integers from 10 to 2,147,483,647 ms,
+and schedules serialized renewal at half-TTL. It is an operator-selected lease
+lifetime, not a measured transaction-duration bound. Scheduler and I/O must progress
+before expiry; merely keeping the process alive is insufficient. Loss aborts
+`guard.signal` and subsequent checks fail closed; arbitrary callbacks are not preempted.
+
+`FileLeaseStore` from `@sigilkit/core/lease-fs` requires Node >=24 and a local directory.
+`staleGraceMs` defaults to 5,000 ms (integer 0–2,147,483,647), postponing reassignment,
+not extending validity. The holder's persisted recovery deadline governs contenders.
+`createDir: false` requires an existing directory. Stop every legacy worker before
+using a fresh directory; `.lock` layouts and legacy adapters are rejected, not migrated.
+Close stores after all runs settle. Never replace an active database or use NFS.
+See the [core migration notes](../packages/core/README.md#lease-api-v2-migration).
+
 ## Toolchain paths
 
 | Variable | Default | Meaning |

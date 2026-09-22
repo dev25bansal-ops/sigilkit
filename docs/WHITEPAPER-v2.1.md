@@ -16,7 +16,7 @@ Safe{Core} accounts.
 
 > **⚠ Audit status — read this before relying on any security claim.** SigilKit has **not** been
 > externally audited. No third party has reviewed these contracts. What exists today is
-> *verification tooling*, not an audit: 101 Foundry unit/fuzz tests, a handler-only invariant suite
+> *verification tooling*, not an audit: 115 Foundry unit/fuzz tests, a handler-only invariant suite
 > (INV-1..4), an independent Echidna property fuzzer, 11 Halmos symbolic specs over the spend-cap
 > core and auth paths, Slither triage, and gas budgets on the enforcement hot path. An external
 > audit (Cantina/Sherlock contest plus a private review) is outstanding and is a prerequisite for
@@ -41,7 +41,7 @@ on-chain audit-per-call + formal verification of the spend-policy core, under MI
 | 1 | EIP-7702 wallet library + cross-wallet conformance | **Kept** — core implemented; MetaMask/Coinbase UI legs pending |
 | 2 | ~~EIP-2535 Diamonds module~~ → **ERC-7579 module** | **Replaced** — EIP-2535 now serves fixed-function upgradeable protocols; ERC-7579 owns agent-wallet extensibility. Shipped as `SessionKey7579Module` |
 | 3 | Multi-RPC provider | **Dropped/deferred** — viem already provides WS reconnect + retry/fallback; commoditized |
-| 4 | Agent session-key manager | **Kept — the moat.** Implemented; spend-cap core formally verified (auth-path specs in progress). |
+| 4 | Agent session-key manager | **Kept — the moat.** Implemented; the spend-cap core and auth paths carry **11 Halmos symbolic specs**, implemented and committed (see `CHANGELOG.md`). Scope is limited to the properties those specs state — this is verification tooling, not an audit — and the specs were **not re-executed for this revision**. |
 
 ## Corrected claims
 
@@ -73,21 +73,28 @@ on-chain audit-per-call + formal verification of the spend-policy core, under MI
 
 ## Implementation status
 
-All locally-buildable scope is complete and committed (see `CHANGELOG.md`): contracts + ERC-7579
-module, TS SDK with three-way digest conformance, live demo agent, **101 Foundry unit/fuzz tests
-across 10 suites** (manager 25 · 7579 module 25 · executor 11 · delegator 10 · graduated authority
+Locally-buildable scope is **implemented** (see `CHANGELOG.md`): contracts + ERC-7579
+module, TS SDK with three-way digest conformance, live demo agent, **115 Foundry unit/fuzz tests
+across 11 suites** (native transfer authorization 14 · manager 25 · 7579 module 25 · executor 11 · delegator 10 · graduated authority
 9 · governance 5 · ERC-1271 keys 4 · account-execute E2E 4 · golden vectors 4 · gas budget 4)
-(plus an invariant suite of 4 invariants and a Base fork smoke test), **TypeScript: `@sigilkit/core` 180 (+1
-skipped), `@sigilkit/indexer` 12, `@sigilkit/mcp` 40, `@sigilkit/demo-agent` 12** (incl.
+(plus an invariant suite of 4 invariants and a Base fork smoke test), **TypeScript: `@sigilkit/core` 255 (+1
+skipped), `@sigilkit/indexer` 34, `@sigilkit/mcp` 40, `@sigilkit/demo-agent` 12** (incl.
 account-execute 7579 E2E, pinned-leaf, nonce-gate, token-path spender-semantics, simulate-once,
 boundary-validation, CLI, stdio-transport and tool-input validation suites) with v8 coverage
 floors in every package, gas budgets on the enforcement hot path and the worst-case ERC-4337
-batch, the invariant suite, 11 Halmos specs, Slither triage, **13-job CI across 2 workflows** (12 in
-`ci.yml`, 1 tag-gated publish), publish-ready packages, and a one-command developer path
+batch, the invariant suite, 11 Halmos specs, Slither triage, **14-job CI across 2 workflows** (12 in
+`ci.yml`, 2 tag-gated publish), publish-ready packages, and a one-command developer path
 (`npm run setup` → `npm run verify`). Counts are checked against the toolchain by
 `npm run check:docs` (`scripts/check-doc-counts.mjs` — README **and whitepaper** totals, CI job
 counts, per-suite breakdown sums, plus the `security.txt` freshness guard; `--with-ts` also
 verifies the TypeScript totals).
+
+> **Working tree (2026-09-17).** The committed tree is not the whole story: the working tree
+> carries **uncommitted** changes — new Foundry and script tests
+> (`contracts/test/NativeTransferAuthorization.t.sol`, `scripts/check-dockerfile.test.mjs`),
+> CI/workflow and README edits, and a Slither annotation in `SessionKeyManager.sol`. The
+> Foundry total above (115) is asserted against the toolchain, not yet all committed; the
+> TypeScript totals are unchanged in this revision and are refreshed once the tests land.
 
 ---
 *SigilKit contributors · September 2026 · MIT*
