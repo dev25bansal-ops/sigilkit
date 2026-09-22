@@ -16,6 +16,12 @@
  *                 and silently skipping blocks (BUG-7).
  *  - Reorg-aware— `block_hash` is stored, `removed` logs are deleted, and polling stops
  *                 `confirmations` blocks behind the head (ARCH-2).
+ *  - Fail-closed— the persisted cursor stores the `end` block hash and it is re-validated
+ *                 before every range fetch; a missing, unavailable or mismatched header
+ *                 stops the run *before any write* (B64). The indexer never rolls back
+ *                 automatically — a reorg must be resolved by the operator, because the
+ *                 schema has no manager-scoped row ownership and an automatic delete
+ *                 could remove another manager's rows.
  *  - Resilient  — getLogs is chunked to `maxBlockRange` and retried with exponential
  *                 backoff, so a large catch-up range degrades instead of dying (PERF-5/ARCH-3).
  *  - Multi-chain— `chain_id` is stored per row and accepted as a per-query filter; one
@@ -97,6 +103,9 @@ const DEFAULT_OPTIONS: Required<Omit<SigilIndexerOptions, "readOnly" | "logger">
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
+/** A canonical 32-byte block hash: `0x` + exactly 64 hex chars (B64). */
+const BLOCK_HASH_RE = /^0x[0-9a-fA-F]{64}$/;
+
 /** A log as it appears in a `removed` (reorged-out) response. */
 type MaybeRemovedLog = Log & { removed?: boolean };
 
@@ -123,9 +132,17 @@ export class SigilIndexer {
 
     if (!this.readOnly && dbPath !== ":memory:") mkdirSync(dirname(dbPath), { recursive: true });
     this.db = new DatabaseSync(dbPath, this.readOnly ? { readOnly: true } : {});
-    if (!this.readOnly) {
-      this.migrate();
-      this.db.exec(SCHEMA);
+    try {
+      if (!this.readOnly) {
+        this.migrate();
+        this.db.exec(SCHEMA);
+      }
+    } catch (error) {
+      try { this.db.close(); }
+      catch (closeError) {
+        throw new AggregateError([error, closeError], `Indexer initialization failed: ${String(error)}; cleanup failed: ${String(closeError)}`);
+      }
+      throw error;
     }
   }
 
@@ -285,25 +302,26 @@ export class SigilIndexer {
         continue;
       }
       if (log.topics.length === 3) {
+        let decoded;
         try {
-          const decoded = decodeEventLog({ abi: ACTION_LOGGER_ABI, data: log.data, topics: log.topics });
-          if (decoded.eventName === "WindowCharged") {
-            const a = decoded.args as unknown as Record<string, unknown>;
-            this.storeWindowCharge({
-              chainId: this.chainId,
-              txHash: log.transactionHash as string,
-              logIndex: Number(log.logIndex ?? 0),
-              blockNumber: Number(log.blockNumber ?? 0),
-              account: String(a.account),
-              key: String(a.key),
-              value: (a.value as bigint).toString(),
-              windowStart: Number(a.windowStart),
-              spentThisWindow: (a.spentThisWindow as bigint).toString(),
-            });
-            stored++;
-          }
+          decoded = decodeEventLog({ abi: ACTION_LOGGER_ABI, data: log.data, topics: log.topics });
         } catch {
-          // not a SigilKit event — skip
+          continue;
+        }
+        if (decoded.eventName === "WindowCharged") {
+          const a = decoded.args;
+          this.storeWindowCharge({
+            chainId: this.chainId,
+            txHash: log.transactionHash as string,
+            logIndex: Number(log.logIndex ?? 0),
+            blockNumber: Number(log.blockNumber ?? 0),
+            account: a.account,
+            key: a.key,
+            value: a.value.toString(),
+            windowStart: Number(a.windowStart),
+            spentThisWindow: a.spentThisWindow.toString(),
+          });
+          stored++;
         }
       }
     }
@@ -325,7 +343,9 @@ export class SigilIndexer {
 
   /**
    * Rolls the index back to a block, discarding anything above it and rewinding the
-   * persisted cursor. Call after detecting a reorg at `blockNumber` (ARCH-2).
+   * persisted cursor (ARCH-2). Note: the rewound cursor carries a null hash, so this is a
+   * *clearing* primitive, not a recovery path for the B64 fail-closed check — a reorg that
+   * `validateCursor` detected must be resolved by rebuilding a separate database.
    */
   rollbackTo(blockNumber: number, manager?: Address): void {
     this.assertWritable("rollbackTo");
@@ -365,6 +385,30 @@ export class SigilIndexer {
            updated_at = excluded.updated_at`,
       )
       .run(this.chainId, manager.toLowerCase(), lastBlock, lastBlockHash, Math.floor(Date.now() / 1000));
+  }
+
+  private commitRange(
+    logs: Log[], manager: Address, end: bigint, endHash: Hash,
+    expectedCursor: ReturnType<SigilIndexer["getCursor"]>,
+  ): number {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const current = this.getCursor(manager);
+      if (current?.lastBlock !== expectedCursor?.lastBlock || current?.lastBlockHash !== expectedCursor?.lastBlockHash) {
+        throw new Error("SigilIndexer: checkpoint changed during collection; retry from the current checkpoint");
+      }
+      const stored = this.ingestLogs(logs);
+      this.setCursor(manager, Number(end), endHash);
+      this.db.exec("COMMIT");
+      return stored;
+    } catch (error) {
+      try {
+        this.db.exec("ROLLBACK");
+      } catch (rollbackError) {
+        throw new AggregateError([error, rollbackError], "SigilIndexer: range commit and rollback failed");
+      }
+      throw error;
+    }
   }
 
   // ── reads ─────────────────────────────────────────────────────────────────────
@@ -415,9 +459,135 @@ export class SigilIndexer {
   }
 
   /**
+   * Reads the hash of a single block header. Throws when the node cannot serve the
+   * header (unknown/future/pruned block, transient RPC failure) or serves a value that is
+   * not a canonical 32-byte hash — the caller must treat that as fail-closed, never as
+   * "no reorg".
+   */
+  private async getBlockHash(client: PublicClient, blockNumber: bigint): Promise<Hash> {
+    const block = await client.getBlock({ blockNumber });
+    const hash = (block as { hash?: unknown } | null)?.hash;
+    if (block?.number !== blockNumber || typeof hash !== "string" || !BLOCK_HASH_RE.test(hash)) {
+      throw new Error(
+        `block ${blockNumber} header unavailable or malformed ` +
+          `(expected 0x + 64 hex chars, got ${String(hash)})`,
+      );
+    }
+    return hash as Hash;
+  }
+
+  /**
+   * Fail-closed validation of a persisted cursor (B64). A cursor is only usable when it
+   * carries a block hash that the RPC still serves at that exact height:
+   *  - null hash  → legacy database. We cannot tell whether the rows below it are
+   *                 canonical, so resuming could permanently anchor orphaned rows.
+   *  - mismatch   → the chain reorged past the cursor; re-fetching from here would mix
+   *                 orphaned and canonical rows.
+   *  - unavailable→ we cannot prove the cursor is canonical.
+   * All three throw *before* any row is written. No automatic rollback is attempted: the
+   * schema keys rows only by (chain_id, tx_hash, log_index), with no manager ownership, so
+   * a blind delete could destroy another manager's data. Resolution is the operator's call.
+   */
+  private async validateCursor(
+    client: PublicClient,
+    cursor: { lastBlock: number; lastBlockHash: string | null },
+    manager: Address,
+  ): Promise<void> {
+    if (cursor.lastBlockHash === null) {
+      throw new Error(
+        `SigilIndexer: sync cursor for manager ${manager} at block ${cursor.lastBlock} has no recorded block hash ` +
+          `(legacy database written before cursor-hash hardening). Fail-closed: refusing to continue, because a ` +
+          `hash-less cursor cannot be checked for reorgs and resuming could silently anchor orphaned rows. ` +
+          `Preserve this database as-is, then rebuild a separate fresh database (a new --db path) and re-index ` +
+          `from a clean sync; do not delete this file. No rows were modified.`,
+      );
+    }
+    let actual: Hash;
+    try {
+      actual = await this.getBlockHash(client, BigInt(cursor.lastBlock));
+    } catch (err) {
+      throw new Error(
+        `SigilIndexer: cannot verify cursor block ${cursor.lastBlock} for manager ${manager} ` +
+          `(${err instanceof Error ? err.message : String(err)}). Fail-closed: stopping before any writes.`,
+      );
+    }
+    if (actual.toLowerCase() !== cursor.lastBlockHash.toLowerCase()) {
+      throw new Error(
+        `SigilIndexer: reorg detected at cursor block ${cursor.lastBlock} for manager ${manager}: ` +
+          `stored hash ${cursor.lastBlockHash} != chain hash ${actual}. Fail-closed: stopping before any writes and ` +
+          `leaving the cursor unchanged. Inspect the reorg, preserve this database as-is, and rebuild a separate ` +
+          `fresh database (a new --db path) from a clean sync; do not delete this file. Do not use rollbackTo to ` +
+          `recover: it clears the cursor hash, so the rewound cursor cannot be validated and the next run fails ` +
+          `closed again. No rows were deleted automatically.`,
+      );
+    }
+  }
+
+  /**
+   * Validates log membership and rechecks the range end and prior checkpoint after
+   * collection. Requires a trusted, consistent canonical-header RPC: these reads do
+   * not prove ancestry or log completeness against a dishonest/inconsistent provider.
+   * All RPC work completes before opening the persistence transaction.
+   */
+  private async fetchRangeWithStableEnd(
+    client: PublicClient,
+    managerAddress: Address,
+    fromBlock: bigint,
+    toBlock: bigint,
+    cursor: ReturnType<SigilIndexer["getCursor"]>,
+  ): Promise<{ logs: Log[]; endHash: Hash }> {
+    const before = await this.getBlockHash(client, toBlock);
+    const logs = await this.fetchLogsChunked(client, managerAddress, fromBlock, toBlock);
+    const headers = new Map<bigint, Hash>([[toBlock, before]]);
+    for (const log of logs) {
+      if (log.removed || log.blockNumber === null || log.blockNumber < fromBlock || log.blockNumber > toBlock ||
+          log.blockHash === null || !BLOCK_HASH_RE.test(log.blockHash) ||
+          log.address.toLowerCase() !== managerAddress.toLowerCase()) {
+        throw new Error("SigilIndexer: invalid log membership in fetched range; refusing to commit");
+      }
+      let hash = headers.get(log.blockNumber);
+      if (hash === undefined) {
+        hash = await this.getBlockHash(client, log.blockNumber);
+        headers.set(log.blockNumber, hash);
+      }
+      if (log.blockHash.toLowerCase() !== hash.toLowerCase()) {
+        throw new Error("SigilIndexer: log/header hash mismatch; refusing to commit");
+      }
+    }
+    const after = await this.getBlockHash(client, toBlock);
+    if (before.toLowerCase() !== after.toLowerCase()) {
+      throw new Error(
+        `SigilIndexer: block ${toBlock} changed while fetching logs (${before} -> ${after}). ` +
+          `Fail-closed: discarding the fetched range without writing rows or advancing the cursor.`,
+      );
+    }
+    if (cursor) {
+      const nextBlock = BigInt(cursor.lastBlock) + 1n;
+      if (fromBlock > nextBlock) {
+        throw new Error("SigilIndexer: range skips blocks after the checkpoint; refusing to commit");
+      }
+      if (toBlock >= nextBlock) {
+        const first = await client.getBlock({ blockNumber: nextBlock });
+        if (first?.number !== nextBlock || typeof first.hash !== "string" || !BLOCK_HASH_RE.test(first.hash) ||
+            typeof first.parentHash !== "string" || !BLOCK_HASH_RE.test(first.parentHash) ||
+            first.parentHash.toLowerCase() !== cursor.lastBlockHash?.toLowerCase() ||
+            (headers.has(nextBlock) && first.hash.toLowerCase() !== headers.get(nextBlock)?.toLowerCase())) {
+          throw new Error("SigilIndexer: checkpoint parent boundary unavailable or inconsistent; refusing to commit");
+        }
+      }
+      await this.validateCursor(client, cursor, managerAddress);
+    }
+    return { logs, endHash: after };
+  }
+
+  /**
    * Backfills from `fromBlock` (default: the persisted cursor, else genesis) up to
-   * `toBlock` (default: head − confirmations) and persists the cursor (BUG-7, ARCH-2).
-   * Returns the number of events stored.
+   * `toBlock` (default: head − confirmations) and persists the cursor with the `end`
+   * block hash (BUG-7, ARCH-2, B64). Returns the number of events stored.
+   *
+   * Fail-closed: the existing cursor hash is validated even when there is nothing new to
+   * fetch, the `end` header must be stable across the fetch, and any failure throws before
+   * a single row is written. No automatic rollback ever runs.
    */
   async backfill(
     client: PublicClient,
@@ -425,7 +595,12 @@ export class SigilIndexer {
     fromBlock?: bigint,
     toBlock?: bigint,
   ): Promise<number> {
+    this.assertWritable("backfill");
     const cursor = this.getCursor(managerAddress);
+    // Validate before any RPC that fetches logs — including when caught up — so a reorg
+    // at the cursor is detected instead of being skipped over (B64).
+    if (cursor) await this.validateCursor(client, cursor, managerAddress);
+
     const start = fromBlock ?? (cursor ? BigInt(cursor.lastBlock) + 1n : 0n);
     const head = await client.getBlockNumber();
     const safeHead = head - BigInt(this.confirmations);
@@ -444,16 +619,26 @@ export class SigilIndexer {
       return 0;
     }
 
-    const logs = await this.fetchLogsChunked(client, managerAddress, start, end);
-    const stored = this.ingestLogs(logs);
-    this.setCursor(managerAddress, Number(end), null);
-    return stored;
+    const { logs, endHash } = await this.fetchRangeWithStableEnd(
+      client,
+      managerAddress,
+      start,
+      end,
+      cursor,
+    );
+    return this.commitRange(logs, managerAddress, end, endHash, cursor);
   }
 
   /**
    * Follows live events until the returned disposer is called. Stays `confirmations`
    * blocks behind the head (ARCH-2), chunks getLogs (PERF-5) and backs off on failure
    * (ARCH-3). Errors are logged, never thrown — an indexer must not die mid-stream.
+   *
+   * Fail-closed (B64): each tick re-validates the persisted cursor hash — before the
+   * short-head skip, so an empty safe window cannot hide a reorg — and requires a stable
+   * `safeHead` header across the fetch. A reorg or an unavailable header makes the tick
+   * throw, which the existing catch turns into a logged backoff-and-retry; the cursor is
+   * not advanced and no rollback is attempted until an operator resolves it.
    */
   watch(client: PublicClient, managerAddress: Address, pollMs = 4000): () => void {
     this.assertWritable("watch");
@@ -465,18 +650,28 @@ export class SigilIndexer {
         try {
           const head = await client.getBlockNumber();
           const safeHead = head - BigInt(this.confirmations);
+          // Cursor is re-read each tick so an external rollback is respected (BUG-7).
+          const cursor = this.getCursor(managerAddress);
+          // Validate *before* the short-head skip (B64): a reorg at the cursor must stop
+          // the tick even when the safe window is still empty and there is nothing to
+          // fetch, otherwise the divergence would be silently ignored until the head
+          // advances past it.
+          if (cursor) await this.validateCursor(client, cursor, managerAddress);
           if (safeHead <= 0n) {
             consecutiveFailures = 0;
             await sleep(pollMs);
             continue;
           }
-          // Cursor is re-read each tick so an external rollback is respected (BUG-7).
-          const cursor = this.getCursor(managerAddress);
           const from = cursor ? BigInt(cursor.lastBlock) + 1n : safeHead;
           if (safeHead >= from) {
-            const logs = await this.fetchLogsChunked(client, managerAddress, from, safeHead);
-            this.ingestLogs(logs);
-            this.setCursor(managerAddress, Number(safeHead), null);
+            const { logs, endHash } = await this.fetchRangeWithStableEnd(
+              client,
+              managerAddress,
+              from,
+              safeHead,
+              cursor,
+            );
+            this.commitRange(logs, managerAddress, safeHead, endHash, cursor);
           }
           consecutiveFailures = 0;
         } catch (err) {

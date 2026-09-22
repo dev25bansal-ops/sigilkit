@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { createLogger } from "../src/logger.js";
 import {
   assertAddress,
   assertBigInt,
@@ -117,6 +118,79 @@ describe("strings, urls and enums", () => {
   it("lists the allowed values when an enum fails", () => {
     expect(assertOneOf("info", "level", ["debug", "info"] as const)).toBe("info");
     expect(() => assertOneOf("loud", "level", ["debug", "info"] as const)).toThrow(/debug \| info/);
+  });
+});
+
+describe("sensitive validation", () => {
+  const sentinel = "synthetic-sensitive-marker";
+  const invalidValues: unknown[] = [
+    sentinel,
+    sentinel.repeat(8),
+    `0x${sentinel}`,
+    123456789,
+    123456789n,
+    Symbol(sentinel),
+    { toString: () => { throw new Error(sentinel); } },
+    () => sentinel,
+    null,
+    undefined,
+  ];
+
+  it.each(invalidValues.map((value, index) => ({ value, index })))("withholds invalid private-key input $index", ({ value }) => {
+    expect(() => assertPrivateKey(value, "ownerKey")).toThrow(
+      `ownerKey: expected 32 bytes of hex (0x + 64 hex chars), got ${typeof value} (value withheld)`,
+    );
+  });
+
+  it.each([
+    `https://user:${sentinel}@`,
+    `https://example.test:invalid/?token=${sentinel}`,
+    `${sentinel}://example.test`,
+    sentinel,
+    "   ",
+  ])("withholds invalid URL input %#", (value) => {
+    const collector = new ValidationCollector();
+    collector.check(() => assertUrl(value, "rpc"));
+    expect(collector.ok).toBe(false);
+    expect(collector.messages[0]).toContain("rpc:");
+    expect(collector.messages[0]).toContain("value withheld");
+    expect(collector.messages[0]).not.toContain(sentinel);
+    expect(collector.messages[0]).not.toContain("user:");
+  });
+
+  it("does not coerce non-string URL inputs", () => {
+    for (const value of invalidValues.filter((v) => typeof v !== "string")) {
+      expect(() => assertUrl(value, "rpc")).toThrow("rpc: expected a non-empty URL (value withheld)");
+    }
+  });
+
+  it("preserves valid URL values", () => {
+    for (const protocol of ["http", "https", "ws", "wss"]) {
+      const url = `${protocol}://user:${sentinel}@example.test/?token=${sentinel}`;
+      expect(assertUrl(url, "rpc")).toBe(url);
+    }
+  });
+
+  it.each(["text", "json"] as const)("keeps collected validation errors redacted in %s output", (format) => {
+    const collector = new ValidationCollector();
+    collector.check(() => assertPrivateKey(sentinel.repeat(8), "ownerKey"));
+    collector.check(() => assertUrl(`${sentinel}://example.test`, "rpc"));
+    const lines: string[] = [];
+    const logger = createLogger({ format, err: (line) => lines.push(line) });
+    try {
+      collector.throwIfAny("config");
+    } catch (error) {
+      expect(error).toBeInstanceOf(ValidationError);
+      logger.error("invalid configuration", { validation: error }, error);
+    }
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("ownerKey");
+    expect(lines[0]).toContain("rpc");
+    expect(lines[0]).not.toContain(sentinel);
+    expect(lines[0]).not.toContain(sentinel.slice(0, 20));
+    const line = lines[0];
+    if (line === undefined) throw new Error("Expected one validation log entry");
+    if (format === "json") expect(() => JSON.parse(line)).not.toThrow();
   });
 });
 

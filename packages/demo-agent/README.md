@@ -34,8 +34,10 @@ the authority.
 npm run fleet
 ```
 
-Two agents sharing one session key, serialized through the `NonceGate` so they cannot
-collide on the strictly-sequential on-chain nonce.
+Two agents in **one process** share one session key and a local `NonceGate` queue.
+This demo does not configure a cross-process lease store. Separate processes should
+use distinct keys; SQLite v2 coordination requires explicit configuration and the
+migration precautions in the [core README](../core/README.md).
 
 ## Keys
 

@@ -1,118 +1,142 @@
 /**
- * Cross-process `LeaseStore` for single-host fleets (ARCH-6).
- *
- * `NonceGate` serializes per-key execution *within* one process, and the `LeaseStore` seam
- * exists so that multiple processes sharing one session key can coordinate. Until now the only
- * implementation was `InMemoryLeaseStore` — in-process only — so the seam had no production
- * backend and a multi-worker deployment could still race two `prepareExecution` calls onto the
- * same on-chain nonce (fail-safe: the loser reverts after spending gas, but confusing).
- *
- * `FileLeaseStore` closes that gap for the common "several workers on one host" topology using
- * nothing but atomic directory creation — `mkdir` is atomic on POSIX and NTFS, and it is
- * fail-if-exists by default, which is exactly a compare-and-swap.
- *
- *   import { FileLeaseStore } from "@sigilkit/core/lease-fs";
- *   const client = new SigilKitClient({ ..., nonceGate: new NonceGate(new FileLeaseStore("/var/run/sigilkit")) });
- *
- * Scope: ONE HOST. It does not coordinate across machines — a shared filesystem (NFS) is not a
- * reliable mutex. For a distributed fleet use a real lock service (Redis `SET key owner NX PX
- * ttl` with a check-and-delete release, etcd, or your orchestrator's leader election); the
- * interface is deliberately tiny so that adapter is ~20 lines.
- *
- * This module is a separate entry point (`@sigilkit/core/lease-fs`) because it imports
- * `node:fs`; the main entry stays free of Node built-ins so browser/edge bundlers are unaffected.
+ * Single-host LeaseStore v2, backed by atomic SQLite statements (Node >=24).
+ * Stop ALL old workers before migrating to a fresh coordination directory. Legacy
+ * .lock directories are rejected and never removed. Do not mix adapter versions,
+ * delete/replace the database while workers run, or use a network filesystem.
+ * All workers for a key must use the same database and clock/grace policy.
+ * Epochs survive release, but not database replacement. They do not fence a remote
+ * relayer/contract unless that receiver enforces them. Close when workers finish.
  */
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
 import type { Address } from "viem";
-import type { LeaseStore } from "./client.js";
+import { assertLeaseTtl, type LeaseStore, type LeaseToken } from "./client.js";
+import { assertAddress } from "./validation.js";
 
 export interface FileLeaseStoreOptions {
-  /** Create the lease directory if it does not exist. Default true. */
   createDir?: boolean;
-  /**
-   * How long past its TTL a lease directory may live before another process may break it.
-   * Guards against a crashed holder leaving a permanent lock. Default 5_000 ms.
-   */
+  /** Recovery delay after expiry. Does not extend the holder's validity. */
   staleGraceMs?: number;
 }
 
 export class FileLeaseStore implements LeaseStore {
-  private readonly dir: string;
+  readonly version = 2 as const;
+  private readonly db: DatabaseSync;
   private readonly staleGraceMs: number;
+  private closed = false;
 
-  constructor(dir: string, options: FileLeaseStoreOptions = {}) {
-    this.dir = dir;
+  constructor(private readonly dir: string, options: FileLeaseStoreOptions = {}) {
     this.staleGraceMs = options.staleGraceMs ?? 5_000;
+    if (!Number.isSafeInteger(this.staleGraceMs) || this.staleGraceMs < 0 || this.staleGraceMs > 2_147_483_647) {
+      throw new Error("SigilKit: invalid lease recovery grace");
+    }
     if (options.createDir !== false) mkdirSync(dir, { recursive: true });
-  }
-
-  private lockPath(key: Address): string {
-    return join(this.dir, `${key.toLowerCase()}.lock`);
-  }
-
-  /**
-   * Expiry stamp written by the holder, or the directory's mtime when the stamp is missing or
-   * corrupt (a holder that crashed between `mkdir` and `writeFileSync`). Falling back to the
-   * mtime matters: without it, an unreadable stamp would look like "expiry 0" and could never
-   * be broken, leaving a permanent lock on that key.
-   */
-  private expiryOf(path: string): number {
+    this.checkLegacy();
+    this.db = new DatabaseSync(join(dir, "leases-v2.sqlite"));
     try {
-      const v = Number(readFileSync(join(path, "expires"), "utf8"));
-      if (Number.isFinite(v) && v > 0) return v;
-    } catch {
-      /* no stamp — fall through to mtime */
-    }
-    try {
-      return statSync(path).mtimeMs;
-    } catch {
-      return 0; // the lock vanished under us; treat as absent
+      this.db.exec(`PRAGMA busy_timeout = 1000;
+        PRAGMA synchronous = FULL;
+        CREATE TABLE IF NOT EXISTS leases (
+          key TEXT PRIMARY KEY, owner TEXT,
+          epoch INTEGER NOT NULL CHECK(epoch BETWEEN 1 AND 9007199254740991),
+          expires INTEGER NOT NULL CHECK(expires BETWEEN 0 AND 9007199254740991),
+          reclaim_after INTEGER NOT NULL CHECK(reclaim_after BETWEEN expires AND 9007199254740991),
+          CHECK((owner IS NULL AND expires = 0 AND reclaim_after = 0) OR length(owner) > 0)
+        ) STRICT`);
+    } catch (error) {
+      this.db.close();
+      throw error;
     }
   }
 
-  acquire(key: Address, ttlMs: number): boolean {
-    const path = this.lockPath(key);
-    const now = Date.now();
-
-    // Fast path: atomic create. Throws EEXIST when another holder got there first.
-    try {
-      mkdirSync(path);
-      writeFileSync(join(path, "expires"), String(now + ttlMs));
-      return true;
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
-    }
-
-    // Held. Break it only if the holder is provably past its TTL plus the grace period.
-    const expiry = this.expiryOf(path);
-    const isStale = expiry !== 0 && now > expiry + this.staleGraceMs;
-    if (!isStale) return false;
-
-    try {
-      rmSync(path, { recursive: true, force: true });
-    } catch {
-      return false; // someone else is breaking it concurrently
-    }
-    // Re-race for the lock; exactly one process can win this mkdir.
-    try {
-      mkdirSync(path);
-      writeFileSync(join(path, "expires"), String(now + ttlMs));
-      return true;
-    } catch {
-      return false;
+  private checkLegacy(): void {
+    if (readdirSync(this.dir).some((name) => name.endsWith(".lock"))) {
+      throw new Error("SigilKit: legacy lease directory; stop all workers and migrate to a fresh directory");
     }
   }
 
-  release(key: Address): void {
-    rmSync(this.lockPath(key), { recursive: true, force: true });
+  acquire(key: Address, ttlMs: number): LeaseToken | null {
+    assertLeaseTtl(ttlMs);
+    key = assertAddress(key, "key").toLowerCase() as Address;
+    this.checkLegacy();
+    return this.write(() => {
+      const now = this.now(ttlMs);
+      const id = randomUUID();
+      const previous = this.db.prepare("SELECT epoch FROM leases WHERE key = ?").get(key) as { epoch: number } | undefined;
+      if (previous && (!Number.isSafeInteger(previous.epoch) || previous.epoch >= Number.MAX_SAFE_INTEGER)) {
+        throw new Error("SigilKit: lease epoch exhausted or invalid");
+      }
+      const row = this.db.prepare(`
+        INSERT INTO leases (key, owner, epoch, expires, reclaim_after) VALUES (?, ?, 1, ?, ?)
+        ON CONFLICT(key) DO UPDATE SET owner = excluded.owner, epoch = leases.epoch + 1,
+          expires = excluded.expires, reclaim_after = excluded.reclaim_after
+        WHERE leases.owner IS NULL OR leases.reclaim_after <= ?
+        RETURNING epoch
+      `).get(key, id, now + ttlMs, now + ttlMs + this.staleGraceMs, now) as { epoch: number } | undefined;
+      return row ? Object.freeze({ key, id, epoch: row.epoch }) : null;
+    });
   }
 
-  /** True when a live (non-stale) lease exists for the key — diagnostic helper. */
+  renew(token: LeaseToken, ttlMs: number): boolean {
+    assertLeaseTtl(ttlMs);
+    const key = assertAddress(token.key, "key").toLowerCase();
+    return this.write(() => {
+      const now = this.now(ttlMs);
+      return this.db.prepare(`UPDATE leases SET expires = ?, reclaim_after = ?
+        WHERE key = ? AND owner = ? AND epoch = ? AND expires > ?`)
+        .run(now + ttlMs, now + ttlMs + this.staleGraceMs, key, token.id, token.epoch, now).changes === 1;
+    });
+  }
+
+  isCurrent(token: LeaseToken): boolean {
+    const key = assertAddress(token.key, "key").toLowerCase();
+    const row = this.db.prepare("SELECT expires FROM leases WHERE key = ? AND owner = ? AND epoch = ?")
+      .get(key, token.id, token.epoch) as { expires: number } | undefined;
+    return !!row && Number.isSafeInteger(row.expires) && row.expires > this.now();
+  }
+
+  release(token: LeaseToken): boolean {
+    const key = assertAddress(token.key, "key").toLowerCase();
+    return this.db.prepare("UPDATE leases SET owner = NULL, expires = 0, reclaim_after = 0 WHERE key = ? AND owner = ? AND epoch = ?")
+      .run(key, token.id, token.epoch).changes === 1;
+  }
+
+  /** Diagnostic only; this is not an ownership check. */
   isHeld(key: Address): boolean {
-    const path = this.lockPath(key);
-    if (!existsSync(path)) return false;
-    const expiry = this.expiryOf(path);
-    return expiry !== 0 && Date.now() <= expiry + this.staleGraceMs;
+    return this.db.prepare("SELECT 1 FROM leases WHERE key = ? AND owner IS NOT NULL AND reclaim_after > ?")
+      .get(assertAddress(key, "key").toLowerCase(), Date.now()) !== undefined;
+  }
+
+  private now(ttlMs = 0): number {
+    const now = Date.now();
+    if (!Number.isSafeInteger(now) || now < 0 || !Number.isSafeInteger(now + ttlMs + this.staleGraceMs)) {
+      throw new Error("SigilKit: invalid lease time arithmetic");
+    }
+    return now;
+  }
+
+  private write<T>(operation: () => T): T {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const result = operation();
+      this.db.exec("COMMIT");
+      return result;
+    } catch (error) {
+      try { this.db.exec("ROLLBACK"); }
+      catch (rollbackError) {
+        this.close();
+        throw new AggregateError([error, rollbackError], "SigilKit: lease transaction rollback failed");
+      }
+      throw error;
+    }
+  }
+
+  close(): void {
+    if (!this.closed) {
+      this.db.close();
+      this.closed = true;
+    }
   }
 }

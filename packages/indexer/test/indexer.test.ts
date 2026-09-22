@@ -4,13 +4,14 @@
  * ActionLogger's declaration) — flow through ingest → SQLite → queries. The live
  * getLogs/watch wiring is a thin viem layer over the same ingest path.
  */
-import { describe, expect, it } from "vitest";
-import { existsSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { describe, expect, it, vi } from "vitest";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
 import { encodeAbiParameters, keccak256, pad, toHex, type Hash, type Hex, type Log, type PublicClient } from "viem";
 import { SigilIndexer } from "../src/indexer.js";
-import type { ActionLogRecord } from "@sigilkit/core";
+import { silentLogger, type ActionLogRecord } from "@sigilkit/core";
 
 const AGENT: Hash = ("0x" + "11".repeat(32)) as Hash;
 const AGENT2: Hash = ("0x" + "12".repeat(32)) as Hash;
@@ -42,7 +43,7 @@ function actionLog(opts: {
     ),
     blockNumber: opts.blockNumber,
     transactionHash: opts.txHash as Hash,
-    blockHash: ("0x" + "aa".repeat(32)) as Hash,
+    blockHash: blockHashFor(opts.blockNumber),
     transactionIndex: 0,
     logIndex: 0,
     removed: false,
@@ -50,6 +51,33 @@ function actionLog(opts: {
 }
 
 describe("SigilIndexer (E9)", () => {
+  it("closes its SQLite handle when initialization throws", () => {
+    let handle: { prepare: (sql: string) => unknown } | undefined;
+    const prototype = SigilIndexer.prototype as unknown as { migrate: () => void };
+    const spy = vi.spyOn(prototype, "migrate").mockImplementation(function (this: unknown) {
+      handle = (this as { db: typeof handle }).db;
+      throw new Error("injected initialization failure");
+    });
+    try {
+      expect(() => new SigilIndexer(":memory:", 31337)).toThrow("injected initialization failure");
+      expect(handle).toBeDefined();
+      expect(() => handle!.prepare("SELECT 1")).toThrow();
+    } finally { spy.mockRestore(); }
+  });
+
+  it("preserves both initialization and cleanup failures", () => {
+    const prototype = SigilIndexer.prototype as unknown as { migrate: () => void };
+    const spy = vi.spyOn(prototype, "migrate").mockImplementation(function (this: unknown) {
+      const db = (this as { db: { close: () => void } }).db;
+      const close = db.close.bind(db);
+      db.close = () => { close(); throw new Error("cleanup failure"); };
+      throw new Error("initialization failure");
+    });
+    try {
+      expect(() => new SigilIndexer(":memory:", 31337)).toThrow(/initialization failure.*cleanup failure/);
+    } finally { spy.mockRestore(); }
+  });
+
   it("ingests ActionLogged logs and answers spend/action queries", () => {
     const ix = new SigilIndexer(":memory:", 31337);
     const stored = ix.ingestLogs([
@@ -115,6 +143,130 @@ describe("SigilIndexer (E9)", () => {
   });
 });
 
+describe("window-charge persistence failures", () => {
+  it("propagates write failures without advancing the backfill cursor", async () => {
+    const ix = new SigilIndexer(":memory:", 31337, { confirmations: 0, logger: silentLogger() });
+    const charge: Log = {
+      ...actionLog({ agentId: AGENT, value: 1n, ts: 100, txHash: `0x${"cc".repeat(32)}`, blockNumber: 1n }),
+      topics: [keccak256(toHex("WindowCharged(address,address,uint256,uint48,uint256)")), pad(MANAGER), pad(KEY)],
+      data: encodeAbiParameters(
+        [{ type: "uint256" }, { type: "uint48" }, { type: "uint256" }],
+        [1n, 100, 1n],
+      ),
+    };
+    const failure = new Error("synthetic persistence failure");
+    const write = vi.spyOn(ix, "storeWindowCharge").mockImplementation(() => { throw failure; });
+    try {
+      await expect(ix.backfill(stubChain([charge], 1n), MANAGER, 1n, 1n)).rejects.toBe(failure);
+      expect(ix.getCursor(MANAGER)).toBeNull();
+      expect(ix.latestWindowCharge(KEY)).toBeNull();
+      write.mockRestore();
+      await expect(ix.backfill(stubChain([charge], 1n), MANAGER, 1n, 1n)).resolves.toBe(1);
+      expect(ix.getCursor(MANAGER)?.lastBlock).toBe(1);
+      expect(ix.latestWindowCharge(KEY)?.value).toBe("1");
+    } finally {
+      write.mockRestore();
+      ix.close();
+    }
+  });
+});
+
+describe("atomic range persistence", () => {
+  it.each(["cursor", "commit"] as const)("preserves existing rows/checkpoint on %s failure and retries", async (stage) => {
+    const ix = new SigilIndexer(":memory:", 31337, { confirmations: 0, logger: silentLogger() });
+    const db = ix["db"];
+    const exec = db.exec.bind(db);
+    const logs = [1n, 2n].map((blockNumber) => actionLog({
+      agentId: AGENT, value: blockNumber, ts: 100,
+      txHash: blockHashFor(blockNumber), blockNumber,
+    }));
+    let failCommit = false;
+    const commit = vi.spyOn(db, "exec").mockImplementation((sql) => {
+      if (failCommit && sql === "COMMIT") throw new Error("synthetic commit failure");
+      return exec(sql);
+    });
+    try {
+      await ix.backfill(stubChain(logs, 1n), MANAGER);
+      const before = ix.getCursor(MANAGER);
+      const rows = ix.actionsForAgent(AGENT);
+      if (stage === "cursor") {
+        exec("CREATE TEMP TRIGGER reject_cursor BEFORE UPDATE ON sync_state BEGIN SELECT RAISE(ABORT, 'synthetic cursor failure'); END");
+      } else {
+        failCommit = true;
+      }
+      await expect(ix.backfill(stubChain(logs, 2n), MANAGER)).rejects.toThrow(`synthetic ${stage} failure`);
+      expect(ix.getCursor(MANAGER)).toEqual(before);
+      expect(ix.actionsForAgent(AGENT)).toEqual(rows);
+      failCommit = false;
+      if (stage === "cursor") exec("DROP TRIGGER reject_cursor");
+      expect(await ix.backfill(stubChain(logs, 2n), MANAGER)).toBe(1);
+      expect(ix.getCursor(MANAGER)?.lastBlock).toBe(2);
+      expect(ix.spendByAgent(AGENT)).toBe(3n);
+    } finally {
+      commit.mockRestore();
+      ix.close();
+    }
+  });
+
+  it("watch rolls back a failed commit and retries from the unchanged checkpoint", async () => {
+    vi.useFakeTimers();
+    const ix = new SigilIndexer(":memory:", 31337, { confirmations: 0, backoffMs: 5, logger: silentLogger() });
+    const db = ix["db"];
+    const exec = db.exec.bind(db);
+    let fail = false;
+    let stop: (() => void) | undefined;
+    const commit = vi.spyOn(db, "exec").mockImplementation((sql) => {
+      if (fail && sql === "COMMIT") throw new Error("synthetic watch commit failure");
+      return exec(sql);
+    });
+    try {
+      await ix.backfill(stubChain([], 1n), MANAGER);
+      const before = ix.getCursor(MANAGER);
+      fail = true;
+      stop = ix.watch(stubChain([actionLog({ agentId: AGENT, value: 2n, ts: 100, txHash: blockHashFor(2n), blockNumber: 2n })], 2n), MANAGER, 5);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(commit).toHaveBeenCalledWith("ROLLBACK");
+      expect(ix.getCursor(MANAGER)).toEqual(before);
+      expect(ix.actionsForAgent(AGENT)).toHaveLength(0);
+      fail = false;
+      await vi.advanceTimersByTimeAsync(6);
+      expect(ix.getCursor(MANAGER)?.lastBlock).toBe(2);
+      expect(ix.spendByAgent(AGENT)).toBe(2n);
+    } finally {
+      stop?.();
+      await vi.advanceTimersByTimeAsync(20);
+      commit.mockRestore();
+      ix.close();
+      vi.useRealTimers();
+    }
+  });
+
+  it("rolls back earlier rows when a later write fails and retries cleanly", async () => {
+    const ix = new SigilIndexer(":memory:", 31337, { confirmations: 0, logger: silentLogger() });
+    const logs = [1n, 2n].map((block) => actionLog({
+      agentId: AGENT, value: block, ts: 100, txHash: `0x${block.toString(16).padStart(64, "0")}`, blockNumber: block,
+    }));
+    const original = ix.storeAction.bind(ix);
+    const failure = new Error("synthetic second write failure");
+    const write = vi.spyOn(ix, "storeAction").mockImplementation((...args) => {
+      if (args[0].blockNumber === 2n) throw failure;
+      return original(...args);
+    });
+    try {
+      await expect(ix.backfill(stubChain(logs, 2n), MANAGER, 1n, 2n)).rejects.toBe(failure);
+      expect(ix.actionsForAgent(AGENT)).toHaveLength(0);
+      expect(ix.getCursor(MANAGER)).toBeNull();
+      write.mockRestore();
+      await expect(ix.backfill(stubChain(logs, 2n), MANAGER, 1n, 2n)).resolves.toBe(2);
+      expect(ix.spendByAgent(AGENT)).toBe(3n);
+      expect(ix.getCursor(MANAGER)?.lastBlock).toBe(2);
+    } finally {
+      write.mockRestore();
+      ix.close();
+    }
+  });
+});
+
 // ── 2026-09-12 durability hardening ──────────────────────────────────────────────
 
 const MANAGER = "0x0000000000000000000000000000000000000042" as const;
@@ -134,10 +286,31 @@ function record(overrides: Partial<ActionLogRecord> = {}): ActionLogRecord {
   };
 }
 
-/** Minimal PublicClient stub: getBlockNumber + a block-range-filtered getLogs. */
-function stubChain(logs: Log[], head: bigint): PublicClient {
+/** Deterministic, self-describing block hash for a height (distinct per block). */
+function blockHashFor(n: bigint): Hash {
+  return ("0x" + n.toString(16).padStart(64, "0")) as Hash;
+}
+
+interface StubChainOptions {
+  /** Override the hash served at a height — used to simulate a reorg. */
+  hashes?: Map<bigint, Hash | null>;
+  /** Heights whose header request must fail (pruned / unavailable block). */
+  missing?: Set<bigint>;
+  /** Called after each header's value is chosen, so a test can flip the next read. */
+  onGetBlock?: (n: bigint) => void;
+}
+
+/** Minimal PublicClient stub: getBlockNumber + getBlock + a block-range-filtered getLogs. */
+function stubChain(logs: Log[], head: bigint, opts: StubChainOptions = {}): PublicClient {
   return {
     getBlockNumber: async () => head,
+    getBlock: async (a: { blockNumber?: bigint }) => {
+      const n = a.blockNumber ?? head;
+      if (opts.missing?.has(n)) throw new Error(`header for block ${n} unavailable`);
+      const hash = opts.hashes?.has(n) ? opts.hashes.get(n)! : blockHashFor(n);
+      opts.onGetBlock?.(n);
+      return hash === null ? null : ({ number: n, hash, parentHash: blockHashFor(n > 0n ? n - 1n : 0n) } as unknown);
+    },
     getLogs: async (a: { fromBlock?: bigint; toBlock?: bigint }) =>
       logs.filter(
         (l) =>
@@ -222,7 +395,7 @@ describe("SigilIndexer durability (BUG-5/6/7, BUG-9, ARCH-2/3/4)", () => {
     const client = stubChain(logs, 10n);
 
     expect(await ix.backfill(client, MANAGER)).toBe(1);
-    expect(ix.getCursor(MANAGER)).toEqual({ lastBlock: 10, lastBlockHash: null });
+    expect(ix.getCursor(MANAGER)).toEqual({ lastBlock: 10, lastBlockHash: blockHashFor(10n) });
 
     // A second pass with no new blocks is a clean no-op — not a replay (no duplicates).
     expect(await ix.backfill(client, MANAGER)).toBe(0);
@@ -251,6 +424,7 @@ describe("SigilIndexer durability (BUG-5/6/7, BUG-9, ARCH-2/3/4)", () => {
     const ranges: Array<[bigint, bigint]> = [];
     const client = {
       getBlockNumber: async () => 5n,
+      getBlock: async (a: { blockNumber?: bigint }) => ({ number: a.blockNumber ?? 5n, hash: blockHashFor(a.blockNumber ?? 5n) }),
       getLogs: async (a: { fromBlock: bigint; toBlock: bigint }) => {
         ranges.push([a.fromBlock, a.toBlock]);
         return logs.filter((l) => (l.blockNumber ?? 0n) >= a.fromBlock && (l.blockNumber ?? 0n) <= a.toBlock);
@@ -277,7 +451,7 @@ describe("SigilIndexer durability (BUG-5/6/7, BUG-9, ARCH-2/3/4)", () => {
     expect(ix.actionsForAgent(AGENT, 1)).toHaveLength(1);
   });
 
-  it("read-only mode performs no writes and no DDL (BUG-9)", () => {
+  it("read-only mode performs no writes and no DDL (BUG-9)", async () => {
     const path = join(tmpdir(), `sigilkit-ro-${process.pid}-${Date.now()}.db`);
     const missing = join(tmpdir(), `sigilkit-missing-${process.pid}-${Date.now()}.db`);
     const rw = new SigilIndexer(path, 31337);
@@ -294,6 +468,8 @@ describe("SigilIndexer durability (BUG-5/6/7, BUG-9, ARCH-2/3/4)", () => {
       expect(() => ro!.storeAction(record())).toThrow(/read-only/);
       expect(() => ro!.ingestLogs([])).toThrow(/read-only/);
       expect(() => ro!.rollbackTo(0)).toThrow(/read-only/);
+      // backfill must refuse before any RPC: the empty client would throw if it were reached.
+      await expect(ro!.backfill({} as PublicClient, MANAGER)).rejects.toThrow(/read-only/);
       ro.close();
       ro = undefined;
 
@@ -305,6 +481,321 @@ describe("SigilIndexer durability (BUG-5/6/7, BUG-9, ARCH-2/3/4)", () => {
       rw.close();
       rmSync(path, { force: true });
       rmSync(missing, { force: true });
+    }
+  });
+});
+
+// ── 2026-09-17 fail-closed cursor-hash validation (B64) ─────────────────────────
+// Conservative detection only: every failure stops before a write and never deletes
+// user data. Resolving a reorg stays an explicit operator action (rollbackTo).
+
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
+/** Temp workspace under the project's outputs dir — isolated per test and removed after. */
+const TMP_ROOT = join(REPO_ROOT, "outputs", ".tmp-indexer-tests");
+
+describe("range continuity", () => {
+  it.each(["parent", "checkpoint", "missing checkpoint", "height", "log hash", "concurrent writer"] as const)("rejects inconsistent %s evidence without losing prior state", async (kind) => {
+    const ix = new SigilIndexer(":memory:", 31337, { confirmations: 0, logger: silentLogger() });
+    try {
+      await ix.backfill(stubChain([], 1n), MANAGER);
+      const before = ix.getCursor(MANAGER);
+      const hashes = new Map<bigint, Hash | null>();
+      const missing = new Set<bigint>();
+      const log = actionLog({ agentId: AGENT, value: 2n, ts: 100, txHash: blockHashFor(2n), blockNumber: 2n });
+      const client = stubChain([kind === "log hash" ? { ...log, blockHash: blockHashFor(99n) } : log], 2n, { hashes, missing });
+      const getLogs = client.getLogs.bind(client);
+      const getBlock = client.getBlock.bind(client);
+      vi.spyOn(client, "getLogs").mockImplementation(async (args) => {
+        const logs = await getLogs(args);
+        if (kind === "checkpoint") hashes.set(1n, blockHashFor(99n));
+        if (kind === "missing checkpoint") missing.add(1n);
+        if (kind === "concurrent writer") ix["setCursor"](MANAGER, 3, blockHashFor(3n));
+        return logs;
+      });
+      vi.spyOn(client, "getBlock").mockImplementation(async (args) => {
+        const header = await getBlock(args);
+        if (args?.blockNumber === 2n && kind === "parent") return { ...header, parentHash: blockHashFor(99n) };
+        if (args?.blockNumber === 2n && kind === "height") return { ...header, number: 99n };
+        return header;
+      });
+      const reason = { parent: /parent/, checkpoint: /reorg detected/, "missing checkpoint": /cannot verify cursor/,
+        height: /malformed/, "log hash": /hash mismatch/, "concurrent writer": /checkpoint changed/ }[kind];
+      await expect(ix.backfill(client, MANAGER)).rejects.toThrow(reason);
+      expect(ix.actionsForAgent(AGENT)).toHaveLength(0);
+      expect(ix.getCursor(MANAGER)).toEqual(kind === "concurrent writer" ? { lastBlock: 3, lastBlockHash: blockHashFor(3n) } : before);
+    } finally {
+      ix.close();
+    }
+  });
+
+  it("watch rejects a checkpoint that changes during collection", async () => {
+    vi.useFakeTimers();
+    const ix = new SigilIndexer(":memory:", 31337, { confirmations: 0, backoffMs: 5, logger: silentLogger() });
+    let stop: (() => void) | undefined;
+    try {
+      await ix.backfill(stubChain([], 1n), MANAGER);
+      const before = ix.getCursor(MANAGER);
+      const hashes = new Map<bigint, Hash | null>();
+      const client = stubChain([actionLog({ agentId: AGENT, value: 2n, ts: 100, txHash: blockHashFor(2n), blockNumber: 2n })], 2n, { hashes });
+      const getLogs = client.getLogs.bind(client);
+      const fetch = vi.spyOn(client, "getLogs").mockImplementation(async (args) => {
+        const logs = await getLogs(args);
+        hashes.set(1n, blockHashFor(99n));
+        return logs;
+      });
+      stop = ix.watch(client, MANAGER, 5);
+      await vi.advanceTimersByTimeAsync(20);
+      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(ix.getCursor(MANAGER)).toEqual(before);
+      expect(ix.actionsForAgent(AGENT)).toHaveLength(0);
+    } finally {
+      stop?.();
+      await vi.advanceTimersByTimeAsync(40);
+      ix.close();
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("SigilIndexer fail-closed cursor validation (B64)", () => {
+  it("re-validates a stable cursor and resumes when the chain advances", async () => {
+    const ix = new SigilIndexer(":memory:", 31337, { confirmations: 0 });
+    const block5 = [
+      actionLog({ agentId: AGENT, value: 5n, ts: 1, txHash: "0x" + "4a".repeat(32), blockNumber: 5n }),
+    ];
+    const client = stubChain(block5, 10n);
+
+    expect(await ix.backfill(client, MANAGER)).toBe(1);
+    expect(ix.getCursor(MANAGER)).toEqual({ lastBlock: 10, lastBlockHash: blockHashFor(10n) });
+
+    // Nothing new: the cursor hash still matches, so this is a clean no-op — not a replay.
+    expect(await ix.backfill(client, MANAGER)).toBe(0);
+    expect(ix.spendByAgent(AGENT)).toBe(5n);
+    expect(ix.actionsForAgent(AGENT)).toHaveLength(1);
+
+    // A new block arrives: only the delta is fetched and the cursor advances with its hash.
+    const advanced = stubChain(
+      [
+        ...block5,
+        actionLog({ agentId: AGENT, value: 2n, ts: 2, txHash: "0x" + "4b".repeat(32), blockNumber: 11n }),
+      ],
+      11n,
+    );
+    expect(await ix.backfill(advanced, MANAGER)).toBe(1);
+    expect(ix.spendByAgent(AGENT)).toBe(7n);
+    expect(ix.getCursor(MANAGER)).toEqual({ lastBlock: 11, lastBlockHash: blockHashFor(11n) });
+  });
+
+  it("fails closed on a cursor hash mismatch: no writes and no cursor advance", async () => {
+    const ix = new SigilIndexer(":memory:", 31337, { confirmations: 0 });
+    const block5 = [
+      actionLog({ agentId: AGENT, value: 7n, ts: 1, txHash: "0x" + "5a".repeat(32), blockNumber: 5n }),
+    ];
+    expect(await ix.backfill(stubChain(block5, 10n), MANAGER)).toBe(1);
+
+    // Block 10 reorged (new hash) and block 11 carries a fresh action.
+    const hashes = new Map<bigint, Hash>([[10n, ("0x" + "ff".repeat(32)) as Hash]]);
+    const reorged = stubChain(
+      [
+        ...block5,
+        actionLog({ agentId: AGENT, value: 100n, ts: 2, txHash: "0x" + "5b".repeat(32), blockNumber: 11n }),
+      ],
+      11n,
+      { hashes },
+    );
+    await expect(ix.backfill(reorged, MANAGER)).rejects.toThrow(/reorg detected/);
+
+    // The mismatch was caught before the range fetch: nothing ingested, cursor untouched.
+    expect(ix.spendByAgent(AGENT)).toBe(7n);
+    expect(ix.actionsForAgent(AGENT)).toHaveLength(1);
+    expect(ix.getCursor(MANAGER)).toEqual({ lastBlock: 10, lastBlockHash: blockHashFor(10n) });
+  });
+
+  it("aborts when the end header changes mid-fetch: no ingest, no cursor advance", async () => {
+    const ix = new SigilIndexer(":memory:", 31337, { confirmations: 0 });
+    const logs = [
+      actionLog({ agentId: AGENT, value: 3n, ts: 1, txHash: "0x" + "6a".repeat(32), blockNumber: 10n }),
+    ];
+    let headerReads = 0;
+    const hashes = new Map<bigint, Hash>([[10n, blockHashFor(10n)]]);
+    const client = stubChain(logs, 10n, {
+      hashes,
+      onGetBlock: (n) => {
+        // Flip the header after the pre-fetch read so the post-fetch read disagrees.
+        if (n === 10n && ++headerReads === 1) hashes.set(10n, ("0x" + "ee".repeat(32)) as Hash);
+      },
+    });
+
+    await expect(ix.backfill(client, MANAGER)).rejects.toThrow(/changed while fetching logs/);
+    expect(ix.spendByAgent(AGENT)).toBe(0n);
+    expect(ix.actionsForAgent(AGENT)).toHaveLength(0);
+    expect(ix.getCursor(MANAGER)).toBeNull();
+  });
+
+  it("fails closed on a legacy cursor with no block hash — no silent resume", async () => {
+    const ix = new SigilIndexer(":memory:", 31337, { confirmations: 0 });
+    const logs = [
+      actionLog({ agentId: AGENT, value: 8n, ts: 1, txHash: "0x" + "2a".repeat(32), blockNumber: 10n }),
+    ];
+    expect(await ix.backfill(stubChain(logs, 10n), MANAGER)).toBe(1);
+
+    // Simulate a pre-hardening database: a cursor row whose hash was never recorded.
+    ix.rollbackTo(10, MANAGER);
+    expect(ix.getCursor(MANAGER)).toEqual({ lastBlock: 10, lastBlockHash: null });
+
+    await expect(ix.backfill(stubChain(logs, 10n), MANAGER)).rejects.toThrow(/no recorded block hash/);
+    // The rows are left exactly as they were — no auto-delete and no cursor rewrite.
+    expect(ix.getCursor(MANAGER)).toEqual({ lastBlock: 10, lastBlockHash: null });
+    expect(ix.spendByAgent(AGENT)).toBe(8n);
+  });
+
+  it("fails closed when a required header is unavailable", async () => {
+    const ix = new SigilIndexer(":memory:", 31337, { confirmations: 0 });
+    const logs = [
+      actionLog({ agentId: AGENT, value: 4n, ts: 1, txHash: "0x" + "3a".repeat(32), blockNumber: 10n }),
+    ];
+
+    // End header unavailable with no cursor yet → nothing written, no cursor row created.
+    await expect(
+      ix.backfill(stubChain(logs, 10n, { missing: new Set([10n]) }), MANAGER),
+    ).rejects.toThrow(/unavailable/);
+    expect(ix.spendByAgent(AGENT)).toBe(0n);
+    expect(ix.getCursor(MANAGER)).toBeNull();
+
+    // Cursor block unavailable → the pre-fetch validation stops the run and keeps the cursor.
+    expect(await ix.backfill(stubChain(logs, 10n), MANAGER)).toBe(1);
+    await expect(
+      ix.backfill(stubChain(logs, 10n, { missing: new Set([10n]) }), MANAGER),
+    ).rejects.toThrow(/cannot verify cursor block 10/);
+    expect(ix.actionsForAgent(AGENT)).toHaveLength(1);
+    expect(ix.getCursor(MANAGER)).toEqual({ lastBlock: 10, lastBlockHash: blockHashFor(10n) });
+  });
+
+  it("persists and re-validates the cursor hash across a real close/reopen", async () => {
+    const dir = join(TMP_ROOT, `reopen-${process.pid}-${Date.now()}`);
+    const dbPath = join(dir, "indexer.db");
+    mkdirSync(dir, { recursive: true });
+    const logs = [
+      actionLog({ agentId: AGENT, value: 9n, ts: 1, txHash: "0x" + "7a".repeat(32), blockNumber: 5n }),
+    ];
+    const client = stubChain(logs, 10n);
+    let ix: SigilIndexer | undefined;
+    try {
+      ix = new SigilIndexer(dbPath, 31337, { confirmations: 0 });
+      expect(await ix.backfill(client, MANAGER)).toBe(1);
+      const persisted = ix.getCursor(MANAGER)!;
+      expect(persisted).toEqual({ lastBlock: 10, lastBlockHash: blockHashFor(10n) });
+      ix.close();
+      ix = undefined;
+
+      // Reopen the same file: the hash must still validate, so the resume is a clean no-op.
+      ix = new SigilIndexer(dbPath, 31337, { confirmations: 0 });
+      expect(ix.getCursor(MANAGER)).toEqual(persisted);
+      expect(await ix.backfill(client, MANAGER)).toBe(0);
+      expect(ix.spendByAgent(AGENT)).toBe(9n);
+    } finally {
+      ix?.close();
+      // Best-effort cleanup. The sandbox's bulk-delete guard can refuse a late rmSync in a
+      // long run; a blocked cleanup must not fail an otherwise-passing test. The folder is
+      // isolated under outputs/.tmp-indexer-tests and is never inside the repo's sources.
+      try {
+        rmSync(dir, { recursive: true, force: true });
+      } catch {
+        /* left for manual cleanup */
+      }
+    }
+  });
+
+  it("watch stops on a cursor hash mismatch without writing (B64)", async () => {
+    vi.useFakeTimers();
+    const ix = new SigilIndexer(":memory:", 31337, {
+      confirmations: 0,
+      backoffMs: 1,
+      logger: silentLogger(),
+    });
+    try {
+      const block5 = [
+        actionLog({ agentId: AGENT, value: 7n, ts: 1, txHash: "0x" + "9a".repeat(32), blockNumber: 5n }),
+      ];
+      expect(await ix.backfill(stubChain(block5, 10n), MANAGER)).toBe(1);
+
+      // Block 10 reorged (new hash) and block 11 carries a fresh action that must not land.
+      const hashes = new Map<bigint, Hash>([[10n, ("0x" + "dd".repeat(32)) as Hash]]);
+      const reorged = stubChain(
+        [
+          ...block5,
+          actionLog({ agentId: AGENT, value: 100n, ts: 2, txHash: "0x" + "9b".repeat(32), blockNumber: 11n }),
+        ],
+        11n,
+        { hashes },
+      );
+
+      const stop = ix.watch(reorged, MANAGER, 5);
+      await vi.advanceTimersByTimeAsync(40);
+      stop();
+      await vi.advanceTimersByTimeAsync(40);
+
+      // Fail-closed: the block-11 action was never fetched or stored, cursor untouched.
+      expect(ix.spendByAgent(AGENT)).toBe(7n);
+      expect(ix.actionsForAgent(AGENT)).toHaveLength(1);
+      expect(ix.getCursor(MANAGER)).toEqual({ lastBlock: 10, lastBlockHash: blockHashFor(10n) });
+    } finally {
+      ix.close();
+      vi.useRealTimers();
+    }
+  });
+
+  it("watch validates the cursor before the short-head skip (B64)", async () => {
+    vi.useFakeTimers();
+    const dir = join(TMP_ROOT, `watch-shorthead-${process.pid}-${Date.now()}`);
+    const dbPath = join(dir, "indexer.db");
+    mkdirSync(dir, { recursive: true });
+    let seeded: SigilIndexer | undefined;
+    let watching: SigilIndexer | undefined;
+    try {
+      const logs = [
+        actionLog({ agentId: AGENT, value: 6n, ts: 1, txHash: "0x" + "8a".repeat(32), blockNumber: 5n }),
+      ];
+      // Seed a cursor at block 10 while the head is still high.
+      seeded = new SigilIndexer(dbPath, 31337, { confirmations: 0 });
+      expect(await seeded.backfill(stubChain(logs, 10n), MANAGER)).toBe(1);
+      expect(seeded.getCursor(MANAGER)).toEqual({ lastBlock: 10, lastBlockHash: blockHashFor(10n) });
+      seeded.close();
+      seeded = undefined;
+
+      // Head 5 with confirmations 12 → safeHead < 0, so the short-head skip fires. The
+      // cursor block has reorged, so validation must still run and stop the tick.
+      const headerReads: bigint[] = [];
+      const client = stubChain(logs, 5n, {
+        hashes: new Map<bigint, Hash>([[10n, ("0x" + "cc".repeat(32)) as Hash]]),
+        onGetBlock: (n) => headerReads.push(n),
+      });
+
+      watching = new SigilIndexer(dbPath, 31337, {
+        confirmations: 12,
+        backoffMs: 1,
+        logger: silentLogger(),
+      });
+      const stop = watching.watch(client, MANAGER, 5);
+      await vi.advanceTimersByTimeAsync(40);
+      stop();
+      await vi.advanceTimersByTimeAsync(40);
+
+      // The cursor header was read despite the empty safe window — validation ran first.
+      expect(headerReads).toContain(10n);
+      // Fail-closed: no writes and the cursor is unchanged.
+      expect(watching.spendByAgent(AGENT)).toBe(6n);
+      expect(watching.actionsForAgent(AGENT)).toHaveLength(1);
+      expect(watching.getCursor(MANAGER)).toEqual({ lastBlock: 10, lastBlockHash: blockHashFor(10n) });
+    } finally {
+      watching?.close();
+      seeded?.close();
+      vi.useRealTimers();
+      try {
+        rmSync(dir, { recursive: true, force: true });
+      } catch {
+        /* isolated tmp dir left for manual cleanup */
+      }
     }
   });
 });

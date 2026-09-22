@@ -8,6 +8,7 @@ import {
 import { decodeSigilKitError, decorateWithDecodedRevert } from "./errors.js";
 import { ACTION_LOGGER_ABI } from "./abis.js";
 import { createLogger, type Logger } from "./logger.js";
+import { assertAddress } from "./validation.js";
 import {
   createPublicClient,
   decodeEventLog,
@@ -117,9 +118,17 @@ export interface SigilKitClientConfig {
    * Optional cross-process lease store backing {@link NonceGate} (ARCH-6). Supply one when
    * several processes on the same host may share a session key — see
    * `@sigilkit/core/lease-fs` for a dependency-free implementation. For a distributed
-   * fleet, implement {@link LeaseStore} over a real lock service.
+   * fleet, implement {@link LeaseStore} over a real lock service. When set, executions
+   * MUST run inside `nonceGate.run` and forward its guard (fail-closed at the sign/send
+   * boundaries).
    */
   leaseStore?: LeaseStore;
+  /**
+   * Lease TTL in ms used by {@link NonceGate} for owned stores (default 30_000, renewed
+   * at half-TTL). This is an operator ceiling, not a derived bound: a holder that cannot
+   * renew within it loses the lease to a waiting worker.
+   */
+  leaseTtlMs?: number;
   /**
    * Where advisory diagnostics go (a degraded window pre-check, a swallowed decode
    * failure). Defaults to a console logger at `info`; pass `silentLogger()` to keep
@@ -153,11 +162,8 @@ function isPreparedExecution(v: PrepareExecutionArgs | PreparedExecution): v is 
  * Queue every step that must not interleave — prepare, sign, relay, confirm — for a
  * given key:
  *
- *   await client.nonceGate.run(agentAddress, async () => {
- *     const prepared = await client.prepareExecution({ ... });
- *     const hash = await relayer.sendTransaction(prepared);
- *     return client.assertAuditEmitted(hash);
- *   });
+ *   await client.nonceGate.run(args.account.address, (guard) =>
+ *     client.execute(args, wallet, guard));
  *
  * Coordination is in-process only (the client stays stateless across machines); for
  * multi-process fleets, serialize per key upstream or use distinct keys per agent.
@@ -165,67 +171,272 @@ function isPreparedExecution(v: PrepareExecutionArgs | PreparedExecution): v is 
  *
  * For MULTIPLE processes sharing one key, inject a cross-process {@link LeaseStore} via
  * `SigilKitClientConfig.leaseStore`: the gate then rejects runs that cannot take the lease
- * instead of racing. Two implementations ship today —
+ * instead of racing, renews the lease at half-TTL while the callback runs, and hands the
+ * callback an {@link ExecutionGuard} — call `await guard.assertCurrent()` immediately
+ * before signing and again immediately before sending so a superseded holder refuses its
+ * side effects. Two implementations ship today —
  *
- *  - `FileLeaseStore` (`@sigilkit/core/lease-fs`): atomic-mkdir leases, for several workers
- *    on ONE host, with TTL recovery after a crashed holder. Dependency-free.
+ *  - `FileLeaseStore` (`@sigilkit/core/lease-fs`): SQLite-backed owner/epoch leases for
+ *    several workers on ONE host, with TTL recovery after a crashed holder. Requires
+ *    Node >= 24. Stop all v1 workers and start from an empty directory — v1 `.lock`
+ *    directories are rejected, not migrated.
  *  - anything you write against this interface for a distributed fleet (Redis `SET key owner
  *    NX PX ttl` + check-and-delete release, etcd, orchestrator leader election). A shared
  *    filesystem is NOT a reliable cross-host mutex — use a real lock service.
  *
- * The documented default remains one key per agent process — zero coordination is better
- * than coordination.
+ * Limits (documented, not hidden): the guard is cooperative — it cannot preempt arbitrary
+ * callback code, and once `sendTransaction` has been invoked a lost lease cannot unsend;
+ * the on-chain nonce monotonicity remains an independent defense. Epochs increase
+ * within the retained store, but are not distributed fencing tokens. Renewal requires
+ * scheduler and I/O progress within TTL; a live process alone is insufficient.
+ *
+ * The documented default remains one distinct key per agent process.
  */
-export interface LeaseStore {
-  /** Returns true when the lease is held by this caller; false when busy. */
-  acquire(key: Address, ttlMs: number): boolean | Promise<boolean>;
-  release(key: Address): void | Promise<void>;
+/** Capability for one acquisition. Never log the id; epochs are local to the store. */
+export interface LeaseToken {
+  readonly key: Address;
+  readonly id: string;
+  readonly epoch: number;
 }
 
-/** Single-process lease store (the default when none is injected). */
-export class InMemoryLeaseStore implements LeaseStore {
-  private held = new Map<Address, number>(); // key -> expiry ms
+/** Version 2: adapters must implement atomic owner/epoch-conditioned operations. */
+export interface LeaseStore {
+  readonly version: 2;
+  acquire(key: Address, ttlMs: number): LeaseToken | null | Promise<LeaseToken | null>;
+  renew(token: LeaseToken, ttlMs: number): boolean | Promise<boolean>;
+  isCurrent(token: LeaseToken): boolean | Promise<boolean>;
+  release(token: LeaseToken): boolean | Promise<boolean>;
+}
 
-  acquire(key: Address, ttlMs: number): boolean {
-    const now = Date.now();
-    const until = this.held.get(key) ?? 0;
-    if (until > now) return false;
-    this.held.set(key, now + ttlMs);
+export function assertLeaseTtl(ttlMs: number): void {
+  if (!Number.isSafeInteger(ttlMs) || ttlMs < 10 || ttlMs > 2_147_483_647) {
+    throw new Error("SigilKit: lease TTL must be an integer between 10 and 2147483647 ms");
+  }
+}
+
+function leaseNow(ttlMs = 0): number {
+  const now = Date.now();
+  if (!Number.isSafeInteger(now) || now < 0 || !Number.isSafeInteger(now + ttlMs)) {
+    throw new Error("SigilKit: invalid lease time arithmetic");
+  }
+  return now;
+}
+
+/** Optional single-process owned lease store; the default gate uses only a local queue. */
+export class InMemoryLeaseStore implements LeaseStore {
+  readonly version = 2 as const;
+  private held = new Map<Address, { id: string; epoch: number; expires: number }>();
+
+  acquire(key: Address, ttlMs: number): LeaseToken | null {
+    assertLeaseTtl(ttlMs);
+    key = assertAddress(key, "key").toLowerCase() as Address;
+    const now = leaseNow(ttlMs);
+    const cur = this.held.get(key);
+    if (cur && cur.expires > now) return null;
+    if (cur && cur.epoch >= Number.MAX_SAFE_INTEGER) throw new Error("SigilKit: lease epoch exhausted");
+    const token: LeaseToken = Object.freeze({
+      key,
+      id: crypto.randomUUID(),
+      epoch: (cur?.epoch ?? 0) + 1,
+    });
+    this.held.set(key, { id: token.id, epoch: token.epoch, expires: now + ttlMs });
+    return token;
+  }
+
+  renew(token: LeaseToken, ttlMs: number): boolean {
+    assertLeaseTtl(ttlMs);
+    const now = leaseNow(ttlMs);
+    const cur = this.held.get(assertAddress(token.key, "token.key").toLowerCase() as Address);
+    if (!cur || cur.id !== token.id || cur.epoch !== token.epoch || cur.expires <= now) {
+      return false;
+    }
+    cur.expires = now + ttlMs;
     return true;
   }
 
-  release(key: Address): void {
-    this.held.delete(key);
+  isCurrent(token: LeaseToken): boolean {
+    const cur = this.held.get(assertAddress(token.key, "token.key").toLowerCase() as Address);
+    return !!cur && cur.id === token.id && cur.epoch === token.epoch && cur.expires > Date.now();
+  }
+
+  release(token: LeaseToken): boolean {
+    const key = assertAddress(token.key, "token.key").toLowerCase() as Address;
+    const cur = this.held.get(key);
+    if (!cur || cur.id !== token.id || cur.epoch !== token.epoch) return false;
+    // Tombstone: keep the epoch so a stale token can never match a later holder.
+    this.held.set(key, { id: "", epoch: cur.epoch, expires: 0 });
+    return true;
+  }
+}
+
+/**
+ * Pre-side-effect fence handed to the {@link NonceGate.run} callback. Call
+ * `await guard.assertCurrent()` immediately before signing and again immediately
+ * before sending; it throws when the run's lease was lost (superseded by another
+ * worker) or the run has already finished. This narrows the send window — it cannot
+ * cancel a transaction that has already left the wallet.
+ */
+export interface ExecutionGuard {
+  /** The canonical key the lease was acquired for (the session-key address). */
+  readonly key: Address;
+  /** Aborted on lease loss or run completion; cancellation is cooperative. */
+  readonly signal: AbortSignal;
+  /** Throws when the lease is no longer current. */
+  assertCurrent(): Promise<void>;
+}
+
+export interface NonceGateOptions {
+  /** Lease TTL in ms for owned stores. Default 30_000; renewed at half-TTL. */
+  ttlMs?: number;
+}
+
+const SUPERSEDED = (key: string): string =>
+  `SigilKit NonceGate: lease for key ${key} was lost (superseded by another worker); refusing further side effects`;
+
+type GuardState = { gate: NonceGate; submitted: boolean };
+const guardStates = new WeakMap<ExecutionGuard, GuardState>();
+
+export class LeaseLostError extends Error {
+  constructor(key: Address, options?: ErrorOptions) {
+    super(SUPERSEDED(key), options);
+    this.name = "LeaseLostError";
   }
 }
 
 export class NonceGate {
   private chains = new Map<Address, Promise<unknown>>();
 
-  constructor(private readonly leases?: LeaseStore) {}
+  constructor(
+    private readonly leases?: LeaseStore,
+    private readonly opts: NonceGateOptions = {},
+  ) {
+    // Fail closed BEFORE any callback can run: a key-only (v1) adapter cannot prove
+    // which acquisition a release belongs to, so it must never be accepted silently.
+    assertLeaseTtl(opts.ttlMs ?? 30_000);
+    if (leases && (leases.version !== 2 ||
+      [leases.acquire, leases.renew, leases.isCurrent, leases.release].some((method) => typeof method !== "function"))) {
+      throw new Error(
+        "SigilKit NonceGate: lease store must implement the v2 token API (version: 2) — " +
+          "key-only acquire/release cannot prove ownership and is rejected",
+      );
+    }
+  }
 
-  run<T>(key: Address, fn: () => Promise<T>): Promise<T> {
+  private ttl(): number {
+    const ttl = this.opts.ttlMs ?? 30_000;
+    assertLeaseTtl(ttl);
+    return ttl;
+  }
+
+  run<T>(key: Address, fn: (guard: ExecutionGuard) => Promise<T>): Promise<T> {
+    key = assertAddress(key, "key").toLowerCase() as Address;
     const prev = this.chains.get(key) ?? Promise.resolve();
     const exec = async (): Promise<T> => {
-      if (this.leases) {
-        // A lease that cannot be taken promptly is a real cross-worker concurrency
-        // violation, not a transient state — fail loudly rather than race.
-        if (!(await this.leases.acquire(key, 30_000))) {
-          throw new Error(`SigilKit NonceGate: key ${key} is busy in another worker`);
+      if (!this.leases) {
+        const controller = new AbortController();
+        const guard: ExecutionGuard = Object.freeze({
+          key, signal: controller.signal,
+          assertCurrent: async () => {
+            if (controller.signal.aborted) throw new Error("SigilKit: execution guard used after its run finished");
+          },
+        });
+        guardStates.set(guard, { gate: this, submitted: false });
+        try { return await fn(guard); }
+        finally { controller.abort(); }
+      }
+      const store = this.leases;
+      const ttl = this.ttl();
+      // A lease that cannot be taken promptly is a real cross-worker concurrency
+      // violation, not a transient state — fail loudly rather than race.
+      const token = await store.acquire(key, ttl);
+      if (!token) {
+        throw new Error(`SigilKit NonceGate: key ${key} is busy in another worker`);
+      }
+      if (typeof token !== "object" || token.key !== key || typeof token.id !== "string" ||
+        !token.id || !Number.isSafeInteger(token.epoch) || token.epoch < 1) {
+        throw new Error("SigilKit: invalid v2 lease token");
+      }
+      const owned = Object.freeze({ ...token });
+      const controller = new AbortController();
+      let loss: LeaseLostError | undefined;
+      let finished = false;
+      let stopped = false;
+      let cancelSleep: (() => void) | undefined;
+      const lose = (cause?: unknown): LeaseLostError => {
+        loss ??= new LeaseLostError(key, { cause });
+        controller.abort(loss);
+        return loss;
+      };
+      const heartbeat = async (): Promise<void> => {
+        while (!stopped && !loss) {
+          await new Promise<void>((resolve) => {
+            const timer = setTimeout(() => {
+              cancelSleep = undefined;
+              resolve();
+            }, Math.floor(ttl / 2));
+            cancelSleep = () => {
+              clearTimeout(timer);
+              cancelSleep = undefined;
+              resolve();
+            };
+          });
+          if (stopped || loss) break;
+          try {
+            if (await store.renew(owned, ttl) !== true) lose();
+          } catch (error) { lose(error); }
         }
+      };
+      const hb = heartbeat().catch((error: unknown) => { lose(error); });
+      const guard: ExecutionGuard = Object.freeze({
+        key, signal: controller.signal,
+        assertCurrent: async (): Promise<void> => {
+          if (finished) throw new Error("SigilKit: execution guard used after its run finished");
+          if (loss) throw loss;
+          try {
+            if (await store.isCurrent(owned) !== true) throw lose();
+          } catch (error) { throw lose(error); }
+          if (finished) throw new Error("SigilKit: execution guard used after its run finished");
+          if (loss) throw loss;
+        },
+      });
+      const state: GuardState = { gate: this, submitted: false };
+      guardStates.set(guard, state);
+      let result!: T;
+      let failed = false;
+      let failure: unknown;
+      try {
+        result = await fn(guard);
+        if (!state.submitted) await guard.assertCurrent();
+      } catch (error) { failed = true; failure = error; }
+      finally {
+        finished = true;
+        stopped = true;
+        controller.abort();
+        cancelSleep?.();
+        await hb;
         try {
-          return await fn();
-        } finally {
-          await this.leases.release(key);
+          if (await store.release(owned) !== true && !state.submitted && !failed) {
+            failed = true; failure = lose();
+          }
+        } catch (error) {
+          if (!failed) { failed = true; failure = error; }
         }
       }
-      return fn();
+      if (failed) {
+        if (state.submitted) {
+          throw new Error("SigilKit: SDK submission attempted; inspect transaction outcome before retrying", { cause: failure });
+        }
+        throw failure;
+      }
+      if (loss && !state.submitted) throw loss;
+      return result;
     };
     const next = prev.then(exec, exec); // run regardless of the previous run's outcome
-    this.chains.set(
-      key,
-      next.catch(() => undefined), // keep the chain alive on errors
-    );
+    const cleanup = (): void => {
+      if (this.chains.get(key) === settled) this.chains.delete(key);
+    };
+    const settled = next.then(cleanup, cleanup);
+    this.chains.set(key, settled);
     return next;
   }
 }
@@ -238,6 +449,8 @@ export class SigilKitClient {
   readonly managerAddress: Address;
   readonly chain: Chain;
   private readonly publicClient: PublicClient;
+  private readonly leases?: LeaseStore;
+  private readonly preparations = new WeakMap<PreparedExecution, { guard: ExecutionGuard; signer: Address; data: Hex }>();
 
   /**
    * Per-key execution queue — see {@link NonceGate}. Wrap prepare + send + confirm in
@@ -257,7 +470,8 @@ export class SigilKitClient {
         chain: config.chain,
         transport: config.rpcUrl ? http(config.rpcUrl) : http(),
       });
-    this.nonceGate = new NonceGate(config.leaseStore);
+    this.leases = config.leaseStore;
+    this.nonceGate = new NonceGate(config.leaseStore, { ttlMs: config.leaseTtlMs });
     this.log = config.logger ?? createLogger({ scope: "sigilkit", level: "info" });
   }
 
@@ -267,14 +481,17 @@ export class SigilKitClient {
    *
    * Local validation runs BEFORE signing (zero-gas rejection path).
    */
-  async prepareExecution(args: {
-    account: HashSigner & { address: Address };
-    request: Omit<ActionRequest, "nonce"> & { nonce?: bigint };
-    scope: Scope;
-    merkleProof?: Hex[];
-    /** E10: owner countersignature, required when value exceeds scope.countersignAbove. */
-    ownerApproval?: Hex;
-  }): Promise<ExecuteArgs & { to: Address; data: Hex }> {
+  async prepareExecution(
+    args: {
+      account: HashSigner & { address: Address };
+      request: Omit<ActionRequest, "nonce"> & { nonce?: bigint };
+      scope: Scope;
+      merkleProof?: Hex[];
+      /** E10: owner countersignature, required when value exceeds scope.countersignAbove. */
+      ownerApproval?: Hex;
+    },
+    guard?: ExecutionGuard,
+  ): Promise<ExecuteArgs & { to: Address; data: Hex }> {
     // Normalize/validate the request up front so deserialized (e.g. JSON-round-tripped)
     // inputs fail loudly here instead of TypeError-ing mid-encode or hashing garbage.
     // A placeholder nonce satisfies the parser; the real one is fetched right after
@@ -325,6 +542,10 @@ export class SigilKitClient {
       throw new Error(`SigilKit policy rejection (pre-signature): ${check.reason}`);
     }
 
+    // SK-09 fence: after the awaited nonce/window reads, immediately before signing —
+    // a superseded holder must not produce a fresh signature.
+    await this.assertGuard(args.account.address, guard);
+
     const signature = await signActionRequest({
       account: args.account,
       request,
@@ -338,7 +559,7 @@ export class SigilKitClient {
       args: [request, signature, args.merkleProof ?? [], args.ownerApproval ?? "0x"],
     });
 
-    return {
+    const prepared: PreparedExecution = {
       request,
       signature,
       merkleProof: args.merkleProof ?? [],
@@ -346,23 +567,32 @@ export class SigilKitClient {
       to: this.managerAddress,
       data,
     };
+    if (guard) {
+      Object.freeze(request);
+      Object.freeze(prepared.merkleProof);
+      Object.freeze(prepared);
+      this.preparations.set(prepared, { guard, signer: args.account.address, data });
+    }
+    return prepared;
   }
 
   /**
    * Waits for an execution receipt and confirms the mandatory audit event fired (INV-3).
    *
-   * Returns `true` only when the tx succeeded AND an ActionLogged event was emitted.
-   * Throws if the transaction reverted — a revert is an error, not merely "not audited".
+   * Requires a unique decoded event from the configured manager. Supply the request
+   * to bind its emitted fields; omitting it confirms emitter-only evidence.
+   * Throws on revert or ambiguous evidence. This client does not confirm 7579 executor paths.
    */
-  async assertAuditEmitted(txHash: Hash): Promise<boolean> {
+  async assertAuditEmitted(txHash: Hash, request?: AuditRequestIdentity): Promise<boolean> {
     const receipt = await this.publicClient.waitForTransactionReceipt({ hash: txHash });
     if (receipt.status !== "success") {
       throw new Error(`SigilKit: transaction ${txHash} reverted; nothing was executed or audited`);
     }
-    return receipt.logs.some(
-      (log) =>
-        log.topics.length === 4 && log.topics[0] === ACTION_LOGGED_TOPIC,
-    );
+    return parseActionLogged(receipt.logs, {
+      emitter: this.managerAddress,
+      ...(request ? { request } : {}),
+      txHash,
+    }) !== null;
   }
 
   /**
@@ -460,10 +690,11 @@ export class SigilKitClient {
   async simulateExecution(
     argsOrPrepared: PrepareExecutionArgs | PreparedExecution,
     from?: Address,
+    guard?: ExecutionGuard,
   ): Promise<{ ok: true } | { ok: false; reason: string }> {
     const prepared = isPreparedExecution(argsOrPrepared)
       ? argsOrPrepared
-      : await this.prepareExecution(argsOrPrepared);
+      : await this.prepareExecution(argsOrPrepared, guard);
     try {
       await this.publicClient.call({
         account: from ?? this.managerAddress,
@@ -492,8 +723,9 @@ export class SigilKitClient {
   async execute(
     args: PrepareExecutionArgs,
     wallet: WalletClient,
+    guard?: ExecutionGuard,
   ): Promise<{ receipt: TransactionReceipt; audit: ActionLogRecord }> {
-    return this.sendPrepared(await this.prepareExecution(args), wallet);
+    return this.sendPrepared(await this.prepareExecution(args, guard), wallet, guard);
   }
 
   /**
@@ -505,13 +737,36 @@ export class SigilKitClient {
     args: PrepareExecutionArgs,
     wallet: WalletClient,
     from?: Address,
+    guard?: ExecutionGuard,
   ): Promise<{ receipt: TransactionReceipt; audit: ActionLogRecord }> {
-    const prepared = await this.prepareExecution(args);
+    const prepared = await this.prepareExecution(args, guard);
     const sim = await this.simulateExecution(prepared, from);
     if (!sim.ok) {
       throw new Error(`SigilKit simulation rejection (no gas spent): ${sim.reason}`);
     }
-    return this.sendPrepared(prepared, wallet);
+    return this.sendPrepared(prepared, wallet, guard);
+  }
+
+  /**
+   * SK-09 fail-closed guard check: when a lease store is configured, every sign/send
+   * boundary must carry the guard issued by the enclosing `nonceGate.run` — an unguarded
+   * call would silently bypass the configured coordination. The guard's key must be the
+   * signing session key (never the relayer), and the lease must still be current.
+   */
+  private async assertGuard(signer: Address, guard?: ExecutionGuard): Promise<void> {
+    if (this.leases && !guard) {
+      throw new Error(
+        "SigilKit: a lease store is configured — run executions inside nonceGate.run and pass its guard to execute/sendPrepared",
+      );
+    }
+    if (!guard) return;
+    if (guardStates.get(guard)?.gate !== this.nonceGate) {
+      throw new Error("SigilKit: execution guard must originate from this client's nonceGate.run");
+    }
+    if (guard.key.toLowerCase() !== assertAddress(signer, "signer").toLowerCase()) {
+      throw new Error("SigilKit: execution guard key does not match the signing session key");
+    }
+    await guard.assertCurrent();
   }
 
   /**
@@ -522,12 +777,25 @@ export class SigilKitClient {
   async sendPrepared(
     prepared: PreparedExecution,
     wallet: WalletClient,
+    guard?: ExecutionGuard,
   ): Promise<{ receipt: TransactionReceipt; audit: ActionLogRecord }> {
     if (!wallet.account) {
       throw new Error("SigilKit execute: wallet client must carry an account (the relayer)");
     }
+    if (assertAddress(prepared.to, "prepared.to").toLowerCase() !== this.managerAddress.toLowerCase()) {
+      throw new Error("SigilKit execute: prepared destination must match the configured manager");
+    }
+    const origin = this.preparations.get(prepared);
+    if (this.leases || guard || origin) {
+      if (!origin || origin.guard !== guard || origin.data !== prepared.data) {
+        throw new Error("SigilKit: prepared payload must retain its original run guard and provenance");
+      }
+      await this.assertGuard(origin.signer, guard);
+    }
+    const expectedRequest = { ...prepared.request };
     let txHash: Hash;
     try {
+      if (guard) guardStates.get(guard)!.submitted = true;
       txHash = await wallet.sendTransaction({
         account: wallet.account,
         chain: this.chain,
@@ -547,7 +815,11 @@ export class SigilKitClient {
     if (receipt.status !== "success") {
       throw new Error(`SigilKit: transaction ${txHash} reverted; nothing was executed or audited`);
     }
-    const audit = parseActionLogged(receipt.logs);
+    const audit = parseActionLogged(receipt.logs, {
+      emitter: this.managerAddress,
+      request: expectedRequest,
+      txHash,
+    });
     if (!audit) {
       throw new Error(`SigilKit: ActionLogged missing in successful tx ${txHash} — INV-3 violated`);
     }
@@ -618,37 +890,69 @@ export interface ActionLogRecord {
   logIndex: number;
 }
 
+/** Request fields represented by ActionLogged; nonce, expiry and calldata are not emitted. */
+export type AuditRequestIdentity = Pick<ActionRequest, "agentId" | "target" | "selector" | "value" | "rationaleHash">;
+
+/** Trusted expectations supplied by the caller, never derived from receipt logs. */
+export interface AuditExpectation {
+  emitter: Address;
+  request?: AuditRequestIdentity;
+  txHash?: Hash;
+}
+
 /**
- * Extracts and decodes the ActionLogged record from a set of logs. Returns null when
- * no ActionLogged event is present (the INV-3 violation signal for callers).
+ * Without expectations, decodes the first event for low-level ingestion only;
+ * this is NOT audit confirmation. With expectations, returns the unique matching
+ * mined record, null for absence, and throws on ambiguity. A matching event cannot
+ * prove nonce, expiry, calldata, signer, or account compatibility.
  */
-export function parseActionLogged(logs: Log[]): ActionLogRecord | null {
+export function parseActionLogged(logs: Log[], expected?: AuditExpectation): ActionLogRecord | null {
+  const emitter = expected ? assertAddress(expected.emitter, "audit.emitter").toLowerCase() : undefined;
+  let match: ActionLogRecord | null = null;
   for (const log of logs) {
-    if (log.topics.length !== 4 || log.topics[0] !== ACTION_LOGGED_TOPIC) continue;
-    let decoded: { args: Record<string, unknown> };
+    if (log.topics.length !== 4 || log.topics[0]?.toLowerCase() !== ACTION_LOGGED_TOPIC) continue;
+    if (expected && (
+      log.address.toLowerCase() !== emitter || log.removed ||
+      log.transactionHash === null || log.blockNumber === null || log.logIndex === null ||
+      (expected.txHash !== undefined && log.transactionHash.toLowerCase() !== expected.txHash.toLowerCase())
+    )) continue;
+    let decoded;
     try {
       decoded = decodeEventLog({
         abi: ACTION_LOGGER_ABI,
+        eventName: "ActionLogged",
         data: log.data,
         topics: log.topics,
-      }) as unknown as { args: Record<string, unknown> };
+        strict: true,
+      });
     } catch {
       continue;
     }
-    return {
-      agentId: decoded.args.agentId as Hash,
-      target: decoded.args.target as Address,
-      selector: decoded.args.selector as Hex,
-      value: decoded.args.value as bigint,
-      rationaleHash: decoded.args.rationaleHash as Hash,
-      timestamp: Number(decoded.args.timestamp),
-      // Receipt logs are always mined; null is only possible on pending log objects.
+    const a = decoded.args;
+    const request = expected?.request;
+    if (request && (
+      a.agentId.toLowerCase() !== request.agentId.toLowerCase() ||
+      a.target.toLowerCase() !== request.target.toLowerCase() ||
+      a.selector.toLowerCase() !== request.selector.toLowerCase() ||
+      a.value !== request.value ||
+      a.rationaleHash.toLowerCase() !== request.rationaleHash.toLowerCase()
+    )) continue;
+    const record: ActionLogRecord = {
+      agentId: a.agentId,
+      target: a.target,
+      selector: a.selector,
+      value: a.value,
+      rationaleHash: a.rationaleHash,
+      timestamp: Number(a.timestamp),
       txHash: log.transactionHash as Hash,
       blockNumber: log.blockNumber as bigint,
       logIndex: Number(log.logIndex ?? 0),
     };
+    if (!expected) return record;
+    if (match) throw new Error("SigilKit: ambiguous ActionLogged audit evidence");
+    match = record;
   }
-  return null;
+  return match;
 }
 
 /** keccak256("ActionLogged(bytes32,address,bytes4,uint256,bytes32,uint48)") — event signature topic. */

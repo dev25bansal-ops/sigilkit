@@ -72,7 +72,7 @@ async function main() {
   // Two fleet workers share ONE key: every fire goes through the per-key gate.
   const audits: ActionLogRecord[] = [];
   const worker = (name: string) => async (tick: number) => {
-    await client.nonceGate.run(agent.address, async () => {
+    await client.nonceGate.run(agent.address, async (guard) => {
       const { receipt, audit } = await client.execute(
         {
           account: agentSigner,
@@ -88,6 +88,7 @@ async function main() {
           scope,
         },
         wallet,
+        guard,
       );
       audits.push(audit);
       console.log(`[${name}] tick ${tick} audited: value=${Number(audit.value)} / 1e18 ETH, tx=${audit.txHash}`);

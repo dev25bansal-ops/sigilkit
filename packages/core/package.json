@@ -40,7 +40,9 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
+    "pretest": "npm run build",
     "test": "vitest run",
+    "pretest:coverage": "npm run build",
     "test:coverage": "vitest run --coverage",
     "lint": "tsc --noEmit && tsc -p tsconfig.wallet-e2e.json --noEmit"
   },

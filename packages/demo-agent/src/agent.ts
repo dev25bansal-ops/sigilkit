@@ -122,7 +122,7 @@ export class TreasuryAgent {
     if (receipt.status !== "success") {
       throw new Error(`execution reverted: ${txHash}`);
     }
-    const audited = await this.client.assertAuditEmitted(txHash);
+    const audited = await this.client.assertAuditEmitted(txHash, prepared.request);
     if (!audited) throw new Error("ActionLogged missing — INV-3 violated");
 
     this.state.actionsExecuted += 1;

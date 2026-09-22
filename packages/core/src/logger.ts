@@ -80,16 +80,33 @@ function serialize(value: unknown): unknown {
   return value;
 }
 
-function formatText(ts: string, level: LogLevel, scope: string, msg: string, fields?: LogFields): string {
+/** JSON-encodes one value, degrading to a placeholder instead of throwing (e.g. cyclic). */
+function encodeValue(value: unknown): string {
+  try {
+    return JSON.stringify(serialize(value)) ?? String(value);
+  } catch {
+    return '"[unserializable]"';
+  }
+}
+
+/** Renders an error concisely as `Name: message` (stack deliberately omitted by default). */
+function conciseError(err: unknown): string {
+  if (err instanceof Error) return err.name ? `${err.name}: ${err.message}` : err.message;
+  if (typeof err === "string") return err;
+  return encodeValue(err);
+}
+
+function formatText(ts: string, level: LogLevel, scope: string, msg: string, fields?: LogFields, err?: unknown): string {
   const levelTag = level.toUpperCase().padEnd(5);
   const scopeTag = scope ? ` ${scope}` : "";
   const extras = fields
     ? Object.entries(fields)
         .filter(([, v]) => v !== undefined)
-        .map(([k, v]) => ` ${k}=${typeof v === "string" ? v : JSON.stringify(serialize(v))}`)
+        .map(([k, v]) => ` ${k}=${typeof v === "string" ? v : encodeValue(v)}`)
         .join("")
     : "";
-  return `${ts}  ${levelTag}${scopeTag}  ${msg}${extras}`;
+  const errorTag = err !== undefined ? ` error=${conciseError(err)}` : "";
+  return `${ts}  ${levelTag}${scopeTag}  ${msg}${extras}${errorTag}`;
 }
 
 function formatJson(ts: string, level: LogLevel, scope: string, msg: string, fields?: LogFields, err?: unknown): string {
@@ -98,7 +115,15 @@ function formatJson(ts: string, level: LogLevel, scope: string, msg: string, fie
   if (err !== undefined) {
     payload.error = err instanceof Error ? { name: err.name, message: err.message, stack: err.stack } : serialize(err);
   }
-  return JSON.stringify(payload);
+  try {
+    return JSON.stringify(payload);
+  } catch {
+    // A cyclic/unserializable field must not cost the whole line: re-encode values safely.
+    const safe: Record<string, unknown> = { ts, level, scope, msg };
+    if (fields) for (const [k, v] of Object.entries(fields)) safe[k] = encodeValue(v);
+    if (err !== undefined) safe.error = conciseError(err);
+    return JSON.stringify(safe);
+  }
 }
 
 /**
@@ -115,9 +140,10 @@ export function createLogger(options: LoggerOptions = {}): Logger {
 
   const emit = (lvl: LogLevel, msg: string, fields?: LogFields, err?: unknown): void => {
     if (RANK[lvl] < RANK[level]) return;
-    const ts = clock().toISOString();
-    const line = format === "json" ? formatJson(ts, lvl, scope, msg, fields, err) : formatText(ts, lvl, scope, msg, fields);
     try {
+      const ts = clock().toISOString();
+      const line =
+        format === "json" ? formatJson(ts, lvl, scope, msg, fields, err) : formatText(ts, lvl, scope, msg, fields, err);
       if (lvl === "error") errSink(line);
       else out(line);
     } catch {

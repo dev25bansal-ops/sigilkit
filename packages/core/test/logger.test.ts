@@ -77,6 +77,28 @@ describe("text format", () => {
     log.info("hello");
     expect(out[0]).toBe(`${FIXED.toISOString()}  INFO   hello`);
   });
+
+  it("appends a concise error reason without the stack", () => {
+    const { log, err } = make("info");
+    log.error("failed", { attempt: 2 }, new Error("boom"));
+    expect(err[0]).toContain("failed attempt=2 error=Error: boom");
+    expect(err[0]).not.toContain("at ");
+  });
+
+  it("renders a primitive throwable", () => {
+    const { log, err } = make("info");
+    log.error("failed", undefined, "plain");
+    expect(err[0]).toContain("error=plain");
+  });
+
+  it("survives cyclic fields without dropping the line", () => {
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    const { log, out } = make("info");
+    expect(() => log.info("x", { cyclic })).not.toThrow();
+    expect(out).toHaveLength(1);
+    expect(out[0]).toContain("cyclic=");
+  });
 });
 
 describe("json format", () => {
@@ -105,6 +127,15 @@ describe("json format", () => {
     const { log, err } = make("info", "json");
     log.error("failed", undefined, "plain");
     expect(JSON.parse(err[0] as string).error).toBe("plain");
+  });
+
+  it("survives cyclic fields instead of throwing", () => {
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    const { log, out } = make("info", "json");
+    expect(() => log.info("x", { cyclic })).not.toThrow();
+    expect(out).toHaveLength(1);
+    expect(() => JSON.parse(out[0] as string)).not.toThrow();
   });
 });
 
@@ -136,6 +167,26 @@ describe("resilience", () => {
     });
     expect(() => log.info("x")).not.toThrow();
     expect(() => log.error("x")).not.toThrow();
+  });
+
+  it("never throws when the clock fails", () => {
+    const log = createLogger({
+      level: "debug",
+      now: () => {
+        throw new Error("clock exploded");
+      },
+      out: () => {},
+      err: () => {},
+    });
+    expect(() => log.info("x")).not.toThrow();
+    expect(() => log.error("x", undefined, new Error("boom"))).not.toThrow();
+  });
+
+  it("keeps warn on the stdout sink, not the error sink", () => {
+    const { log, out, err } = make("debug");
+    log.warn("careful");
+    expect(out).toHaveLength(1);
+    expect(err).toHaveLength(0);
   });
 
   it("silentLogger discards everything", () => {

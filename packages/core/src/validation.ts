@@ -38,6 +38,11 @@ function describe(value: unknown): string {
   return String(value);
 }
 
+/** Describes only the type; never coerces or inspects sensitive input. */
+function describeRedacted(value: unknown): string {
+  return `${typeof value} (value withheld)`;
+}
+
 /** True for a syntactically valid 20-byte hex address. */
 export function isAddress(value: unknown): value is Address {
   return typeof value === "string" && viemIsAddress(value);
@@ -59,11 +64,12 @@ export function isHex(value: unknown, bytes?: number): value is Hex {
   return bytes === undefined || body.length === bytes * 2;
 }
 
-/** Returns the hex string, or throws. Pass `{ bytes }` to pin the length. */
-export function assertHex(value: unknown, field = "hex", opts: { bytes?: number } = {}): Hex {
+/** Returns the hex string, or throws. Pass `{ bytes }` to pin the length, `{ redacted: true }` to withhold the value (SK-02). */
+export function assertHex(value: unknown, field = "hex", opts: { bytes?: number; redacted?: boolean } = {}): Hex {
   const want = opts.bytes === undefined ? "an even-length 0x-prefixed hex string" : `${opts.bytes} bytes of hex (0x + ${opts.bytes * 2} hex chars)`;
   if (!isHex(value, opts.bytes)) {
-    throw new ValidationError(field, `expected ${want}, got ${describe(value)}`);
+    const got = opts.redacted === true ? describeRedacted(value) : describe(value);
+    throw new ValidationError(field, `expected ${want}, got ${got}`);
   }
   return value;
 }
@@ -73,9 +79,9 @@ export function assertHash32(value: unknown, field = "hash"): Hex {
   return assertHex(value, field, { bytes: 32 });
 }
 
-/** Returns a 32-byte private key (non-zero), or throws. */
+/** Returns a 32-byte private key (non-zero), or throws. The rejected value is never echoed. */
 export function assertPrivateKey(value: unknown, field = "privateKey"): Hex {
-  const key = assertHex(value, field, { bytes: 32 });
+  const key = assertHex(value, field, { bytes: 32, redacted: true });
   if (/^0x0+$/.test(key)) {
     throw new ValidationError(field, "must not be the all-zero key");
   }
@@ -137,19 +143,21 @@ export function assertNonEmptyString(value: unknown, field = "value"): string {
   return value;
 }
 
-/** Returns an http(s) URL, or throws. */
+/** Returns an http(s)/ws(s) URL without echoing rejected input. */
 export function assertUrl(value: unknown, field = "url"): string {
-  const raw = assertNonEmptyString(value, field);
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new ValidationError(field, "expected a non-empty URL (value withheld)");
+  }
   let parsed: URL;
   try {
-    parsed = new URL(raw);
+    parsed = new URL(value);
   } catch {
-    throw new ValidationError(field, `expected an absolute URL (e.g. http://127.0.0.1:8545), got ${describe(raw)}`);
+    throw new ValidationError(field, "expected an absolute URL (e.g. http://127.0.0.1:8545); value withheld");
   }
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:" && parsed.protocol !== "ws:" && parsed.protocol !== "wss:") {
-    throw new ValidationError(field, `expected an http(s)/ws(s) URL, got protocol ${parsed.protocol}`);
+    throw new ValidationError(field, "expected an http(s)/ws(s) URL protocol; value withheld");
   }
-  return raw;
+  return value;
 }
 
 /** Returns the value when it is one of `allowed`, or throws listing the options. */
