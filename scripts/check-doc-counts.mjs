@@ -458,7 +458,7 @@ function halmosSpecCount() {
  * Counts the Echidna properties.
  *
  * A property is an `echidna_*` function returning `bool` under `testMode: property`. The file
- * also holds `echidna_sink`, a payable sink that lets the contract receive ETH — it returns
+ * also holds `sink`, a payable sink that lets the contract receive ETH — it returns
  * nothing and is not a property, so matching on the return type is what keeps the count honest.
  */
 function echidnaPropertyCount() {

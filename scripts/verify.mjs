@@ -10,6 +10,11 @@
  * Each step is independent: a failure is recorded and reported, the remaining steps still
  * run, and the exit code is 1 if anything failed. That way one run tells you everything
  * that is broken instead of only the first thing.
+ *
+ * SK-15: a full run must mean every required check executed. A missing forge binary
+ * fails the gate (it is not a successful skip); only an explicit --quick or --no-forge
+ * run states its reduced scope. The guard/helper regression suites and the package
+ * artifact check are gate steps, so they cannot rot outside the gate.
  */
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
@@ -30,9 +35,11 @@ const NO_FORGE = QUICK || args.includes("--no-forge");
 const LABELS = {
   lint: "workflow lint",
   packaging: "container packaging",
+  helpers: "helper suites",
   docs: "doc counts",
   build: "workspace build",
   typecheck: "workspace typecheck",
+  artifacts: "package artifacts",
   contracts: "contract tests (unit + fuzz)",
   tests: "TypeScript tests",
 };
@@ -82,6 +89,10 @@ function matchesOnly(label) {
 }
 
 function resolveForge() {
+  // Test hook for verify.test.mjs: forces the missing-tool path so the fail-closed
+  // behaviour is checkable on machines that have forge. It can only make the gate
+  // stricter (a failed contracts check), never let a failing gate pass.
+  if (process.env.VERIFY_FORCE_NO_FORGE === "1") return null;
   if (process.env.FORGE_BIN && existsSync(process.env.FORGE_BIN)) return process.env.FORGE_BIN;
   const local = join(homedir(), ".foundry", "bin", process.platform === "win32" ? "forge.exe" : "forge");
   if (existsSync(local)) return local;
@@ -133,17 +144,37 @@ console.log(`${c.bold}SigilKit verification${c.reset}${QUICK ? c.dim + "  (quick
 
 run(LABELS.lint, process.execPath, ["scripts/validate-workflows.mjs"]);
 run(LABELS.packaging, process.execPath, ["scripts/check-dockerfile.mjs"]);
+// SK-15: the guard/helper regression suites are part of the gate, mirroring CI's
+// workflow-lint job, so a broken helper cannot hide outside CI.
+run(LABELS.helpers, process.execPath, [
+  "--test",
+  "scripts/check-dockerfile.test.mjs",
+  "scripts/check-doc-counts.test.mjs",
+  "scripts/verify.test.mjs",
+  "scripts/check-package-artifacts.test.mjs",
+  "scripts/check-runtime.test.mjs",
+  "scripts/assurance-inventory.test.mjs",
+  "scripts/benchmark-indexer.test.mjs",
+]);
 run(LABELS.docs, process.execPath, ["scripts/check-doc-counts.mjs"], FORGE ? { env: { FORGE_BIN: FORGE } } : {});
 // Consumers resolve @sigilkit/core through dist/*.d.ts, absent on a fresh checkout.
 // Match CI: generate workspace outputs before checking their dependent types.
 run(LABELS.build, npmCmd, ["run", "build", "--workspaces", "--if-present"], { shell: true });
 run(LABELS.typecheck, npmCmd, ["run", "lint", "--workspaces", "--if-present"], { shell: true });
+// SK-15/V66-1: static entry-point guard, after build so dist/ exists (fresh checkouts
+// have none). Mirrors the ts-sdk ordering in ci.yml. Static working-tree check only —
+// NOT a clean-install smoke test.
+run(LABELS.artifacts, process.execPath, ["scripts/check-package-artifacts.mjs"]);
 
 if (NO_FORGE) {
   skip(LABELS.contracts, QUICK ? "--quick" : "--no-forge");
 } else if (!FORGE) {
-  skip(LABELS.contracts, "forge not installed");
-  console.log(`\n${c.yellow}!${c.reset} forge not found — skipping contract tests. Install: curl -L https://foundry.paradigm.xyz | bash && foundryup`);
+  // SK-15: an unavailable required tool makes the gate incomplete — a failed check,
+  // not a successful skip. Only --quick/--no-forge declare a reduced scope up front.
+  if (matchesOnly(LABELS.contracts)) {
+    results.push({ label: LABELS.contracts, passed: false, ms: 0, skipped: false });
+    console.log(`\n${c.red}!${c.reset} forge not found — contract tests did not run; the gate is incomplete. Install: curl -L https://foundry.paradigm.xyz | bash && foundryup`);
+  }
 } else {
   run(LABELS.contracts, FORGE, ["test", "--no-match-contract", ".*Invariant|.*Fork"]);
 }
@@ -167,4 +198,11 @@ if (failed.length > 0) {
   console.log(`\n${c.red}${c.bold}${failed.length} of ${ran.length} check(s) failed:${c.reset} ${failed.map((f) => f.label).join(", ")}`);
   process.exit(1);
 }
-console.log(`\n${c.green}${c.bold}All ${ran.length} check(s) passed.${c.reset}`);
+if (ONLY !== undefined || NO_FORGE) {
+  console.log(`\n${c.yellow}Partial verification (${ONLY !== undefined ? `--only=${ONLY}` : QUICK ? "--quick" : "--no-forge"}); not a full gate.${c.reset}`);
+}
+if (ran.length === 0) {
+  console.log("No checks executed; selected checks were explicitly skipped.");
+} else {
+  console.log(`\n${c.green}${c.bold}All ${ran.length} check(s) passed.${c.reset}`);
+}

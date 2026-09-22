@@ -35,6 +35,10 @@ data
 *.db-shm
 *.db-wal
 
+# Local assistant-tool configuration (SK-01): carries credential fields and is
+# never needed inside an image build context.
+.codebuddy/models.json
+
 # Docs and research that the runtime does not need
 vault
 *.pdf

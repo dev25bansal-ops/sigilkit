@@ -8,38 +8,80 @@ concurrency:
   group: publish-${{ github.ref }}
   cancel-in-progress: false
 
-# `--provenance` needs an OIDC token; contents:read is the minimum for checkout.
 permissions:
   contents: read
-  id-token: write
 
 env:
   FOUNDRY_VERSION: "v1.7.1"
+  FOUNDRY_PROFILE: ci
 
 jobs:
-  publish:
-    name: Publish packages (tag-gated)
+  # Required evidence is produced in this tag run, never borrowed from branch CI.
+  # RPC forks, wallet E2E, Echidna and the nightly toolchain canary are not release gates.
+  assurance:
+    name: Required assurance for publishing commit
     runs-on: ubuntu-latest
-    environment: npm
+    outputs:
+      sha: ${{ steps.identity.outputs.sha }}
     steps:
       - uses: actions/checkout@v4
-        with: { submodules: recursive }
+        with: { ref: "${{ github.sha }}", submodules: recursive, fetch-depth: 0 }
+      - name: Validate release identity
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFileSync } from 'node:fs';
+          const tag = process.env.GITHUB_REF_NAME;
+          if (process.env.GITHUB_REF_TYPE !== 'tag' || !/^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(tag ?? '')) {
+            throw new Error('Release requires a v-prefixed package version tag');
+          }
+          for (const p of ['core', 'indexer', 'mcp']) {
+            const manifest = JSON.parse(readFileSync(`packages/${p}/package.json`, 'utf8'));
+            if (manifest.private || `v${manifest.version}` !== tag) {
+              throw new Error(`Tag/version mismatch for ${p}: ${tag} versus ${manifest.version}`);
+            }
+          }
+          NODE
+      - name: Bind checkout to triggering commit
+        run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
       - uses: foundry-rs/foundry-toolchain@v1
         with: { version: "${{ env.FOUNDRY_VERSION }}" }
       - uses: actions/setup-node@v4
         with: { node-version: "24", cache: npm, registry-url: "https://registry.npmjs.org" }
       - run: npm ci
 
-      # ---- full gate: nothing ships unless the whole repo is green for THIS tag ----
-      - name: Validate workflows and documented counts
+      - name: Full local gate (build before dependent typechecks)
+        run: npm run verify
+      - name: Required deep fuzz and invariants
+        env:
+          FOUNDRY_PROFILE: deep
+        run: forge test --no-match-contract '.*Fork'
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: Install required security tools
+        run: pip install slither-analyzer==0.11.6 halmos==0.3.3
+      - name: Required Slither analysis
+        run: slither contracts/src --fail-high
+      - name: Required Halmos verification
+        env:
+          HALMOS_ALLOW_DOWNLOAD: "1"
+        run: halmos --match-contract Halmos
+      - name: Install and run required secret scan
         run: |
-          node scripts/validate-workflows.mjs
-          node scripts/check-doc-counts.mjs
-      - run: forge test --no-match-contract '.*Invariant|.*Fork'
-      - run: forge test --match-contract '.*Invariant'
-      - run: npm run lint --workspaces
-      - run: npm run build --workspaces
-      - run: npm test --workspaces --if-present
+          curl -sSfL -o gitleaks.tar.gz \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  gitleaks.tar.gz" | sha256sum -c -
+          tar -xzf gitleaks.tar.gz gitleaks
+          ./gitleaks detect --config .gitleaks.toml --redact --no-banner
+      - name: Required workspace coverage thresholds
+        run: npm run test:coverage --workspaces
+      - name: Required ABI drift check
+        run: |
+          while IFS= read -r c; do
+            c="${c%%#*}"; c="$(echo "$c" | tr -d '[:space:]')"
+            [ -z "$c" ] && continue
+            forge inspect "contracts/src/$c.sol:$c" abi --json > "packages/core/abis/$c.json"
+          done < scripts/abi-targets.txt
+          git diff --exit-code packages/core/abis
 
       # TD-4/TD-10: the whitepaper's prose counts are what an auditor or grant reviewer
       # reads, and they cannot be derived without running the suites — so verify them here,
@@ -57,6 +99,35 @@ jobs:
             npm pack --dry-run --workspace "@sigilkit/$p"
             echo "::endgroup::"
           done
+
+      - name: Record successfully tested commit
+        id: identity
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          echo "sha=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+
+  publish:
+    name: Publish assured commit
+    needs: assurance
+    if: ${{ needs.assurance.result == 'success' && needs.assurance.outputs.sha == github.sha }}
+    runs-on: ubuntu-latest
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: "${{ github.sha }}", submodules: recursive }
+      - name: Verify checkout matches assurance
+        env:
+          ASSURED_SHA: ${{ needs.assurance.outputs.sha }}
+        run: |
+          test "$ASSURED_SHA" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD)" = "$ASSURED_SHA"
+      - uses: actions/setup-node@v4
+        with: { node-version: "24", cache: npm, registry-url: "https://registry.npmjs.org" }
+      - run: npm ci
+      - run: npm run build --workspaces --if-present
 
       # Preflight: a package name can already exist on the registry without belonging to us.
       # `@sigilkit/core` is exactly that case — it is published by a different project, so

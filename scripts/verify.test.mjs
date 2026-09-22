@@ -7,7 +7,7 @@ import { test } from "node:test";
 
 // Run the real CLI from an isolated repository layout so no gate step can touch this repo.
 // `verify.mjs` derives ROOT from its own location, so a copy under <tmp>/scripts/ is enough.
-function runVerify(t, extraArgs = [], files = {}) {
+function runVerify(t, extraArgs = [], files = {}, env = {}) {
   const root = mkdtempSync(join(tmpdir(), "sigilkit-verify-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   mkdirSync(join(root, "scripts"));
@@ -16,8 +16,10 @@ function runVerify(t, extraArgs = [], files = {}) {
     mkdirSync(dirname(join(root, path)), { recursive: true });
     writeFileSync(join(root, path), content);
   }
+  const childEnv = { ...process.env, ...env };
+  delete childEnv.NODE_TEST_CONTEXT;
   const result = spawnSync(process.execPath, [join(root, "scripts/verify.mjs"), ...extraArgs], {
-    cwd: root, encoding: "utf8",
+    cwd: root, encoding: "utf8", env: childEnv,
   });
   assert.ifError(result.error);
   return { status: result.status, stdout: result.stdout, stderr: result.stderr, output: result.stdout + result.stderr };
@@ -109,6 +111,70 @@ test("a selector matching a skipped step is reported as skipped and does not fai
   assert.match(r.stdout, /contract tests \(unit \+ fuzz\)/);
   assert.match(r.stdout, /skip/);
   assert.match(r.stdout, /--quick/);
+});
+
+test("a missing required tool fails the gate instead of reporting a successful skip", (t) => {
+  const r = runVerify(t, ["--only=contract tests"], {}, { VERIFY_FORCE_NO_FORGE: "1" });
+  assert.equal(r.status, 1, r.output);
+  assert.match(r.output, /gate is incomplete/);
+  assert.doesNotMatch(r.output, /All .* check\(s\) passed/);
+});
+
+test("the helper-suite step runs the guard regressions and fails when one breaks", (t) => {
+  const r = runVerify(t, ["--only=helper suites"], {
+    "scripts/check-dockerfile.test.mjs": "process.exit(0);\n",
+    "scripts/check-doc-counts.test.mjs": "process.exit(0);\n",
+    "scripts/verify.test.mjs": "process.exit(0);\n",
+    "scripts/check-package-artifacts.test.mjs": "process.exit(7);\n",
+    "scripts/check-runtime.test.mjs": "process.exit(0);\n",
+    "scripts/assurance-inventory.test.mjs": "process.exit(0);\n",
+    "scripts/benchmark-indexer.test.mjs": "process.exit(0);\n",
+  });
+  assert.equal(r.status, 1, r.output);
+  assert.match(r.output, /helper suites/);
+  assert.doesNotMatch(r.stdout, /All .* check\(s\) passed/);
+});
+
+test("artifact-check failures propagate to the verifier exit status", (t) => {
+  const r = runVerify(t, ["--only=package artifacts"], {
+    "scripts/check-package-artifacts.mjs": "console.error('fixture artifact failure'); process.exit(7);\n",
+  });
+  assert.equal(r.status, 1, r.output);
+  assert.match(r.output, /fixture artifact failure/);
+  assert.doesNotMatch(r.output, /All .* check\(s\) passed/);
+});
+
+test("reduced gate builds before artifact validation and labels its scope", (t) => {
+  const files = {
+    ...STUB_LINT,
+    "scripts/check-dockerfile.mjs": "process.exit(0);\n",
+    "scripts/check-doc-counts.mjs": "process.exit(0);\n",
+    "scripts/check-package-artifacts.mjs": "import { existsSync } from 'node:fs'; if (!existsSync('packages/fixture/built.d.ts')) process.exit(1);\n",
+    "package.json": JSON.stringify({ private: true, workspaces: ["packages/*"] }),
+    "packages/fixture/package.json": JSON.stringify({
+      name: "verify-artifact-order", private: true,
+      scripts: { build: "node build.cjs", lint: "node -e \"process.exit(0)\"", test: "node -e \"process.exit(0)\"" },
+    }),
+    "packages/fixture/build.cjs": "require('node:fs').writeFileSync('built.d.ts', 'export {};');\n",
+  };
+  for (const name of ["check-dockerfile", "check-doc-counts", "verify", "check-package-artifacts", "check-runtime", "assurance-inventory", "benchmark-indexer"]) {
+    files[`scripts/${name}.test.mjs`] = "process.exit(0);\n";
+  }
+  const r = runVerify(t, ["--no-forge"], files, { VERIFY_FORCE_NO_FORGE: "1" });
+  assert.equal(r.status, 0, r.output);
+  const build = r.stdout.indexOf("▶ workspace build");
+  const artifacts = r.stdout.indexOf("▶ package artifacts");
+  assert.ok(build >= 0 && artifacts > build, r.output);
+  assert.match(r.output, /Partial verification.*--no-forge/);
+  assert.match(r.output, /not a full gate/);
+});
+
+test("explicit skip with no executed checks does not claim passing checks", (t) => {
+  const r = runVerify(t, ["--only=contract tests", "--quick"]);
+  assert.equal(r.status, 0, r.output);
+  assert.match(r.output, /No checks executed/);
+  assert.match(r.output, /Partial verification/);
+  assert.doesNotMatch(r.output, /All .* check\(s\) passed/);
 });
 
 test("skips respect the selector", (t) => {
