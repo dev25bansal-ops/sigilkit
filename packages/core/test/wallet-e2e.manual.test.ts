@@ -8,7 +8,7 @@
  * raw-revoke rejection) surfaces before users hit it. See
  * vault/Agent Architecture.md and test/wallet-e2e/README.md.
  *
- * Run locally (requires the MetaMask 12.5.0 extension unpacked at
+ * Run locally (requires the MetaMask 13.49.0 extension unpacked at
  * test/wallet-e2e/metamask/ — see wallet-e2e/README.md):
  *   RUN_WALLET_E2E=1 npx vitest run test/wallet-e2e.manual.test.ts
  */
@@ -38,9 +38,8 @@ describe.skipIf(!ENABLED)("manual wallet E2E (RUN_WALLET_E2E=1)", () => {
     "live harnesses pass (MetaMask + Coinbase Smart Wallet via run-all.ts)",
     () => {
       const runAll = join(__dirname, "wallet-e2e", "run-all.ts");
-      const res = spawnSync("npx", ["tsx", runAll], {
+      const res = spawnSync(process.execPath, ["--import", "tsx", runAll], {
         stdio: "inherit",
-        shell: process.platform === "win32",
         env: { ...process.env },
       });
       if (res.status !== 0) {

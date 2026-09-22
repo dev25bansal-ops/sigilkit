@@ -2,14 +2,77 @@
 <html><head><meta charset="utf-8"><title>SigilKit Dapp Fixture</title></head>
 <body>
 <h1>SigilKit Wallet Conformance</h1>
-<button id="connect">Connect Wallet</button>
+<button id="connect" onclick="connectWallet()">Connect Wallet</button>
+<button id="sign" onclick="signPending()">Sign</button>
 <button id="sign7702">Sign 7702 Authorization</button>
 <button id="revoke7702">Revoke 7702</button>
+<p id="ver" style="color:#666;font-size:12px">fixture v2 (report-back enabled)</p>
 <pre id="out">no calls yet</pre>
 <script>
 // This fixture relies on the *real* MetaMask provider injected at window.ethereum
-// by the extension's content script. We do NOT override window.ethereum here —
-// the dapp is intentionally inert so the harness can exercise the real provider.
+// by the extension's content script. We do NOT override window.ethereum here.
 window.__sigilkitCalls = [];
+window.__connectResult = null;
+window.__pendingRequest = null;
+window.__sigilkitResult = null;
+function report(label, payload) {
+  // Phone home so the fixture-server operator can observe manual runs.
+  try {
+    fetch("/report", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ label, payload }),
+    });
+  } catch (e) { /* offline: nothing to do */ }
+}
+// MetaMask 13.x only opens request UI for user-activated requests; a real dapp
+// initiates connect AND signing from button clicks. The harness sets the
+// pending request via evaluate, then clicks the button so the request carries
+// transient activation, then awaits __sigilkitResult / __connectResult.
+function connectWallet() {
+  const eth = window.ethereum;
+  if (!eth) { window.__connectResult = { error: "no provider injected" }; report("connect", { error: "no provider injected" }); return; }
+  eth.request({ method: "eth_requestAccounts" })
+    .then((accounts) => {
+      window.__sigilkitCalls.push(["eth_requestAccounts", accounts]);
+      window.__connectResult = accounts;
+      document.getElementById("out").textContent = JSON.stringify(accounts);
+      report("connect", { ok: true, accounts });
+    })
+    .catch((err) => {
+      const msg = err && (err.message || String(err));
+      window.__connectResult = { error: msg };
+      document.getElementById("out").textContent = "connect failed: " + msg;
+      report("connect", { ok: false, code: err && err.code, error: msg });
+    });
+}
+function signPending() {
+  // Manual mode: with no harness-staged request, sign a fixed message so a
+  // human can drive the personal_sign flow directly in their own browser.
+  const req = window.__pendingRequest || {
+    method: "personal_sign",
+    params: [
+      "0x506c617967726f756e6420323032362d30392d3233206d616e75616c",
+      window.ethereum && window.ethereum.selectedAddress,
+    ],
+  };
+  if (!req) { window.__sigilkitResult = { ok: false, error: "no pending request" }; return; }
+  window.ethereum.request(req)
+    .then((value) => {
+      window.__sigilkitCalls.push([req.method, value]);
+      window.__sigilkitResult = { ok: true, value };
+      document.getElementById("out").textContent = JSON.stringify(value);
+      report("sign", { ok: true, method: req && req.method });
+    })
+    .catch((err) => {
+      window.__sigilkitResult = {
+        ok: false,
+        code: err && err.code,
+        error: err && (err.message || String(err)),
+      };
+      document.getElementById("out").textContent = "request failed: " + (err && err.message || err);
+      report("sign", { ok: false, method: req && req.method, code: err && err.code, error: err && (err.message || String(err)) });
+    });
+}
 </script>
 </body></html>

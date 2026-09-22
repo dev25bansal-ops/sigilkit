@@ -13,6 +13,11 @@ lib/forge-std/  # installed via submodule/clone at build time
 .env.local
 *.key
 
+# Local assistant-tool configuration (SK-01): models.json carries populated
+# credential fields and must never be committed. The .codebuddy/ folder itself
+# stays available for project data — only the credential file is excluded.
+.codebuddy/models.json
+
 # Obsidian
 .vault/.obsidian/workspace.json
 
@@ -36,12 +41,22 @@ dist/
 # Vault workspace state (keep notes, ignore Obsidian internals)
 vault/.obsidian/
 
-# Wallet E2E harness (downloaded MetaMask extension + Playwright profile)
-packages/core/test/wallet-e2e/metamask/
-packages/core/test/wallet-e2e/metamask.zip
+# Wallet E2E harness (downloaded MetaMask extension + Playwright profile). `metamask*/`
+# covers the active pin plus any versioned copy kept side-by-side for a rollback.
+packages/core/test/wallet-e2e/metamask*/
+packages/core/test/wallet-e2e/metamask*.zip
 packages/core/test/wallet-e2e/.playwright-profile/
 packages/core/test/wallet-e2e/.coinbase-out/
 packages/core/test-results/
+
+# Harness/verification scratch — may contain profiles and credential-adjacent logs (SK-01)
+outputs/
+crytic-export/
+actionlint.exe
+
+# Assistant-worknote dirs, not project deliverables
+.workbuddy-ai/
+agents/
 
 # Session tooling state
 .freebuff/

@@ -52,6 +52,10 @@ jobs:
         run: node --test scripts/check-doc-counts.test.mjs scripts/verify.test.mjs
       - name: Check documented counts against the toolchain
         run: node scripts/check-doc-counts.mjs
+      # SK-15/V66-1: the package-artifact guard and the remaining helper suites were
+      # previously dead in CI — a regression could land without any gate noticing.
+      - name: Test package artifact guard and helper suites
+        run: node --test scripts/check-package-artifacts.test.mjs scripts/check-runtime.test.mjs scripts/assurance-inventory.test.mjs scripts/benchmark-indexer.test.mjs
       - name: Download actionlint
         run: bash <(curl -sSf https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
       - name: Run actionlint
@@ -138,6 +142,10 @@ jobs:
       # dist/*.d.ts (its exports point at dist), which only exists after a build. On a
       # fresh clone, lint-before-build cannot resolve the module at all (CI-found).
       - run: npm run build --workspaces
+      # Static entry-point guard, after build so dist/ exists on a fresh checkout
+      # (mirrors verify.mjs ordering). Working-tree check only — not an install test.
+      - name: Check workspace package artifacts
+        run: node scripts/check-package-artifacts.mjs
       - run: npm run lint --workspaces
       - run: npm test --workspaces --if-present
       # TD-2: coverage thresholds for EVERY workspace, not just core. The vitest configs in
@@ -252,7 +260,7 @@ jobs:
       - run: halmos --version
       - run: halmos --match-contract Halmos # spend-cap core + auth-path specs (seam harness)
 
-  # 8. Weekly — live wallet conformance harnesses (MetaMask 12.5.0 + Coinbase designator).
+  # 8. Weekly — live wallet conformance harnesses (MetaMask 13.49.0 + Coinbase designator).
   # Real browsers + a real extension: heads-up Chromium on ubuntu (xvfb not needed —
   # Playwright launches headed Chromium fine with --no-sandbox on Linux runners).
   # TD-6 REMOVAL CRITERION (tracked: remove `continue-on-error` on or after 2026-10-12
@@ -272,7 +280,7 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: "24", cache: npm }
       - run: npm ci
-      # CQ-6/TD-5: the harness pulls a 21.7 MB extension bundle and a Chromium build on every
+      # CQ-6/TD-5: the harness pulls a 24.4 MB extension bundle and a Chromium build on every
       # run. Both are pinned by version, so cache them — this job is the slowest and least
       # reliable in the pipeline, and re-downloading is pure flake surface.
       - name: Cache Playwright browsers
@@ -281,20 +289,35 @@ jobs:
           path: ~/.cache/ms-playwright
           key: playwright-chromium-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - run: npx playwright install chromium --with-deps
-      - name: Cache pinned MetaMask 12.5.0 extension
+      - name: Cache pinned MetaMask 13.49.0 extension
         id: metamask-cache
         uses: actions/cache@v4
         with:
           path: packages/core/test/wallet-e2e/metamask
-          key: metamask-chrome-12.5.0
-      - name: Fetch pinned MetaMask 12.5.0 extension
+          # -v1 suffix: the 12.5.0 artefact must not be able to satisfy this key.
+          key: metamask-chrome-13.49.0-v1
+      - name: Fetch pinned MetaMask 13.49.0 extension
         if: steps.metamask-cache.outputs.cache-hit != 'true'
         run: |
           cd packages/core/test/wallet-e2e
+          # AC-04: fail closed. Digest cross-checks against the v13.49.0 release's
+          # SHA256SUMS and the asset API's own digest; a silent swap or a truncated
+          # download must abort the job, not feed the harness an unknown build.
           curl -sSfL -o metamask.zip \
-            "https://github.com/MetaMask/metamask-extension/releases/download/v12.5.0/metamask-chrome-12.5.0.zip"
+            "https://github.com/MetaMask/metamask-extension/releases/download/v13.49.0/metamask-chrome-13.49.0.zip"
+          echo "7ba00bfe4fe8b0ffb27be1e8fc06506248f1b888cb4f2e5e5e8b1c37f461f262  metamask.zip" | sha256sum --check
           unzip -q -o metamask.zip -d metamask
           rm metamask.zip
+      # Runs on the cache-hit path too: a poisoned cache entry would otherwise bypass
+      # the checksum entirely, and the harness's locators are version-specific.
+      - name: Verify pinned extension build identity
+        run: |
+          node -e '
+            const m = require("./packages/core/test/wallet-e2e/metamask/manifest.json");
+            if (m.version !== "13.49.0.0" || m.manifest_version !== 3) {
+              console.error(`unexpected extension build: version=${m.version} mv=${m.manifest_version}`);
+              process.exit(1);
+            }'
       - run: npx tsx test/wallet-e2e/run-all.ts
         working-directory: packages/core
       - uses: actions/upload-artifact@v4
