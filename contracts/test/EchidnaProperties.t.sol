@@ -69,7 +69,7 @@ contract SessionKeyManagerEchidna {
         SessionKeyManager.ActionRequest memory req = SessionKeyManager.ActionRequest({
             agentId: keccak256("echidna"),
             target: address(this),
-            selector: this.echidna_sink.selector, // payable no-op target on this contract
+            selector: this.sink.selector, // payable no-op target on this contract
             value: valueSeed % 2 ether,
             nonce: skm.getNonce(a),
             expiry: uint48(block.timestamp + 10 minutes),
@@ -86,7 +86,11 @@ contract SessionKeyManagerEchidna {
         if (ok) successes[a] += 1;
     }
 
-    function echidna_sink() external payable {}
+    /// @dev Payable no-op execution target. NOT named `echidna_*`: under
+    ///      `testMode: property` Echidna treats every public `echidna_*` function
+    ///      as a property, and a non-bool-returning one is falsified instantly
+    ///      (found by the local Echidna 2.2.5 run 2026-09-18).
+    function sink() external payable {}
 
     function h_revoke(uint256 agentSeed) external {
         address a = agents[agentSeed % agents.length];

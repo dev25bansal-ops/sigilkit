@@ -251,11 +251,8 @@ contract SessionKeyManagerTest is Test {
             _makeRequest(address(counter), counter.poke.selector, 0 ether, abi.encode(1));
         (bool ok, bytes memory ret) = _execute(req);
         assertFalse(ok, "expired key should fail");
-        // Test fixture: the revert payload is asserted to be KeyExpired. `bytes4(ret)` may
-        // right-pad a short payload, which is fine here because the `||` fallback accepts any
-        // payload of at least 4 bytes and this assertion is diagnostic, not a security check.
         // forge-lint: disable-next-line(unsafe-typecast)
-        assertTrue(bytes4(ret) == SessionKeyManager.KeyExpired.selector || ret.length >= 4);
+        assertEq(bytes4(ret), SessionKeyManager.KeyExpired.selector, "wrong revert reason");
     }
 
     function test_RejectsRevokedKey() public {

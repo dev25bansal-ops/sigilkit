@@ -33,6 +33,11 @@ contract GasTarget {
 contract GasBudgetTest is Test {
     SessionKeyManager internal skm;
     GasTarget internal target;
+    // Second pair for the whitelist-delta test. Deployed in setUp so the test's
+    // snapshot entry records only the two measured executions, not ~2.2M of
+    // in-test deployment gas.
+    SessionKeyManager internal manager2;
+    GasTarget internal target2;
 
     uint256 internal constant OWNER_KEY = 0xA11CE;
     uint256 internal constant AGENT_KEY = 0xB0B;
@@ -60,6 +65,10 @@ contract GasBudgetTest is Test {
         skm = new SessionKeyManager(vm.addr(OWNER_KEY));
         target = new GasTarget();
         vm.deal(address(skm), 100 ether);
+
+        manager2 = new SessionKeyManager(vm.addr(OWNER_KEY));
+        target2 = new GasTarget();
+        vm.deal(address(manager2), 100 ether);
 
         scope = SessionKeyManager.Scope({
             expiresAt: uint48(block.timestamp + 1 days),
@@ -189,10 +198,8 @@ contract GasBudgetTest is Test {
         skm.executeWithSessionKey(plain, sigPlain, new bytes32[](0), "");
         uint256 plainGas = before - gasleft();
 
-        // Same call under a 2-leaf whitelist.
-        SessionKeyManager manager2 = new SessionKeyManager(vm.addr(OWNER_KEY));
-        vm.deal(address(manager2), 100 ether);
-        GasTarget target2 = new GasTarget();
+        // Same call under a 2-leaf whitelist, on a fresh manager so both measurements stay
+        // cold-storage "first executions" and the delta isolates the whitelist check.
         SessionKeyManager.Scope memory scope2 = scope;
         bytes32 leafSelf = keccak256(abi.encode(address(target2), target2.poke.selector, bytes32(0)));
         bytes32 leafOther = keccak256(abi.encode(address(0xDEAD), bytes4(0xdeadbeef), bytes32(0)));

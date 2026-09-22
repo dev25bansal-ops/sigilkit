@@ -389,6 +389,14 @@ contract SessionKeyManager is ActionLogger {
     ///      balances (E11), make the inner call with revert-data bubbling (E2), then
     ///      verify balances. Runs inside the reentrancy lock; reverts roll everything
     ///      back, so the CEI ordering is preserved.
+    /// @dev Slither arbitrary-send-eth: the sole production call site is
+    ///      executeWithSessionKey, AFTER recovery of an active owner-granted key,
+    ///      request/nonce/selector checks, the scope's Merkle check, and native
+    ///      per-action/per-window charging. The signature binds target and value;
+    ///      a zero Merkle root deliberately authorizes any target within those caps.
+    ///      Keep those checks before every call to this helper (including subclasses).
+    ///      Regression coverage: NativeTransferAuthorizationTest.
+    // slither-disable-next-line arbitrary-send-eth
     function _interact(Scope storage scope, ActionRequest calldata request) internal {
         BalanceSnapshot memory snap = _snapshotBalances(scope);
         (bool ok, bytes memory ret) =
