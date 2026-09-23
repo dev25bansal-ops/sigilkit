@@ -603,6 +603,16 @@ export class SigilIndexer {
 
     const start = fromBlock ?? (cursor ? BigInt(cursor.lastBlock) + 1n : 0n);
     const head = await client.getBlockNumber();
+    // AC-32: on a chain younger than `confirmations` the window is below genesis and
+    // backfill would silently persist an advanced cursor while storing nothing.
+    // Fail loud instead: the operator must consciously shrink confirmations (or wait).
+    if (toBlock === undefined && this.confirmations > 0 && head <= BigInt(this.confirmations)) {
+      throw new Error(
+        `SigilIndexer: chain head ${head} is at or below confirmations (${this.confirmations}); ` +
+          `backfill would index nothing and still advance the cursor. ` +
+          `Pass --confirmations 0 for local/dev chains, a smaller value, or wait for the chain to grow.`,
+      );
+    }
     const safeHead = head - BigInt(this.confirmations);
     const end = toBlock ?? (safeHead > 0n ? safeHead : 0n);
     if (end < start) {

@@ -239,4 +239,19 @@ await runCli(SPEC, process.argv.slice(2), async (args, command) => {
   } finally {
     indexer.close();
   }
+}, {
+  // AC-33: Node 24's experimental node:sqlite aborts on Windows when process.exit
+  // interrupts the loop with a sqlite finalization queued (`Assertion failed:
+  // !(handle->flags & UV_HANDLE_CLOSING)` — reproduced even when the exit is deferred one
+  // macrotask; measured child exit 0xC0000409). Set the exit code and let the loop drain
+  // naturally; an unref'd 5s watchdog force-exits if a transport keeps the loop alive.
+  io: {
+    stdout: (line) => process.stdout.write(line + "\n"),
+    stderr: (line) => process.stderr.write(line + "\n"),
+    exit: (code) => {
+      process.exitCode = code;
+      const watchdog = setTimeout(() => process.exit(code), 5_000);
+      watchdog.unref();
+    },
+  },
 });

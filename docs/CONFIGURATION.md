@@ -126,7 +126,7 @@ npm run demo -- --help
 | `--manager <address>` | backfill, watch | Falls back to `SIGILKIT_MANAGER`. |
 | `--db <path>` | all | Falls back to `SIGILKIT_DB_PATH`. |
 | `--from <block>` / `--to <block>` | backfill | Default: persisted cursor → head − confirmations. |
-| `--confirmations <n>` | backfill, watch | |
+| `--confirmations <n>` | backfill, watch | Default 12. On a chain whose head is at or below this value, `backfill` now **fails loudly** (exit 1) instead of storing nothing — pass `--confirmations 0` (or a smaller value) for local/dev chains. See AC-32. |
 | `--max-range <n>` | backfill, watch | |
 | `--chain-id <id>` | all | A **filter** on query commands; omit to aggregate every chain. |
 | `--agent <hash>` | spend, actions | 32-byte agent id. |

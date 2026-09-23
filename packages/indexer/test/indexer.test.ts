@@ -799,3 +799,26 @@ describe("SigilIndexer fail-closed cursor validation (B64)", () => {
     }
   });
 });
+
+describe("fresh-chain backfill (AC-32)", () => {
+  it("fails loudly instead of storing nothing when the chain is younger than confirmations", async () => {
+    const ix = new SigilIndexer(":memory:", 31337); // default confirmations: 12
+    const log = actionLog({
+      agentId: AGENT,
+      value: 1n,
+      ts: 1,
+      txHash: "0x" + "c1".repeat(32),
+      blockNumber: 4n,
+    });
+    await expect(ix.backfill(stubChain([log], 7n), MANAGER)).rejects.toThrow(
+      /younger than .* confirmations|--confirmations/,
+    );
+    ix.close();
+  });
+
+  it("does not fail at genesis when the operator explicitly passed confirmations 0", async () => {
+    const ix = new SigilIndexer(":memory:", 31337, { confirmations: 0 });
+    await expect(ix.backfill(stubChain([], 0n), MANAGER)).resolves.toBe(0);
+    ix.close();
+  });
+});
