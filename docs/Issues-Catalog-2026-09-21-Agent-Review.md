@@ -11,11 +11,11 @@ V-01..V-08 (Issues-Catalog-2026-09-17.md) and earlier catalogs.
 |---|---|---|
 | Critical | 1 | AC-01 |
 | High | 7 | AC-02..AC-08 |
-| Medium | 10 | AC-09..AC-18 |
+| Medium | 12 | AC-09..AC-18, AC-32..AC-33 |
 | Low | 13 | AC-19..AC-31 |
 
 Priority ranking: **P0** = AC-01, AC-02, AC-03, AC-09 · **P1** = AC-04..AC-08, AC-10..AC-12 ·
-**P2** = AC-13..AC-18, AC-19..AC-23 · **P3** = AC-24..AC-31.
+**P2** = AC-13..AC-18, AC-19..AC-23, AC-32..AC-33 · **P3** = AC-24..AC-31.
 
 ---
 
@@ -148,6 +148,30 @@ real-metamask.ts, and gate changes — **no verification run certifies this exac
 **Problem:** `.gas-snapshot` records `test_Gas_WhitelistDelta_IsBounded` at 2,770,799 —
 a two-execution bundle, not a unit cost; distorts drift detection. **Effort:** 1 h
 (annotate or split the test). **Timeline:** with next snapshot regeneration.
+
+### AC-32 — Indexer default `confirmations: 12` silently skips fresh chains (Medium, P2)
+**Problem:** `packages/indexer/src/indexer.ts` defaults `confirmations: 12`; on any
+chain with head < 13 the backfill window (head − confirmations) is below genesis, so
+a run stores 0 events and still persists an advanced cursor (poisoning later runs).
+Reproduced 2026-09-22 in the end-to-end check: the demo manager emitted 4 events
+(verified on-chain via `eth_getLogs`) yet backfill stored 0 until `--confirmations 0`
+was passed. **Expected:** on a young chain, backfill either clamps effective
+confirmations to `max(0, head-1)` or fails loudly — never silently stores nothing.
+**Severity:** Medium (dev-chain onboarding footgun; CONFIGURATION.md documents the
+flag but not this default-side effect). **Effort:** 0.5 d TDD (tests + clamp + docs
+note). **Dependencies:** none. **Timeline:** Day 1 of the 30-day plan.
+**Evidence:** `outputs/e2e-05b-backfill.log` (stored 0 with defaults) vs
+`outputs/e2e-05c-backfill.log` (stored 4 with `--confirmations 0`).
+
+### AC-33 — node:sqlite teardown abort exits 127 after a successful backfill (Medium, P2)
+**Problem:** after printing `backfill stored N event(s)` the CLI process aborts with
+`Assertion failed: !(handle->flags & UV_HANDLE_CLOSING), file src\win\async.c, line 76`
+→ non-zero exit (127) on a successful run. Breaks fail-closed semantics: a green run
+reports red. Windows + Node 24 experimental sqlite; reproduced twice 2026-09-22.
+**Expected:** a successful backfill exits 0 (statements finalized, db closed, clean
+exit before uv teardown). **Severity:** Medium. **Effort:** 0.5 d TDD.
+**Dependencies:** AC-32 (same test neighborhood). **Timeline:** Day 1 of the 30-day
+plan. **Evidence:** `outputs/e2e-05b/05c-backfill.log` (`BACKFILL_EXIT=127`).
 
 ## 3. Performance
 
@@ -383,3 +407,16 @@ verify output, fail on dirty unless `--allow-dirty`. **Timeline:** pre-publicati
   AC-09 and defer the close-out path (hybrid canary-CI vs continuing Playwright
   hardening) while the evidence is fresh. All findings recorded here + in
   project memory; task #6 remains open.
+- **AC-32/33 FIXED (2026-09-23, 30-day plan Day 1 — TDD)**: failing tests first
+  (`packages/indexer/test/indexer.test.ts` fresh-chain describe + new
+  `packages/indexer/test/cli.e2e.test.ts` spawning the real CLI against an in-process
+  stub RPC). AC-32: `backfill` now fails loudly when the chain head is ≤ confirmations
+  (message names `--confirmations 0`); the genesis edge (explicit `--confirmations 0`)
+  is exempt and regression-tested. AC-33 root cause: Node 24's experimental
+  node:sqlite aborts (`UV_HANDLE_CLOSING`, child exit 0xC0000409) whenever
+  `process.exit` interrupts the loop with sqlite finalizations pending — even one
+  macrotask deferred. Fix: the indexer CLI sets `process.exitCode` and lets the loop
+  drain (5s unref'd watchdog). Suite 38/38; live anvil proof: default flags → exit 1 +
+  guidance (`outputs/ac32-live-default.log`); `--confirmations 0` → exit 0
+  (`outputs/ac33-live-conf0b.log`). Full verify 9/9
+  (`outputs/verify-20260923-D1-final.log`).
