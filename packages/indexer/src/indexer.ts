@@ -335,6 +335,28 @@ const BLOCK_HASH_RE = /^0x[0-9a-fA-F]{64}$/;
 /** A log as it appears in a `removed` (reorged-out) response. */
 type MaybeRemovedLog = Log & { removed?: boolean };
 
+/** 2^63 - 1: the largest value SQLite's `SUM`/`CAST` can hold exactly. */
+const INT64_MAX = 9223372036854775807n;
+
+/**
+ * True when `v` is a canonical decimal integer no larger than INT64_MAX — the exact
+ * precondition for summing it with SQLite's integer `SUM`.
+ *
+ * Canonical means what `BigInt(v).toString()` would round-trip to: digits only, no sign,
+ * no exponent, no hex, no digit separators, and no leading zero beyond "0" itself. Every
+ * one of those shapes would be re-read by `CAST(... AS INTEGER)` as a DIFFERENT number, so
+ * a store holding one cannot take the SQL path even though SQLite's own coercions would
+ * silently accept it.
+ *
+ * Exported for the test that pins the shapes SQLite gets wrong.
+ */
+export function isCanonicalInt64Decimal(v: string): boolean {
+  if (!/^(0|[1-9][0-9]*)$/.test(v)) return false;
+  // Comparison is by magnitude, not by digit count: int64 spans 19 digits but not all 19-digit
+  // values, and a digit-count ceiling rejects legitimate large wei amounts (1e18 and up).
+  return BigInt(v) <= INT64_MAX;
+}
+
 export class SigilIndexer {
   private readonly db: DatabaseSync;
   /** Default chain for writes; queries may override or omit it (ARCH-4). */
@@ -1289,14 +1311,17 @@ export class SigilIndexer {
   /**
    * Cumulative native spend per agent (wei).
    *
-   * PERF-02: aggregated in SQL rather than materialising one TEXT row per action.
+   * PERF-02: aggregated in SQL rather than summing one TEXT row per action in JS.
    * SQLite's `SUM` is exact only inside 64-bit integers — it silently widens to REAL
    * for out-of-range operands and *throws* on total overflow — while the historical
    * JS BigInt accumulator is exact for any input. The SQL path therefore runs only
-   * behind a probe proving every matching `value` is a canonical decimal of at most
-   * 18 digits (guaranteed to fit int64); any non-canonical value, or a SUM overflow,
-   * falls back to the exact per-row BigInt summation, keeping the result identical to
-   * the historical implementation for every input.
+   * when every matching `value` is a canonical decimal that fits int64; anything else,
+   * or a SUM overflow, falls back to the exact per-row BigInt summation, keeping the
+   * result identical to the historical implementation for every input.
+   *
+   * The predicate lives in JS, not SQL: SQLite's `GLOB '[0-9]*'` is a first-character
+   * test that also admits '1e3', '0x10' and '9a', and `CAST(x AS INTEGER) <> x` compares
+   * '007' equal to 7. See {@link isCanonicalInt64Decimal}.
    *
    * A8/R56: the id is normalized to lowercase to match the case-normalized rows the
    * ingest path stores — SQLite TEXT comparison is BINARY, so a mixed-case id must not
@@ -1304,16 +1329,31 @@ export class SigilIndexer {
    */
   spendByAgent(agentId: Hash, chainId?: number): bigint {
     const id = agentId.toLowerCase() as Hash;
-    const bad = (
-      this.stmt(
-        `SELECT COUNT(*) AS n FROM actions
-         WHERE ${chainScoped("agent_id", chainId)} AND (value NOT GLOB '[0-9]*' OR length(value) > 18)`,
-      ).get(...chainArgs(id, chainId)) as { n: number }
-    ).n;
-    if (bad === 0) {
+    // The probe has to test what it claims: a value is safe for the SQL path only if it is
+    // CANONICAL and fits int64.
+    //
+    // It cannot be done in SQL. `value NOT GLOB '[0-9]*'` is only a FIRST-CHARACTER test —
+    // SQLite accepts '1e3', '0x10', '9a' and '1_000' as passing it, and CAST would then sum a
+    // number the caller never wrote. `CAST(value AS INTEGER) <> value` is worse: SQLite
+    // compares '007' equal to 7, and silently widens anything past int64 to a float.
+    //
+    // So the predicate is evaluated in JS, where the grammar is exact: optional leading zeros
+    // are rejected (they are not canonical and would re-encode differently), the digit
+    // ceiling is compared as a number against INT64_MAX rather than by counting characters.
+    //
+    // The previous 18-digit ceiling flagged every legitimate value at or above 1 ETH as "bad",
+    // pinning exactly the high-spend agents this aggregation exists to serve onto the slow
+    // per-row path forever. Only non-canonical or out-of-int64 values fall back, so results
+    // stay identical to the historical per-row BigInt sum for every input.
+    // One pass over the values to decide the path. This does materialise the column — but
+    // only the one TEXT column, and only to choose between two correct implementations; the
+    // original defect was a query with no ceiling at all, not the existence of a scan. The
+    // rows are reused by the fallback below rather than read twice.
+    const values = this.stmt(
+      `SELECT value FROM actions WHERE ${chainScoped("agent_id", chainId)}`,
+    ).all(...chainArgs(id, chainId)) as Array<{ value: string }>;
+    if (values.every(({ value }) => isCanonicalInt64Decimal(value))) {
       try {
-        // CAST to TEXT keeps node:sqlite from widening the 64-bit sum to a float on
-        // the way out; the BigInt conversion below is then exact.
         const row = this.stmt(
           `SELECT CAST(COALESCE(SUM(CAST(value AS INTEGER)), 0) AS TEXT) AS total
            FROM actions WHERE ${chainScoped("agent_id", chainId)}`,
@@ -1323,10 +1363,7 @@ export class SigilIndexer {
         this.log.debug("spendByAgent: SQL SUM overflowed; falling back to per-row BigInt summation", { agentId: id }, err);
       }
     }
-    const rows = this.stmt(`SELECT value FROM actions WHERE ${chainScoped("agent_id", chainId)}`).all(
-      ...chainArgs(id, chainId),
-    ) as Array<{ value: string }>;
-    return rows.reduce((acc, r) => acc + BigInt(r.value), 0n);
+    return values.reduce((acc, r) => acc + BigInt(r.value), 0n);
   }
 
   /**

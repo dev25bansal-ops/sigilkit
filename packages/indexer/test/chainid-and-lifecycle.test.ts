@@ -14,7 +14,7 @@
  */
 import { describe, expect, it, vi } from "vitest";
 import { encodeAbiParameters, keccak256, pad, toHex, type Address, type Hash, type Hex, type Log, type PublicClient } from "viem";
-import { SigilIndexer } from "../src/indexer.js";
+import { SigilIndexer, isCanonicalInt64Decimal } from "../src/indexer.js";
 // P0-3: `silentLogger` and `Logger` are both logger symbols -> `/logger` subpath.
 import { silentLogger, type Logger } from "@sigilkit/core/logger";
 
@@ -412,5 +412,47 @@ describe("BUG-17 — stop() interrupts the in-flight poll interval", () => {
       await stop();
       ix.close();
     }
+  });
+});
+
+// ── the SQL aggregation precondition (PERF-02) ────────────────────────────────────────────
+
+describe("isCanonicalInt64Decimal — the predicate SQLite cannot express", () => {
+  // Each rejection below is a shape SQLite's own coercions ACCEPT. Verified against
+  // node:sqlite: `'1e3' GLOB '[0-9]*'` is true, `'0x10' GLOB '[0-9]*'` is true, and
+  // `CAST('007' AS INTEGER) = 7` compares EQUAL. A probe built on any of those lets a
+  // store holding such a value take the SUM path and report a number nobody wrote.
+  it.each([
+    ["leading zeros", "007"],
+    ["exponent form", "1e3"],
+    ["hex form", "0x10"],
+    ["trailing junk", "9a"],
+    ["digit separators", "1_000"],
+    ["negative", "-5"],
+    ["empty", ""],
+    ["whitespace padded", " 10"],
+    ["plus-signed", "+10"],
+    ["past INT64_MAX", "9223372036854775808"],
+    ["far past INT64_MAX", "18446744073709551616"],
+  ])("rejects %s", (_label, value) => {
+    expect(isCanonicalInt64Decimal(value)).toBe(false);
+  });
+
+  it.each([
+    ["zero", "0"],
+    ["small", "7"],
+    ["ordinary wei", "1000000000000000000"],
+    ["1 ETH", "1000000000000000000"],
+    ["INT64_MAX exactly", "9223372036854775807"],
+  ])("accepts %s", (_label, value) => {
+    expect(isCanonicalInt64Decimal(value)).toBe(true);
+  });
+
+  // The specific regression: a digit-count ceiling (the earlier `length(value) > 18`)
+  // classified every legitimate value at or above 1 ETH as unsafe, permanently routing
+  // high-spend agents — the ones this aggregation exists to serve — onto the slow path.
+  it("does not reject legitimate values at or above 1 ETH", () => {
+    expect(isCanonicalInt64Decimal("1000000000000000000")).toBe(true);
+    expect(isCanonicalInt64Decimal("5000000000000000000")).toBe(true);
   });
 });
