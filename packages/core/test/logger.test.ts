@@ -204,12 +204,12 @@ describe("parsers", () => {
     expect(parseLogFormat("JSON")).toBe("json");
   });
 
-  it("fall back for undefined, blank or unknown input", () => {
+  it("fall back for undefined or blank input, and throw on unknown input", () => {
     expect(parseLogLevel(undefined)).toBe("info");
     expect(parseLogLevel("   ")).toBe("info");
-    expect(parseLogLevel("loud")).toBe("info");
+    expect(() => parseLogLevel("loud")).toThrow(/SIGILKIT_LOG_LEVEL/);
     expect(parseLogFormat(undefined)).toBe("text");
-    expect(parseLogFormat("xml")).toBe("text");
+    expect(() => parseLogFormat("xml")).toThrow(/SIGILKIT_LOG_FORMAT/);
     expect(parseLogLevel(undefined, "warn")).toBe("warn");
   });
 

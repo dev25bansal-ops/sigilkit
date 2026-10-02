@@ -330,6 +330,91 @@ describe("the statement cache cannot straddle a schema migration", () => {
     expect(stmts.size).toBe(0);
   });
 
+  it("drops memoized statements when a migration rebuilds the tables under them", () => {
+    // THIS is the test the suite was missing. The two cases above both pass whether or not
+    // `migrate()` clears `stmts`:
+    //   - the close test inspects the map after `close()`, which clears it unconditionally;
+    //   - the reopen test builds a *fresh handle* per handle, so its memo was born after
+    //     the migration and could not have held a pre-migration entry.
+    // So neither one can go red when the `migrate()` clear is deleted — which is exactly
+    // the question this case has to answer.
+    //
+    // To make the clear load-bearing the memo must be populated *before* the rebuild and
+    // still be live *across* it, with no `close()` in between. `migrate()` is private and
+    // only the constructor calls it, so the sequence is forced directly: seed a memo entry,
+    // then re-enter the migration on the same handle. A stale entry that survives would be
+    // keyed to the pre-migration column layout.
+    const dir = join(process.env.TEMP ?? ".", `sigilkit-migrate-clear-${process.pid}-${seq++}`);
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, "indexer.db");
+    let opened: SigilIndexer | undefined;
+    try {
+      opened = new SigilIndexer(path, CHAIN, { logger: silentLogger() });
+      const stmts = (opened as unknown as { stmts: Map<string, unknown> }).stmts;
+      const db = (opened as unknown as { db: { exec: (sql: string) => void } }).db;
+
+      // 1. Populate the memo against the CURRENT (already-migrated) layout.
+      opened.storeAction(rec());
+      opened.spendByAgent(AGENT);
+      const before = stmts.size;
+      expect(before).toBeGreaterThan(0);
+
+      // 2. Re-run the migration on this same handle, with the memo still live. Nothing was
+      //    closed in between, so nothing else could have cleared it.
+      //
+      //    Two conditions are required to actually REACH the clear; omitting either makes this
+      //    assertion vacuous rather than failing:
+      //
+      //    (a) `migrate` must be invoked AS A METHOD. Detaching it (`const m = ix.migrate; m()`)
+      //        leaves `this` undefined, so the very first statement — `this.readSchemaVersion()` —
+      //        throws, which surfaces as an unrelated TypeError three lines above the clear.
+      //    (b) The fast path must be bypassed. `migrate()` returns immediately while
+      //        `readSchemaVersion() === CURRENT_SCHEMA_VERSION`, so re-entering it on an
+      //        already-current database never reaches the rebuild branch at all. Resetting
+      //        `PRAGMA user_version` to 0 ("never migrated") forces the full path.
+      db.exec("PRAGMA user_version = 0");
+      (opened as unknown as { migrate: () => void }).migrate();
+      expect(stmts.size).toBe(0);
+
+      // 3. The handle is still usable afterwards — the clear must not be a teardown.
+      opened.storeAction(rec({ value: 7n }));
+      expect(opened.spendByAgent(AGENT)).toBe(8n);
+    } finally {
+      opened?.close();
+      // A refused rmSync must not mask the test's own result, but it is not swallowed
+      // either: the leftover path is named so a run that leaked a directory is visible.
+      try {
+        rmSync(dir, { recursive: true, force: true });
+      } catch (err) {
+        console.warn(`cleanup left ${dir} behind:`, err instanceof Error ? err.message : err);
+      }
+    }
+  });
+
+  it("keeps memoized statements when the migration is a no-op re-check", () => {
+    // The control for the test above: a fix that cleared `stmts` unconditionally on every
+    // `migrate()` call would satisfy "the memo is empty after migrate" while throwing away
+    // valid statements whenever the under-lock re-check finds the schema already current.
+    // That path performs no DDL, so the entries are still valid and must survive. This is
+    // the regression that guards the `rebuilt` gate rather than the clear itself.
+    const ix = store();
+    const stmts = (ix as unknown as { stmts: Map<string, unknown> }).stmts;
+    try {
+      ix.storeAction(rec());
+      ix.spendByAgent(AGENT);
+      const before = stmts.size;
+      expect(before).toBeGreaterThan(0);
+
+      (ix as unknown as { migrate: () => void }).migrate();
+
+      // Fast path: `readSchemaVersion()` already matches, so `migrate()` returns before
+      // reaching the transaction and the memo is untouched.
+      expect(stmts.size).toBe(before);
+    } finally {
+      ix.close();
+    }
+  });
+
   it("recompiles read statements after a close/reopen cycle on the same file", () => {
     // The end-to-end shape of the same hazard: a statement compiled against the pre-migration
     // `actions` table (no `log_index`) must not be executed against the rebuilt one. Building
@@ -374,7 +459,13 @@ describe("the statement cache cannot straddle a schema migration", () => {
       expect(after.every((r) => typeof r.logIndex === "number")).toBe(true);
     } finally {
       opened?.close();
-      try { rmSync(dir, { recursive: true, force: true }); } catch { /* sandbox cleanup */ }
+      // A refused rmSync must not mask the test's own result, but it is not swallowed
+      // either: the leftover path is named so a run that leaked a directory is visible.
+      try {
+        rmSync(dir, { recursive: true, force: true });
+      } catch (err) {
+        console.warn(`cleanup left ${dir} behind:`, err instanceof Error ? err.message : err);
+      }
     }
   });
 

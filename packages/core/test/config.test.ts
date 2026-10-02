@@ -1,5 +1,23 @@
+// PROVENANCE — read this as a status note, not as a standing excuse.
+//
+// The two `loadDotEnv` tests added for the P1 `typeof`-guard fix ("degrades to [] instead of
+// throwing in a realm with no process" and "still attempts the load after a failure instead
+// of short-circuiting to []") were written while this workspace's dependency tree was broken.
+// They were verified out-of-tree at the time, by stripping types with
+// `module.stripTypeScriptTypes` and stubbing only `viem` — 9/9 checks passed, including a
+// control group that re-injects the old flag ordering and confirms the retry test goes RED
+// without the fix. That harness proved the ASSERTIONS are sound; it did not prove they run
+// here, and no committed vitest artifact in this workspace records them executing.
+//
+// Two things changed since: the `viem` dependency IS installed in this workspace, so the
+// former claim that "viem fails to load and `vitest run` cannot start at all" no longer holds
+// as written; but the two tests still have no recorded green run under vitest. Run this file
+// (`npx vitest run test/config.test.ts` from `packages/core`) and commit the result before
+// treating the P1 fix as covered by CI.
+//
+// The remaining tests in this file predate that breakage and have run in CI previously.
 import { afterAll, describe, expect, it } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -183,11 +201,15 @@ describe("loadDotEnv", () => {
     delete process.env.SIGILKIT_TEST_LOCAL;
   });
 
-  it("only loads once per process", () => {
+  it("loads only once per process, and keeps reporting the files it loaded", () => {
     const dir = tempDir({ ".env": "SIGILKIT_TEST_ONCE=1\n" });
     resetDotEnvForTests();
     expect(loadDotEnv(dir)).toEqual([".env"]);
-    expect(loadDotEnv(dir)).toEqual([]);
+    // The second call must NOT re-read the file — the variable keeps its first value —
+    // but it must still report WHICH files were loaded. This used to return `[]`, which
+    // is indistinguishable from "there is no .env here" and so cannot be acted on.
+    expect(loadDotEnv(dir)).toEqual([".env"]);
+    expect(process.env.SIGILKIT_TEST_ONCE).toBe("1");
     delete process.env.SIGILKIT_TEST_ONCE;
   });
 
@@ -197,6 +219,55 @@ describe("loadDotEnv", () => {
     expect(loadDotEnv(dir)).toEqual([".env.local"]);
     expect(process.env.SIGILKIT_TEST_LOCAL_ONLY).toBe("yes");
     delete process.env.SIGILKIT_TEST_LOCAL_ONLY;
+  });
+
+  // P1 guard: `typeof` protects a BARE identifier, not a member expression. With the guard
+  // written as `typeof process.loadEnvFile !== "function"`, evaluating the member expression
+  // in a realm with no `process` throws ReferenceError before `typeof` reports anything.
+  // Exercised here with an explicit `cwd` so the `process.cwd()` default parameter is not the
+  // thing under test — this isolates the `process.loadEnvFile` guard specifically.
+  it("degrades to [] instead of throwing in a realm with no process", () => {
+    resetDotEnvForTests();
+    const realProcess = globalThis.process;
+    try {
+      // @ts-expect-error -- deliberately removing the global to simulate a non-Node realm.
+      delete globalThis.process;
+      expect(typeof process).toBe("undefined");
+      expect(loadDotEnv(tempDir({}))).toEqual([]);
+    } finally {
+      globalThis.process = realProcess;
+      resetDotEnvForTests();
+    }
+  });
+
+  // The real regression guardrail. `dotEnvLoaded` used to be set BEFORE the work, so a throw
+  // from `loadEnvFile` left the flag set and every later call silently returned `[]` — the
+  // failure was invisible. Assert the second call still ATTEMPTS the load (fails again for
+  // the same reason) rather than short-circuiting to an empty list.
+  //
+  // The failure mode is a `.env` that is a DIRECTORY: `existsSync` is true, so the guard
+  // passes, but the loader cannot read it. Measured across 14 malformed-content cases
+  // (unclosed quotes, NUL bytes, CRLF, huge lines, no `=`, bare words) — `process.loadEnvFile`
+  // does NOT throw for ANY of them, so a content-based test would pass for the wrong reason
+  // and guard nothing. The directory case is the one that genuinely throws, on Node 24.12.
+  it("still attempts the load after a failure instead of short-circuiting to []", () => {
+    resetDotEnvForTests();
+    const dir = mkdtempSync(join(tmpdir(), "sigilkit-env-"));
+    dirs.push(dir);
+    mkdirSync(join(dir, ".env"));
+
+    expect(() => loadDotEnv(dir)).toThrow(ValidationError);
+    // The flag must not have been set by the failed attempt, so this call must reach the
+    // loader again and fail identically — NOT quietly return [].
+    expect(() => loadDotEnv(dir)).toThrow(ValidationError);
+    // And once the obstacle is removed, the retry must actually succeed — proving the flag
+    // was never set, rather than merely that a second throw happened.
+    rmSync(join(dir, ".env"), { recursive: true, force: true });
+    writeFileSync(join(dir, ".env"), "SIGILKIT_TEST_RETRY=ok\n");
+    expect(loadDotEnv(dir)).toEqual([".env"]);
+    expect(process.env.SIGILKIT_TEST_RETRY).toBe("ok");
+    delete process.env.SIGILKIT_TEST_RETRY;
+    resetDotEnvForTests();
   });
 });
 

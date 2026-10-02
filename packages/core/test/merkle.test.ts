@@ -11,7 +11,21 @@ import { concat, keccak256, toHex, type Address, type Hash, type Hex } from "vie
 import { merkleProof, merkleRoot, targetLeaf, validateAgainstScope } from "../src/index.js";
 import type { ActionRequest, Scope } from "../src/index.js";
 
-/** Local mirror of MerkleWhitelist.verify (contracts/src/MerkleWhitelist.sol). */
+/**
+ * Reference verifier for the sorted-pair scheme, mirroring the body of `MerkleWhitelist.verify`
+ * in `contracts/src/MerkleWhitelist.sol`.
+ *
+ * HONEST SCOPE — read this before treating the file as a tie to the contract. Both helpers
+ * below are HAND-MAINTAINED copies: nothing imports the contract, and nothing in this
+ * workspace fails if the Solidity side changes underneath them. The intended tie is the ABI
+ * drift gate (`scripts/abi-targets.txt` + `packages/core/test/abi-drift.test.ts`), and
+ * `MerkleWhitelist` IS listed in that targets file — but the committed
+ * `packages/core/abis/MerkleWhitelist.json` is `[]`, so the gate currently compares nothing
+ * for this contract. Until that ABI is regenerated with
+ * `forge inspect contracts/src/MerkleWhitelist.sol:MerkleWhitelist abi --json` (never
+ * hand-write it — `scripts/abi-targets.txt` says so explicitly), these two copies and the
+ * contract can drift apart and this file would still pass.
+ */
 function verifyRef(proof: Hex[], root: Hash, leaf: Hash): boolean {
   let computed = leaf;
   for (const p of proof) {
@@ -20,7 +34,7 @@ function verifyRef(proof: Hex[], root: Hash, leaf: Hash): boolean {
   return computed === root;
 }
 
-/** Local mirror of the on-chain sorted-pair hash. */
+/** Local mirror of the on-chain sorted-pair hash — same drift caveat as `verifyRef` above. */
 function sortedPairHash(a: Hash, b: Hash): Hash {
   return a.toLowerCase() < b.toLowerCase()
     ? keccak256(concat([a, b]))

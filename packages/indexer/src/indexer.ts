@@ -379,8 +379,14 @@ export class SigilIndexer {
    * never reached by a reader, and is only compiled if a path that needs it actually runs.
    * `prepare()` writes nothing, so caching is equally valid in both modes.
    *
-   * Statements survive `close()` and the `migrate()` table rebuild, so entries are never
-   * invalidated; the map is only cleared when the handle is released.
+   * The memo is keyed on **SQL text alone** — it carries no schema version, so an entry
+   * compiled against one table layout stays "valid" in the map after `migrate()` has
+   * rebuilt those tables underneath it, and the stale compilation assumptions would be
+   * reused forever. The two places that can invalidate it are therefore exactly the two
+   * places that can change or destroy the schema: `migrate()` clears it as part of the
+   * rebuild, and `close()` clears it before releasing the handle. Nothing else needs to —
+   * `prepare()` is read-only with respect to the schema, and every other write path
+   * (including `rollbackTo`) leaves the table layout untouched.
    */
   private stmt(sql: string): StatementSync {
     let cached = this.stmts.get(sql);
@@ -446,6 +452,7 @@ export class SigilIndexer {
     if (this.readSchemaVersion() === CURRENT_SCHEMA_VERSION) return;
     this.assertSchemaVersionSupported();
 
+    let rebuilt = false;
     this.inTransaction(() => {
       // Authoritative re-check under the write lock: the pre-flight read above raced
       // another process, which may have migrated or replaced the file in between.
@@ -453,6 +460,7 @@ export class SigilIndexer {
       if (this.readSchemaVersion() === CURRENT_SCHEMA_VERSION) return;
 
       for (const step of TABLE_MIGRATIONS) this.migrateTable(step);
+      rebuilt = true;
 
       this.db.exec(MIGRATIONS_TABLE);
       this.db
@@ -465,6 +473,24 @@ export class SigilIndexer {
       // version stamp and the rows it describes commit and roll back together.
       this.db.exec(`PRAGMA user_version = ${CURRENT_SCHEMA_VERSION}`);
     });
+    // Invalidate the prepared-statement memo once the tables have been rebuilt. Placement
+    // is load-bearing in two ways:
+    //  - AFTER `inTransaction`, not inside it: a rolled-back migration leaves the original
+    //    tables in place, so its entries would still be valid and re-preparing is pure loss.
+    //  - GATED on `rebuilt`: the under-lock re-check above can return without having
+    //    touched any table, and clearing then would discard perfectly good statements.
+    // Past this point every surviving entry was compiled against the pre-migration layout
+    // and is stale by construction, because the memo is keyed on SQL text with no schema
+    // version attached. (PERF-03/P0-1)
+    //
+    // Reachability, stated honestly: `migrate()` is private and the constructor is its ONLY
+    // caller, and the constructor runs it before any `stmt()` can have been called, so today
+    // no entry can actually exist here — the clear is a guard against a FUTURE caller (a
+    // re-migration entry point, a connection pool, a "migrate on open" path), not a fix for
+    // an observable corruption. It is kept because the invariant it protects is real, the
+    // cost is one `Map.clear()` on an already-exclusive code path, and the alternative is
+    // relying on "the only caller happens to run first" as the sole enforcement of it.
+    if (rebuilt) this.stmts.clear();
   }
 
   /**
@@ -594,6 +620,10 @@ export class SigilIndexer {
    * Takes the branded `ActionLogRecord` from `@sigilkit/core` verbatim, so the value
    * that is written is the same value the event decoder produced — no intermediate
    * untyped shape where a field could be dropped or misspelled.
+   *
+   * `agent_id` is normalized to lowercase here (A8/R56): SQLite compares TEXT with
+   * BINARY collation, and the query side normalizes to match, so a caller that submits
+   * the same id in a different case cannot silently miss rows that exist.
    */
   storeAction(r: ActionLogRecord, blockHash: Hash | null = null, chainId = this.chainId): void {
     this.assertWritable("storeAction");
@@ -604,7 +634,7 @@ export class SigilIndexer {
         r.logIndex,
         Number(r.blockNumber),
         blockHash,
-        r.agentId,
+        r.agentId.toLowerCase(),
         r.target,
         r.selector,
         r.value.toString(),
@@ -634,36 +664,68 @@ export class SigilIndexer {
    * Decodes raw receipt logs and stores every SigilKit event found. Returns the number
    * of events stored. Reorged-out (`removed: true`) logs are deleted instead of inserted
    * (ARCH-2).
+   *
+   * `chainId` is an explicit parameter (R56/A13): the caller supplies the chain the
+   * affected cursor/processor state was reading, so a removed log from one chain can
+   * never delete or overwrite another chain's rows through a silent `this.chainId`
+   * default. It is optional only for backward compatibility — internal callers always
+   * pass the processor's chain explicitly.
    */
-  ingestLogs(logs: Log[]): number {
+  ingestLogs(logs: Log[], chainId: number = this.chainId): number {
     this.assertWritable("ingestLogs");
     let stored = 0;
     for (const raw of logs) {
       const log = raw as MaybeRemovedLog;
       if (log.removed) {
-        this.removeLog(log);
+        this.removeLog(log, chainId);
         continue;
       }
       const action = parseActionLogged([log]);
       if (action) {
-        this.storeAction(action, (log.blockHash as Hash | null) ?? null);
+        this.storeAction(action, (log.blockHash as Hash | null) ?? null, chainId);
         stored++;
         continue;
       }
       if (log.topics.length === 3) {
+        // A3: a charge log without a usable height or index cannot be keyed under the
+        // natural key. Defaulting them to 0 would silently insert (or, on the removed
+        // path, DELETE) row 0 — the exact silent corruption fail-loud ingests forbid.
+        // Log and skip instead.
+        if (
+          log.logIndex === null ||
+          log.logIndex === undefined ||
+          log.blockNumber === null ||
+          log.blockNumber === undefined
+        ) {
+          this.log.warn("ingestLogs: skipping WindowCharged log with missing log_index/block_number", {
+            txHash: String(log.transactionHash ?? "null"),
+            logIndex: String(log.logIndex ?? "null"),
+            blockNumber: String(log.blockNumber ?? "null"),
+          });
+          continue;
+        }
         let decoded;
         try {
           decoded = decodeEventLog({ abi: ACTION_LOGGER_ABI, data: log.data, topics: log.topics });
-        } catch {
+        } catch (err) {
+          // A5: decode failures used to be swallowed with no trace at all, so a silently
+          // dropped WindowCharged was indistinguishable from "no event". Keep skipping
+          // (one malformed log must not kill a range commit) but say which log and why.
+          this.log.warn("ingestLogs: skipping 3-topic log that failed to decode", {
+            txHash: String(log.transactionHash ?? "null"),
+            logIndex: String(log.logIndex),
+            blockNumber: String(log.blockNumber),
+            reason: err instanceof Error ? err.message : String(err),
+          });
           continue;
         }
         if (decoded.eventName === "WindowCharged") {
           const a = decoded.args;
           this.storeWindowCharge({
-            chainId: this.chainId,
+            chainId,
             txHash: log.transactionHash as Hash,
-            logIndex: Number(log.logIndex ?? 0),
-            blockNumber: Number(log.blockNumber ?? 0),
+            logIndex: Number(log.logIndex),
+            blockNumber: Number(log.blockNumber),
             account: a.account,
             key: a.key,
             value: a.value.toString(),
@@ -677,11 +739,28 @@ export class SigilIndexer {
     return stored;
   }
 
-  /** Deletes the rows for a log that a reorg removed (ARCH-2). */
-  private removeLog(log: MaybeRemovedLog): void {
-    const chainId = this.chainId;
-    const txHash = log.transactionHash as string;
-    const logIndex = Number(log.logIndex ?? 0);
+  /**
+   * Deletes the rows for a log that a reorg removed (ARCH-2).
+   *
+   * `chainId` is deliberately NOT defaulted (R56/A13): a `removed` log describes a row
+   * the *processor* was reading, and a silent `this.chainId` here could delete another
+   * chain's rows whose tx hash happens to collide. The caller threads the affected
+   * chain from its own state.
+   *
+   * A missing `logIndex` is refused with a warning rather than `?? 0`: deleting the
+   * (chain, tx, log_index = 0) key for a log whose index the RPC omitted would be a
+   * silent delete of an unrelated row.
+   */
+  private removeLog(log: MaybeRemovedLog, chainId: number): void {
+    const txHash = log.transactionHash;
+    const logIndex = log.logIndex as number | null;
+    if (txHash === null || txHash === undefined || logIndex === null || logIndex === undefined) {
+      this.log.warn("removeLog: reorged-out log carries no tx_hash/log_index; refusing to delete", {
+        txHash: String(txHash ?? "null"),
+        logIndex: String(logIndex ?? "null"),
+      });
+      return;
+    }
     this.db
       .prepare(`DELETE FROM actions WHERE chain_id = ? AND tx_hash = ? AND log_index = ?`)
       .run(chainId, txHash, logIndex);
@@ -692,21 +771,34 @@ export class SigilIndexer {
 
   /**
    * Rolls the index back to a block, discarding anything above it and rewinding the
-   * persisted cursor (ARCH-2). Note: the rewound cursor carries a null hash, so this is a
-   * *clearing* primitive, not a recovery path for the B64 fail-closed check — a reorg that
-   * `validateCursor` detected must be resolved by rebuilding a separate database.
+   * persisted cursor (ARCH-2).
+   *
+   * Atomic: both tables and the cursor rewind commit or roll back together, so an
+   * interrupted rollback can never leave actions deleted and charges retained.
+   *
+   * Note: the rewound cursor carries a null hash, so this is a *clearing* primitive, not a
+   * recovery path for the B64 fail-closed check — `validateCursor` rejects a hash-less
+   * cursor outright, so a reorg that it detected must be resolved by rebuilding a separate
+   * database. Passing `manager` therefore leaves this store needing a fresh sync before it
+   * will run again; it is here to clear known-orphaned ranges, not to recover from one.
    */
   rollbackTo(blockNumber: number, manager?: Address): void {
     this.assertWritable("rollbackTo");
-    this.db.prepare(`DELETE FROM actions WHERE chain_id = ? AND block_number > ?`).run(
-      this.chainId,
-      blockNumber,
-    );
-    this.db.prepare(`DELETE FROM window_charges WHERE chain_id = ? AND block_number > ?`).run(
-      this.chainId,
-      blockNumber,
-    );
-    if (manager) this.setCursor(manager, blockNumber, null);
+    // Atomic: the two DELETEs must both land or neither. A failure between them would
+    // discard the action rows above `blockNumber` while leaving their window_charges
+    // behind — a state that looks like a successful rollback while silently orphaning
+    // charges, and that no later run would ever reconcile.
+    this.inTransaction(() => {
+      this.db.prepare(`DELETE FROM actions WHERE chain_id = ? AND block_number > ?`).run(
+        this.chainId,
+        blockNumber,
+      );
+      this.db.prepare(`DELETE FROM window_charges WHERE chain_id = ? AND block_number > ?`).run(
+        this.chainId,
+        blockNumber,
+      );
+      if (manager) this.setCursor(manager, blockNumber, null);
+    });
   }
 
   // ── cursor (BUG-7) ────────────────────────────────────────────────────────────
@@ -743,7 +835,12 @@ export class SigilIndexer {
       if (current?.lastBlock !== expectedCursor?.lastBlock || current?.lastBlockHash !== expectedCursor?.lastBlockHash) {
         throw new Error("SigilIndexer: checkpoint changed during collection; retry from the current checkpoint");
       }
-      const stored = this.ingestLogs(logs);
+      // A13/R56: the chain id is threaded EXPLICITLY from processor state. These logs
+      // were fetched and validated on this store's chain (assertRpcChainIdentity inside
+      // fetchRangeWithStableEnd), so `this.chainId` IS the affected chain here — saying
+      // so at the call site keeps any future multi-chain processor from letting a
+      // removed log delete another chain's rows.
+      const stored = this.ingestLogs(logs, this.chainId);
       this.setCursor(manager, Number(end), endHash);
       this.db.exec("COMMIT");
       return stored;
@@ -751,6 +848,11 @@ export class SigilIndexer {
       try {
         this.db.exec("ROLLBACK");
       } catch (rollbackError) {
+        // A4: mirrors the ownership model `inTransaction` establishes — this instance
+        // owns the connection, and after a failed ROLLBACK the transaction state on it
+        // is unknown, so reusing it could later commit a half-applied range. Close the
+        // handle and report both errors together instead.
+        this.close();
         throw new AggregateError([error, rollbackError], "SigilIndexer: range commit and rollback failed");
       }
       throw error;
@@ -1137,6 +1239,11 @@ export class SigilIndexer {
             if (this.stopRequested) break;
             continue;
           }
+          // A1 (reorg-safety, intentional): with NO persisted cursor this loop starts
+          // at `safeHead`, never at genesis. watch() is the live-follow mode — each tick
+          // must stay bounded to one confirmations window, and historical indexing is
+          // backfill()'s job; starting at genesis here would turn one tick into an
+          // unbounded full-chain fetch the per-tick checks were never sized for.
           const from = cursor ? BigInt(cursor.lastBlock) + 1n : safeHead;
           if (safeHead >= from) {
             const { logs, endHash } = await this.fetchRangeWithStableEnd(
@@ -1179,10 +1286,45 @@ export class SigilIndexer {
 
   // ── queries (chainId is an optional filter — ARCH-4) ──────────────────────────
 
-  /** Cumulative native spend per agent (wei) — summed in JS to avoid 64-bit overflow. */
+  /**
+   * Cumulative native spend per agent (wei).
+   *
+   * PERF-02: aggregated in SQL rather than materialising one TEXT row per action.
+   * SQLite's `SUM` is exact only inside 64-bit integers — it silently widens to REAL
+   * for out-of-range operands and *throws* on total overflow — while the historical
+   * JS BigInt accumulator is exact for any input. The SQL path therefore runs only
+   * behind a probe proving every matching `value` is a canonical decimal of at most
+   * 18 digits (guaranteed to fit int64); any non-canonical value, or a SUM overflow,
+   * falls back to the exact per-row BigInt summation, keeping the result identical to
+   * the historical implementation for every input.
+   *
+   * A8/R56: the id is normalized to lowercase to match the case-normalized rows the
+   * ingest path stores — SQLite TEXT comparison is BINARY, so a mixed-case id must not
+   * silently sum zero against rows that exist.
+   */
   spendByAgent(agentId: Hash, chainId?: number): bigint {
+    const id = agentId.toLowerCase() as Hash;
+    const bad = (
+      this.stmt(
+        `SELECT COUNT(*) AS n FROM actions
+         WHERE ${chainScoped("agent_id", chainId)} AND (value NOT GLOB '[0-9]*' OR length(value) > 18)`,
+      ).get(...chainArgs(id, chainId)) as { n: number }
+    ).n;
+    if (bad === 0) {
+      try {
+        // CAST to TEXT keeps node:sqlite from widening the 64-bit sum to a float on
+        // the way out; the BigInt conversion below is then exact.
+        const row = this.stmt(
+          `SELECT CAST(COALESCE(SUM(CAST(value AS INTEGER)), 0) AS TEXT) AS total
+           FROM actions WHERE ${chainScoped("agent_id", chainId)}`,
+        ).get(...chainArgs(id, chainId)) as { total: string };
+        return BigInt(row.total);
+      } catch (err) {
+        this.log.debug("spendByAgent: SQL SUM overflowed; falling back to per-row BigInt summation", { agentId: id }, err);
+      }
+    }
     const rows = this.stmt(`SELECT value FROM actions WHERE ${chainScoped("agent_id", chainId)}`).all(
-      ...chainArgs(agentId, chainId),
+      ...chainArgs(id, chainId),
     ) as Array<{ value: string }>;
     return rows.reduce((acc, r) => acc + BigInt(r.value), 0n);
   }
@@ -1200,7 +1342,8 @@ export class SigilIndexer {
     chainId?: number,
     limit: number | undefined = NO_ROW_LIMIT,
   ): StoredAction[] {
-    return this.latestRows("agent_id", agentId, chainId, limit);
+    // A8/R56: query-side case normalization to match the case-normalized ingest side.
+    return this.latestRows("agent_id", agentId.toLowerCase(), chainId, limit);
   }
 
   /** Audited actions against one target, oldest first. Same `limit` contract as `actionsForAgent`. */

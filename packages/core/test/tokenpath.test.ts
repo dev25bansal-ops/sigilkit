@@ -112,12 +112,16 @@ describe("checkTokenPath", () => {
     expect(allowance.detail).toContain("allowance(");
   });
 
-  it("is advisory only: a failed read never throws and reports ok: true", async () => {
+  it("is advisory only: a failed read never throws and reports ok: false with the error text", async () => {
     const { client } = stubClient({ fail: true });
     const report = await client.checkTokenPath(request("0xa9059cbb", [ALICE, 50n]));
     expect(report.checks).toHaveLength(1);
-    expect(report.checks[0]!.ok).toBe(true);
+    // A read that threw leaves the balance UNKNOWN, never "sufficient". The pre-check is
+    // still advisory (it never throws), but an unverifiable token must surface as a
+    // warning, not as a silent pass with the error discarded.
+    expect(report.checks[0]!.ok).toBe(false);
     expect(report.checks[0]!.detail).toContain("read failed");
+    expect(report.checks[0]!.detail).toContain("execution reverted: non-standard token");
   });
 
   it("unknown selectors produce no checks at all", async () => {

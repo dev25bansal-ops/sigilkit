@@ -34,5 +34,5 @@
     "typescript": "^7.0.2",
     "vitest": "^5.0.0"
   },
-  "repository": { "type": "git", "url": "git+https://github.com/sigilkit/sigilkit.git" }
+  "repository": { "type": "git", "url": "git+https://github.com/dev25bansal-ops/sigilkit.git" }
 }

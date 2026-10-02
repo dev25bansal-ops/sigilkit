@@ -25,7 +25,10 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { encodeAbiParameters, encodeEventTopics, keccak256, toHex, type Address, type Hash, type Hex, type Log } from "viem";
-import { ACTION_LOGGER_ABI, SIGILKIT_ERRORS_ABI, silentLogger } from "@sigilkit/core";
+import { ACTION_LOGGER_ABI, SIGILKIT_ERRORS_ABI } from "@sigilkit/core";
+// P0-3: `silentLogger` is declared in `logger.ts` and is moving off the barrel. Only the
+// logger symbol moves — the ABIs stay on the root entry, since `abis.ts` is not being touched.
+import { silentLogger } from "@sigilkit/core/logger";
 import { SigilIndexer } from "@sigilkit/indexer";
 import { handleMessage, TOOLS, __setAuditDbRootsForTests } from "../../mcp/src/server.js";
 
@@ -69,8 +72,8 @@ function seededStore(): { db: string; root: string } {
   const ix = new SigilIndexer(db, CHAIN_ID, { logger: silentLogger() });
   try {
     ix.ingestLogs([
-      actionLoggedLog({ value: V1, txHash: "0x" + "a1".repeat(32), logIndex: 0, blockNumber: 10n, timestamp: 1_700_000_000 }),
-      actionLoggedLog({ value: V2, txHash: "0x" + "b2".repeat(32), logIndex: 0, blockNumber: 11n, timestamp: 1_700_000_100 }),
+      actionLoggedLog({ value: V1, txHash: ("0x" + "a1".repeat(32)) as Hash, logIndex: 0, blockNumber: 10n, timestamp: 1_700_000_000 }),
+      actionLoggedLog({ value: V2, txHash: ("0x" + "b2".repeat(32)) as Hash, logIndex: 0, blockNumber: 11n, timestamp: 1_700_000_100 }),
     ]);
     ix.storeAction(
       // A second agent, so a `spend` query scoped to AGENT is a real filter and not a
@@ -111,7 +114,7 @@ function actionLoggedLog(opts: {
     topics: [topic0, agentIdTopic, targetTopic, selectorTopic],
     data: encodeAbiParameters(
       [{ type: "uint256" }, { type: "bytes32" }, { type: "uint48" }],
-      [opts.value, keccak256(toHex("rationale")), BigInt(opts.timestamp)],
+      [opts.value, keccak256(toHex("rationale")), opts.timestamp],
     ),
     blockNumber: opts.blockNumber,
     blockHash: keccak256(toHex(`block-${opts.blockNumber}`)),
@@ -821,6 +824,6 @@ function coreSigilitKitErrors(): ReadonlyArray<Record<string, unknown>> {
 }
 
 /** Reads the store's bytes, so "read-only" is a fact about the file and not a claim. */
-function readFileBytes(path: string): string {
-  return readFileSync(path);
+function readFileBytes(path: string): Buffer {
+  return readFileSync(path) as Buffer;
 }

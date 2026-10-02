@@ -7,7 +7,7 @@
  */
 import { chromium, type BrowserContext } from "@playwright/test";
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, readFileSync, rmSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
@@ -156,6 +156,43 @@ function autoApprove(browser: BrowserContext, texts: string[]): () => void {
     })().finally(() => (busy = false));
   }, 350);
   return () => clearInterval(timer);
+}
+
+/**
+ * Persists the run verdict into packages/core/test-results/wallet-e2e-result.json so the
+ * CI weekly job's upload-artifact step (packages/core/test-results/, `if-no-files-found:
+ * ignore`) retains SOMETHING for every run — stdio alone is not uploaded. Best-effort by
+ * design: the printed PASS/FAIL lines remain the primary signal, and a write failure is
+ * logged to stderr (never to stdout, so the console contract is unchanged).
+ */
+function writeResultArtifact(status: "pass" | "fail", detail?: string): void {
+  try {
+    const resultsDir = resolve(__dirname, "../../test-results");
+    mkdirSync(resultsDir, { recursive: true });
+    const payload = {
+      suite: "metamask",
+      status,
+      timestamp: new Date().toISOString(),
+      ...(detail ? { detail } : {}),
+      tests: results.map((r) => ({
+        name: r.name,
+        pass: r.pass,
+        ...(r.detail ? { detail: r.detail } : {}),
+      })),
+      manualNeeded: manualNeeded.map((m) => ({ name: m.name, ...(m.detail ? { detail: m.detail } : {}) })),
+    };
+    writeFileSync(
+      join(resultsDir, "wallet-e2e-result.json"),
+      JSON.stringify(payload, null, 2) + "\n",
+      "utf8",
+    );
+  } catch (err) {
+    console.error(
+      `[artifact] failed to write test-results/wallet-e2e-result.json: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
 }
 
 async function main() {
@@ -1209,6 +1246,7 @@ async function main() {
   await browser.close();
   dappServer?.close();
   anvil?.kill();
+  writeResultArtifact(failed > 0 ? "fail" : "pass");
   // See coinbase.ts: let libuv settle before exit on Windows.
   setTimeout(() => process.exit(failed > 0 ? 1 : 0), 250);
 }
@@ -1218,5 +1256,6 @@ main().catch(async (err) => {
   await activeBrowser?.close().catch(() => {});
   dappServer?.close();
   anvil?.kill();
+  writeResultArtifact("fail", err instanceof Error ? err.message : String(err));
   setTimeout(() => process.exit(1), 250);
 });

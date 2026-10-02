@@ -1,6 +1,5 @@
 {
-  "$schema": "https://raw.githubusercontent.com/sigilkit/sigilkit/main/schemas/wallet-behavior-allowlist.schema.json",
-  "_doc": "Versioned record of wallet RPC behaviors SigilKit depends on. The cross-wallet conformance CI asserts these; a mismatch fails the build BEFORE users hit the regression. Add entries per wallet+behavior with the extension/version they were verified on.",
+  "_doc": "Versioned record of wallet RPC behaviors SigilKit depends on. The cross-wallet conformance CI asserts these; a mismatch fails the build BEFORE users hit the regression. Add entries per wallet+behavior with the extension/version they were verified on. NOTE: this record previously carried a $schema URL pointing at a schemas/wallet-behavior-allowlist.schema.json that was never committed to the repository (dead link to a wrong-org remote); the line was removed rather than left dangling. The shape is machine-read ONLY by packages/core/test/wallet-e2e/run.ts, coinbase.ts and wallet-e2e.manual.test.ts (see each harness's allowlist lookup).",
   "behaviors": [
     {
       "id": "metamask:agent-wallet-guard-rails",

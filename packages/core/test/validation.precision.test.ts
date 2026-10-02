@@ -23,10 +23,14 @@ import {
   assertUintField,
   isUintLike,
   MAX_UINT256,
-  readEnvBigInt,
   toUnsignedBigInt,
   ValidationError,
 } from "../src/index.js";
+// `readEnvBigInt` lives in `config.ts`, which is deliberately NOT re-exported by the barrel:
+// `config.ts` has a top-level `node:fs` import, and an `export *` barrel would make it
+// reachable for every consumer, which a bundler cannot tree-shake away (it is the reason
+// `config` exists as its own subpath export). Import it the way a consumer must.
+import { readEnvBigInt } from "../src/config.js";
 
 describe("validation · toUnsignedBigInt: the shared lossless non-negative conversion", () => {
   it("passes bigint, safe integers and plain decimal strings through unchanged", () => {

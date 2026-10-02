@@ -11,6 +11,26 @@
  *  - Several of the guards are *fail-closed* decisions, and a fail-closed guard is invisible
  *    unless a test proves the request is refused. Every such test here asserts **absence of
  *    effect** (no file created, no row written, no path echoed) rather than just the message.
+ *
+ * PROVENANCE OF THE CASE COUNT
+ * -----------------------------
+ *   DECLARATIONS = RUNTIME CASES = 53. No parameterized blocks.
+ *
+ * Runtime confirmation (read from the run log, not recomputed):
+ *   `Tests  2 failed | 51 passed (53)` / `Test Files  1 failed (1)`.
+ *
+ * Read the 2 failures correctly: they are the INJECTED mutation, not defects. The mutation
+ * deleted the fail-closed branch that refuses every `audit_query` path when
+ * `SIGILKIT_AUDIT_DB_ROOT` is unset — and the first version of these tests still passed 53/53
+ * with that branch removed, because an empty allowlist makes the *containment* check refuse
+ * with the same `DB_NOT_ALLOWED` code. Two different refusal sites sharing one error code
+ * meant an assertion on the code could not tell which layer refused. The "distinguishes an
+ * unset allowlist from a set-but-non-matching one" case exists solely to close that gap, and
+ * these 2 failures are it working.
+ *
+ * Caveat on that run: collected under an alias harness substituting the `@sigilkit/*`
+ * workspace specifiers, because the dependency tree was empty at the time. It evidences what
+ * these assertions catch, not a clean-environment baseline.
  */
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -563,13 +583,6 @@ describe("audit_query error paths (SEC-04 path policy + SEC-13 bounds)", () => {
 });
 
 // ── transport-level guards (handleMessage) ─────────────────────────────────────
-
-/**
- * A stand-in for a tool that blocks forever, so the inflight counter can be driven to its
- * ceiling. It is registered on a private copy of the tool array, so the module-level TOOLS
- * registry the real server dispatches from is never mutated.
- */
-void 0;
 
 describe("JSON-RPC transport guards", () => {
   it("refuses a tool call whose arguments nest deeper than the ceiling", async () => {

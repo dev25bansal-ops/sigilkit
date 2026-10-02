@@ -17,15 +17,15 @@
 import { describe, expect, it, vi } from "vitest";
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync, rmSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import type { Hash } from "viem";
 import { SigilIndexer } from "../src/indexer.js";
 // P0-3: `silentLogger` is a logger symbol -> `/logger` subpath (root barrel drops it).
 import { silentLogger } from "@sigilkit/core/logger";
 
-const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
-const TMP_ROOT = join(REPO_ROOT, "outputs", ".tmp-migrate-tests");
+/** Temp workspace under the OS temp dir — isolated per test and removed after (A11). */
+const TMP_ROOT = join(tmpdir(), "sigilkit-migrate-tests");
 /** Schema version this build stamps once the lossless keys are in place. */
 const SCHEMA_VERSION = 1;
 

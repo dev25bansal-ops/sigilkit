@@ -148,8 +148,11 @@ await runCli(SPEC, process.argv.slice(2), async (args, command) => {
             if (closing) return;
             closing = true;
             log.info(`received ${signal}, shutting down`);
-            stop();
-            resolve();
+            // A7: await the watch loop's drain, not a fire-and-forget stop(). The
+            // disposer resolves once the in-flight tick has actually finished, so the
+            // `finally { indexer.close() }` below can never close the database under a
+            // tick that is mid-write.
+            void stop().then(resolve, resolve);
           };
           process.on("SIGINT", () => shutdown("SIGINT"));
           process.on("SIGTERM", () => shutdown("SIGTERM"));
@@ -204,7 +207,10 @@ await runCli(SPEC, process.argv.slice(2), async (args, command) => {
         process.stdout.write(`${SigilIndexer.formatWei(totalWei.toString())} ETH total spend\n`);
       }
     } else if (command === "actions") {
-      const rows = indexer.actionsForAgent(agentId as Hash, filter).slice(-limit);
+      // A6: `--limit` threads all the way into the query layer instead of a
+      // caller-side `.slice(-limit)` — the SQL fetches the newest N rows through the
+      // index and never materialises the rest.
+      const rows = indexer.actionsForAgent(agentId as Hash, filter, limit);
       if (json) {
         process.stdout.write(JSON.stringify({ agentId, chainId: filter ?? null, count: rows.length, actions: rows }) + "\n");
       } else {

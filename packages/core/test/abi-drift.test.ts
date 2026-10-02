@@ -223,19 +223,25 @@ type SolDeclaration = {
  *    types, so the dimension must not be dropped).
  */
 function canonicalSolType(raw: string): string {
-  const t = raw.trim().replace(/\s+/g, "");
+  // Strip the parameter NAME and data-location keywords while whitespace still exists.
+  // This must happen BEFORE whitespace is collapsed: `\s+name$` can no longer match once
+  // `uint a` has become `uinta`, which silently produced `uinta`/`addressb` for tuple members.
+  const bare = raw
+    .trim()
+    .replace(/\b(indexed|memory|storage|calldata|constant|immutable|payable)\b/g, " ")
+    .replace(/\s+[A-Za-z_$][\w$]*$/, "");
+  const t = bare.replace(/\s+/g, "");
   if (t === "") return "";
   // Recurse into tuple members: `(uint a, address b)[]` -> `(uint256,address)[]`.
-  const tuple = /^\(([\s\S]*)\)(\[\d*\])*$/.exec(t);
+  //
+  // Match against `bare`, NOT the whitespace-collapsed `t`: splitting the collapsed form would
+  // hand `uinta` / `addressb` to the recursion, and the name-stripping above can no longer
+  // fire because the separating space is already gone. Splitting the preserved text keeps
+  // `uint a` intact long enough for each member to canonicalise itself.
+  const tuple = /^\(([\s\S]*)\)(\[\d*\])*$/.exec(bare);
   if (tuple) {
     const inner = splitParams(tuple[1]!)
-      .map((p) =>
-        canonicalSolType(
-          p
-            .replace(/\b(indexed|memory|storage|calldata|constant|immutable|payable)\b/g, " ")
-            .replace(/\s+[A-Za-z_$][\w$]*$/, ""),
-        ),
-      )
+      .map((p) => canonicalSolType(p))
       .filter((x) => x !== "");
     const suffix = /(\[\d*\])*$/.exec(t)![1] ?? "";
     return `(${inner.join(",")})${suffix}`;
@@ -677,7 +683,11 @@ describe("ABI drift gate: contracts/src is the source of truth (no forge require
     const declared = ACTION_LOGGER_ABI.find(
       (i) => (i as unknown as AbiItem).name === "ActionLogged",
     ) as unknown as AbiItem;
-    expect(signatureOf(fromSource!)).toBe(signatureOf(declared));
+    // `fromSource` is a SolDeclaration, which carries a precomputed `signature`; it has no
+    // `inputs` array. Passing it to `signatureOf` (typed for AbiItem) silently read
+    // `.inputs === undefined` and produced `ActionLogged()`, so the left-hand side was a
+    // constant and this assertion could never have caught the uint48 -> uint64 edit it guards.
+    expect(fromSource!.signature).toBe(signatureOf(declared));
     expect(fromSource!.indexed).toEqual((declared.inputs ?? []).map((i) => (i.indexed ? true : undefined)));
   });
 

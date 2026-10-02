@@ -305,9 +305,11 @@ describe("EIP-7702 authorization: domain separation and pre-image integrity", ()
       // Independently re-derive with viem's own canonical implementation.
       expect(ours, `viem parity: ${c.name}`).toBe(
         hashAuthorization({
-          chainId: BigInt(c.chainId),
+          chainId: Number(c.chainId),
           address: c.contractAddress as Address,
-          nonce: BigInt(c.nonce),
+          // This pinned viem's 7702 helper types `nonce: number`; the frozen vectors are
+          // small decimal strings, so Number() is byte-identical to BigInt() here.
+          nonce: Number(c.nonce),
         }),
       );
     }

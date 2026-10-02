@@ -3,8 +3,15 @@
  *
  * All knobs are optional and have working defaults, so `node dist/cli.js …` runs with
  * no `.env` at all. Each reader names the variable it read and explains the expected
- * shape when it rejects a value — the common production failure is a typo'd variable
- * name, and "expected an integer, got \"abc\"" beats a silent fallback.
+ * shape when it rejects a value — a typo in a VALUE ("expected an integer, got \"abc\"")
+ * beats a silent fallback, and a set-but-invalid value is an error rather than a default.
+ *
+ * A typo in a variable NAME is NOT detected here, and this module does not claim to detect
+ * it: `readEnvString` returns the fallback for any name that is absent, so
+ * `SIGILKIT_CHAIN_IDD` reads as unset and the default is used. Nothing rejects an
+ * unrecognised `SIGILKIT_*` key; adding that would need a registry of every key the
+ * indexer / MCP server / demo agent read, which is not this module's to own. When a
+ * configured value appears to have no effect, grep the `SIGILKIT_` prefix first.
  *
  * The full list is documented in `.env.example` and `docs/CONFIGURATION.md`.
  */
@@ -18,18 +25,43 @@ import { createLogger, LOG_FORMATS, LOG_LEVELS, type LogFormat, type Logger, typ
  * Loads `.env` then `.env.local` from `cwd`, once per process.
  *
  * `cp .env.example .env` is the documented first step, so the file has to actually be read —
- * before this existed, a variable set there was silently ignored. Uses Node's built-in loader,
- * which only fills in variables that are not already set, so a real environment variable
- * always wins (the usual convention, and what CI relies on).
+ * before this existed, a variable set there was silently ignored.
  *
- * Returns the names of the files that were loaded. A missing file is not an error; a
- * malformed one is, because silently ignoring a typo'd `.env` is how this class of bug starts.
+ * **Effective precedence, highest first — read this before relying on `.env.local`:**
+ *
+ *   1. a real environment variable (CI, docker, the shell) — always wins;
+ *   2. a key defined in `.env`;
+ *   3. a key defined ONLY in `.env.local`.
+ *
+ * `.env.local` is loaded second but CANNOT override `.env`. Node's `process.loadEnvFile`
+ * only fills variables that are not already set, and by the time `.env.local` is read every
+ * `.env` key is already set. So `.env.local` is a *supplementary* file, not an override file.
+ * Giving it real override precedence would mean parsing both files ourselves instead of
+ * using the Node loader, which is a different design decision, not a bug fix.
+ *
+ * Returns the names of the files that were loaded, on the first call AND on every later call
+ * (the list is remembered, so a repeat call reports the same thing instead of an empty list
+ * that read like "no `.env` was found"). A missing file is not an error; a malformed one is,
+ * because silently ignoring a typo'd `.env` is how this class of bug starts.
+ *
+ * Degrades to "no `.env` support" (an empty list) in any realm without a usable `process` —
+ * browser, worker, edge — so it is safe to call unconditionally. It only marks itself loaded
+ * once the load has actually happened, so a caller may retry after a parse failure.
  */
 export function loadDotEnv(cwd: string = process.cwd()): string[] {
-  if (dotEnvLoaded) return [];
-  dotEnvLoaded = true;
-  // `process.loadEnvFile` needs Node >= 20.12; degrade to "no .env support" rather than throw.
-  if (typeof process.loadEnvFile !== "function") return [];
+  // Replay the remembered list rather than a bare `[]`. Returning `[]` here used to be
+  // indistinguishable from "there is no .env here", which is exactly the shape a caller
+  // cannot act on: the files WERE loaded, and the answer to "did .env get read?" is yes.
+  if (dotEnvLoaded) return [...dotEnvFiles];
+  // The bare identifier must be tested FIRST. `typeof` only protects a bare identifier —
+  // `typeof process.loadEnvFile` is a *member* expression, and in a realm with no `process`
+  // it throws ReferenceError before `typeof` can report anything. Written the other way round
+  // this guard looked correct and still crashed every non-Node caller. Same two-step form as
+  // `textColorsEnabled` in `logger.ts`, which guards `process.env` the same way.
+  //
+  // `process.loadEnvFile` itself needs Node >= 20.12, so the two conditions are separate: a
+  // realm can have a `process` and still lack the loader.
+  if (typeof process === "undefined" || typeof process.loadEnvFile !== "function") return [];
 
   const loaded: string[] = [];
   for (const name of [".env", ".env.local"]) {
@@ -42,14 +74,26 @@ export function loadDotEnv(cwd: string = process.cwd()): string[] {
       throw new ValidationError(name, `could not be parsed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
-  return loaded;
+  // `dotEnvFiles` is set LAST, on the success path only, together with `dotEnvLoaded`, and
+  // neither is "tidied" back to the top. `dotEnvLoaded` is a promise that the load already
+  // happened; setting it before the work makes that promise on a promise. A throw from
+  // `loadEnvFile` would then leave it set, and because the flag is checked first, every
+  // *later* call would short-circuit and silently skip a .env that was merely malformed —
+  // a silent no-op is far harder to notice than the exception that caused it, and the caller
+  // could never retry.
+  dotEnvFiles = loaded;
+  dotEnvLoaded = true;
+  return [...loaded];
 }
 
 let dotEnvLoaded = false;
+/** Names of the files read by the first successful {@link loadDotEnv}; replayed afterwards. */
+let dotEnvFiles: string[] = [];
 
 /** Forgets that `.env` was loaded — test-only escape hatch. */
 export function resetDotEnvForTests(): void {
   dotEnvLoaded = false;
+  dotEnvFiles = [];
 }
 
 /** Anything that can supply environment values (process.env in production). */
@@ -98,6 +142,61 @@ export function readEnvPrivateKey(env: EnvSource, name: string, fallback?: Hex):
   const raw = readEnvString(env, name);
   if (raw === undefined) return fallback;
   return assertPrivateKey(raw, name);
+}
+
+/**
+ * Rejects a value that cannot be a well-formed database file path.
+ *
+ * Returns a short reason, or `null` when the path is acceptable. The VALUE IS NEVER
+ * ECHOED — `logger.ts` treats `db`/`dbPath` as absolute-path carriers (SENSITIVE_KEY),
+ * and `packages/mcp` `resolveAuditDbPath` likewise withholds every refused path, so an
+ * error message is not allowed to become a filesystem oracle.
+ *
+ * What is refused, and why each one is a real failure rather than a style preference:
+ *
+ *  - **Control characters** (incl. NUL). A NUL in a path truncates it for any consumer
+ *    that hands it to a C API, and SQLite's own error strings quote the path back. This is
+ *    the concrete injection vector, and it is cheap to refuse outright.
+ *  - **A `..` segment.** This value names the file the indexer WRITES, and it is the
+ *    write-side counterpart of the read-side allowlist `packages/mcp` enforces with
+ *    `SIGILKIT_AUDIT_DB_ROOT`. Traversal in a configured value is never legitimate here.
+ *  - **A UNC prefix (`\\\\`).** Windows UNC paths resolve against the *share*, not the
+ *    drive, so containment reasoning that holds for `C:\...` does not transfer.
+ *  - **A leading `~`.** Nothing here expands it, so `~/audit.db` silently creates a file
+ *    literally named `~` in the cwd. That is a misconfiguration bug, not a path.
+ *  - **A trailing separator.** `SIGILKIT_DB_PATH` names a FILE; a value ending in `/` or
+ *    `\` is a directory, and SQLite would fail with a much less actionable message.
+ *
+ * Relative paths are deliberately ACCEPTED (both `DEFAULT_DB_PATH` and the `.env.example`
+ * value are relative, and a local `anvil` workflow depends on it) — only the *suspicious*
+ * shapes above are refused.
+ */
+function dbPathProblem(value: string): string | null {
+  // eslint-disable-next-line no-control-regex -- the point is to DETECT control characters.
+  if (/[\u0000-\u001f\u007f]/.test(value)) return "contains a control character (incl. NUL)";
+  if (/(?:^|[\\/])\.\.(?:[\\/]|$)/.test(value)) return "contains a `..` path segment";
+  if (value.startsWith("\\\\")) return "must not be a UNC (\\\\share) path";
+  if (value.startsWith("~")) return "must not start with `~` (no expansion is performed)";
+  if (/[\\/]$/.test(value)) return "must name a file, not a directory (trailing separator)";
+  return null;
+}
+
+/**
+ * Reads the audit-database path, or returns `fallback`.
+ *
+ * Unlike {@link readEnvString}, a present-but-invalid value is an ERROR rather than a
+ * silent pass-through. Every other knob in {@link loadServiceConfig} is allowlisted
+ * (`assertUint` / `readEnvChoice` / `assertUrl`); this one was the sole raw string, and it
+ * is the path the indexer opens for writing.
+ */
+export function readEnvDbPath(env: EnvSource, name: string, fallback: string): string {
+  const raw = readEnvString(env, name);
+  if (raw === undefined) return fallback;
+  const problem = dbPathProblem(raw);
+  if (problem !== null) {
+    throw new ValidationError(name, `is not a usable database path — it ${problem} (value withheld)`);
+  }
+  return raw;
 }
 
 /** Reads a decimal amount (wei) as bigint, or returns `fallback`. */
@@ -159,7 +258,7 @@ export function loadServiceConfig(env: EnvSource = process.env): ServiceConfig {
   return {
     rpcUrl: readEnvUrl(env, "SIGILKIT_RPC_URL", "http://127.0.0.1:8545") as string,
     chainId: readEnvInt(env, "SIGILKIT_CHAIN_ID", { fallback: ANVIL_CHAIN_ID, min: 1 }),
-    dbPath: readEnvString(env, "SIGILKIT_DB_PATH", DEFAULT_DB_PATH) as string,
+    dbPath: readEnvDbPath(env, "SIGILKIT_DB_PATH", DEFAULT_DB_PATH),
     confirmations: readEnvInt(env, "SIGILKIT_CONFIRMATIONS", { fallback: 12, min: 0 }),
     maxBlockRange: readEnvInt(env, "SIGILKIT_MAX_BLOCK_RANGE", { fallback: 2_000, min: 1 }),
     // Strict, like every other variable: a typo in the log format should be reported, not

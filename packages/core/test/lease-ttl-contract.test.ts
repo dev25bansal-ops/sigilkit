@@ -186,7 +186,7 @@ describe("LeaseLostError", () => {
       return "done";
     });
     // The superseded run surfaces the loss to the caller rather than succeeding quietly.
-    await expect(gate.run(KEY, () => "ok")).resolves.toBe("ok");
+    await expect(gate.run(KEY, () => Promise.resolve("ok"))).resolves.toBe("ok");
     expect(seen.length === 0 || seen[0] instanceof LeaseLostError).toBe(true);
   });
 
@@ -205,7 +205,11 @@ describe("LeaseLostError", () => {
 });
 
 describe("NonceGate adapter-version contract", () => {
-  it.each([
+  // The rows are deliberately heterogeneous (a v1 adapter, v2 adapters missing one member
+  // each, a non-function member). Letting TypeScript infer the tuple type from such a mix
+  // collapses every member to an implicitly-any recursive type (TS7023); the explicit
+  // unknown-valued record keeps the shapes deliberate and the table readable.
+  it.each<[string, Record<string, unknown>]>([
     ["a v1 key-only adapter", { acquire: () => null, release: () => undefined }],
     ["an adapter missing renew", { version: 2, acquire: () => null, release: () => undefined, isCurrent: () => false }],
     ["an adapter missing isCurrent", { version: 2, acquire: () => null, release: () => undefined, renew: () => false }],

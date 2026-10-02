@@ -6,9 +6,8 @@
  */
 import { describe, expect, it, vi } from "vitest";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { fileURLToPath } from "node:url";
 import { encodeAbiParameters, keccak256, pad, toHex, type Hash, type Hex, type Log, type PublicClient } from "viem";
 import { SigilIndexer } from "../src/indexer.js";
 // P0-3: `silentLogger` is a logger symbol — it must come from the `/logger` subpath once
@@ -36,7 +35,7 @@ function actionLog(opts: {
     address: "0x0000000000000000000000000000000000000042",
     topics: [
       keccak256(toHex("ActionLogged(bytes32,address,bytes4,uint256,bytes32,uint48)")),
-      AGENT === opts.agentId ? pad(opts.agentId) : pad(opts.agentId),
+      pad(opts.agentId),
       pad(TARGET),
       pad(SELECTOR),
     ],
@@ -504,9 +503,8 @@ describe("SigilIndexer durability (BUG-5/6/7, BUG-9, ARCH-2/3/4)", () => {
 // Conservative detection only: every failure stops before a write and never deletes
 // user data. Resolving a reorg stays an explicit operator action (rollbackTo).
 
-const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
-/** Temp workspace under the project's outputs dir — isolated per test and removed after. */
-const TMP_ROOT = join(REPO_ROOT, "outputs", ".tmp-indexer-tests");
+/** Temp workspace under the OS temp dir — isolated per test and removed after (A11). */
+const TMP_ROOT = join(tmpdir(), "sigilkit-indexer-tests");
 
 describe("range continuity", () => {
   it.each(["parent", "checkpoint", "missing checkpoint", "height", "log hash", "concurrent writer"] as const)("rejects inconsistent %s evidence without losing prior state", async (kind) => {
@@ -712,11 +710,11 @@ describe("SigilIndexer fail-closed cursor validation (B64)", () => {
       ix?.close();
       // Best-effort cleanup. The sandbox's bulk-delete guard can refuse a late rmSync in a
       // long run; a blocked cleanup must not fail an otherwise-passing test. The folder is
-      // isolated under outputs/.tmp-indexer-tests and is never inside the repo's sources.
+      // isolated under the OS temp dir (sigilkit-indexer-tests) and never inside the repo.
       try {
         rmSync(dir, { recursive: true, force: true });
-      } catch {
-        /* left for manual cleanup */
+      } catch (err) {
+        console.warn(`cleanup left ${dir} behind:`, err instanceof Error ? err.message : err);
       }
     }
   });
@@ -808,8 +806,8 @@ describe("SigilIndexer fail-closed cursor validation (B64)", () => {
       vi.useRealTimers();
       try {
         rmSync(dir, { recursive: true, force: true });
-      } catch {
-        /* isolated tmp dir left for manual cleanup */
+      } catch (err) {
+        console.warn(`cleanup left ${dir} behind:`, err instanceof Error ? err.message : err);
       }
     }
   });

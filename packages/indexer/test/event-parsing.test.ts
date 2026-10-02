@@ -310,11 +310,11 @@ describe("ingestLogs — removed logs delete from BOTH tables", () => {
     }
   });
 
-  it("treats a missing logIndex on a removed log as index 0, not as a wildcard delete", () => {
-    // `Number(log.logIndex ?? 0)` means a removed log with no logIndex deletes index 0 only.
-    // A rewrite that dropped the `?? 0` would instead bind NULL and match nothing at all,
-    // leaving the orphan behind; a rewrite that dropped the logIndex from the WHERE clause
-    // would delete the whole transaction. Pin the exact, narrow behaviour.
+  it("refuses to delete when a removed log carries no logIndex (A3)", () => {
+    // A3: a removed log with no logIndex must NOT default to index 0 — deleting the
+    // (tx, 0) key for a log whose index the RPC omitted would silently delete an
+    // unrelated row. The old `Number(log.logIndex ?? 0)` did exactly that; the fix
+    // skips the delete with a warning, so every row of the transaction survives.
     const ix = store();
     try {
       const tx = "0x" + "e4".repeat(32);
@@ -325,29 +325,33 @@ describe("ingestLogs — removed logs delete from BOTH tables", () => {
       const { logIndex: _dropped, ...withoutIndex } = actionLog({ transactionHash: tx as Hash });
       ix.ingestLogs([{ ...withoutIndex, removed: true } as Log]);
 
-      // Only index 0 went; index 1 survives.
-      expect(ix.spendByAgent(AGENT)).toBe(5n);
-      expect(ix.actionsForAgent(AGENT).map((r) => r.logIndex)).toEqual([1]);
+      // Nothing was deleted — index 0 AND index 1 both survive.
+      expect(ix.spendByAgent(AGENT)).toBe(9n);
+      expect(ix.actionsForAgent(AGENT).map((r) => r.logIndex)).toEqual([0, 1]);
     } finally {
       ix.close();
     }
   });
 });
 
-describe("ingestLogs — missing optional log fields degrade predictably", () => {
-  it("stores a WindowCharged with a missing logIndex under index 0 and missing block under 0", () => {
-    // `Number(log.logIndex ?? 0)` / `Number(log.blockNumber ?? 0)` are deliberate
-    // degradations for a partially-populated RPC response. The row must still land with the
-    // documented fallbacks, because dropping the charge would silently understate spend.
+describe("ingestLogs — missing optional log fields fail loud instead of writing row 0", () => {
+  it("skips a WindowCharged whose logIndex/blockNumber are missing (A3)", () => {
+    // A3: `Number(log.logIndex ?? 0)` / `Number(log.blockNumber ?? 0)` used to insert the
+    // charge under key index 0 — a silently WRONG row (and the same deletion hazard on
+    // the removed path). Missing ids now skip the log with a warning rather than
+    // fabricating row 0: the charge is not stored, nothing else in the batch is harmed,
+    // and a well-formed charge still lands.
     const ix = store();
     try {
       const bare = chargeLog();
       const { logIndex: _l, blockNumber: _b, ...rest } = bare;
-      expect(ix.ingestLogs([{ ...rest } as Log])).toBe(1);
-      const stored = ix.latestWindowCharge(KEY)!;
-      expect(stored.logIndex).toBe(0);
-      expect(stored.blockNumber).toBe(0);
-      expect(stored.value).toBe("5");
+      expect(ix.ingestLogs([{ ...rest } as Log])).toBe(0);
+      expect(ix.latestWindowCharge(KEY)).toBeNull();
+      expect(ix.summary()).toContain("0 window charges");
+
+      // The skip is per-log: a complete charge in the same batch stores normally.
+      expect(ix.ingestLogs([chargeLog({ logIndex: 2, blockNumber: 3n }, 7n)])).toBe(1);
+      expect(ix.latestWindowCharge(KEY)?.value).toBe("7");
     } finally {
       ix.close();
     }

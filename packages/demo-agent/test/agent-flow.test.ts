@@ -12,6 +12,20 @@
  * about the RPC call sequence, so a viem upgrade that probes a different set of methods can
  * only make this file fail loudly with an explicit "unhandled method" error — never pass
  * vacuously.
+ *
+ * PROVENANCE OF THE CASE COUNT
+ * -----------------------------
+ *   DECLARATIONS = RUNTIME CASES = 20. No parameterized blocks.
+ *
+ * Runtime confirmation (read from the run log, not recomputed):
+ *   `Tests  20 passed (20)` / `Test Files  1 passed (1)` — a clean single-file run.
+ *
+ * Caveat on that run: collected under an alias harness substituting the `@sigilkit/*`
+ * workspace specifiers, because the dependency tree was empty at the time. It evidences what
+ * these assertions catch, not a clean-environment baseline. This matters more here than in
+ * the other four files: every case drives a real `viem` client over real HTTP against the
+ * stub node, so it is the suite most exposed to whatever the module resolution was actually
+ * substituting.
  */
 import { createServer, type Server } from "node:http";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
@@ -56,7 +70,7 @@ function action(over: Record<string, unknown> = {}) {
   return {
     agentId: AGENT_ID,
     target: COUNTER,
-    selector: "0x32145f90",
+    selector: "0x32145f90" as Hex,
     value: ACTION_VALUE,
     expiry: 4_000_000_000,
     rationaleHash: RATIONALE,

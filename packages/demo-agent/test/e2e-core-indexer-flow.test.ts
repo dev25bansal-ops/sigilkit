@@ -32,10 +32,13 @@ import {
   ACTION_LOGGED_TOPIC,
   SESSION_KEY_MANAGER_ABI,
   parseActionLogged,
-  silentLogger,
   type ActionLogRecord,
   type Scope,
 } from "@sigilkit/core";
+// P0-3: `silentLogger` is declared in `logger.ts` and is moving off the barrel. Everything
+// else above stays — `parseActionLogged` and the ABIs are not logger symbols, and
+// `loggerFor` (which does return a `Logger`) lives in `config.ts`, not here.
+import { silentLogger } from "@sigilkit/core/logger";
 import { SigilIndexer, type StoredAction } from "@sigilkit/indexer";
 
 const CHAIN_ID = 31337;
@@ -87,7 +90,7 @@ function actionLoggedLog(opts: {
     // Non-indexed params, in ABI order: value, rationaleHash, timestamp (uint48 → uint256 slot).
     data: encodeAbiParameters(
       [{ type: "uint256" }, { type: "bytes32" }, { type: "uint48" }],
-      [opts.value, rationaleHash, BigInt(opts.timestamp)],
+      [opts.value, rationaleHash, opts.timestamp],
     ),
     blockNumber: opts.blockNumber,
     blockHash: keccak256(toHex(`block-${opts.blockNumber}`)),
@@ -115,7 +118,7 @@ function windowChargedLog(opts: { value: bigint; txHash: Hash; logIndex: number;
     // Non-indexed params in ABI order: value, windowStart (uint48), spentThisWindow.
     data: encodeAbiParameters(
       [{ type: "uint256" }, { type: "uint48" }, { type: "uint256" }],
-      [opts.value, BigInt(1_700_000_000), opts.value],
+      [opts.value, 1_700_000_000, opts.value],
     ),
     blockNumber: opts.blockNumber,
     blockHash: keccak256(toHex(`block-${opts.blockNumber}`)),
@@ -237,19 +240,16 @@ describe("Flow A — core decode → indexer persist → agree", () => {
     }
   });
 
-  it("keeps core's agentId byte form, so a mixed-case query silently finds nothing", () => {
-    // Documents a REAL cross-package defect (not a hypothetical): core's
-    // `parseActionLogged` returns the agentId as viem decoded it (lowercase), the indexer
-    // stores that string verbatim, and SQLite compares TEXT with BINARY collation — so
-    // the lookup is case-SENSITIVE end to end. Meanwhile core's own `assertHash32` (what
-    // the MCP `audit_query` tool runs) returns the caller's string *verbatim* too, so a
-    // checksummed or uppercase agentId from a model returns 0 spend against a store that
-    // plainly holds the rows. Neither package is wrong on its own: core never promised to
-    // normalise, and the indexer faithfully stores what it was given. It only breaks in
-    // composition — which is why a single-package review cannot see it.
-    //
-    // This test is written to document CURRENT behaviour, so the risk stays visible and
-    // any future normalisation shows up as a deliberate, reviewed change.
+  it("normalises agentId case at ingest and query, so a mixed-case query finds the rows", () => {
+    // Guards a REAL cross-package defect that WAS present (A8/R56): core's
+    // `parseActionLogged` returns the agentId as viem decoded it (lowercase), the
+    // indexer stored that string verbatim, and SQLite compares TEXT with BINARY
+    // collation — so lookup was case-SENSITIVE end to end, and a checksummed or
+    // uppercase agentId (MCP tools accept caller strings verbatim) returned 0 spend
+    // against rows that plainly existed. The fix lives in the STORE layer: the indexer
+    // lowercases agentId at ingest AND at query, so any casing of the same bytes32
+    // resolves to the same rows. This test now asserts that behaviour instead of
+    // documenting the bug.
     const log = actionLoggedLog({ agentId: AGENT, value: 42n, txHash: TX_A, logIndex: 0, blockNumber: 3n, timestamp: 1_700_000_000 });
     const record = parseActionLogged([log])!;
 
@@ -259,12 +259,24 @@ describe("Flow A — core decode → indexer persist → agree", () => {
     const ix = new SigilIndexer(tempDb(), CHAIN_ID, { logger: silent() });
     try {
       ix.ingestLogs([log]);
-      // Exact form: matches (this is the only spelling the system currently supports).
+      // Exact form matches, and the stored row is itself normalized lowercase.
       expect(ix.spendByAgent(AGENT)).toBe(42n);
-      // Any other case: no match, and no error either — the silent false negative.
-      const MIXED = ("0x" + "Ab".repeat(32)) as Hash;
-      expect(ix.spendByAgent(MIXED)).toBe(0n);
-      expect(ix.actionsForAgent(MIXED)).toEqual([]);
+      expect(ix.actionsForAgent(AGENT)[0]!.agentId).toBe(record.agentId);
+
+      // Any other casing of the SAME id now resolves to the same rows (an id with
+      // case-able hex digits, so the casing actually differs).
+      const WITH_LETTERS = ("0x" + "aB".repeat(32)) as Hash;
+      const lower = WITH_LETTERS.toLowerCase() as Hash;
+      const mixedLog = actionLoggedLog({ agentId: lower, value: 7n, txHash: TX_B, logIndex: 0, blockNumber: 4n, timestamp: 1_700_000_010 });
+      expect(ix.ingestLogs([mixedLog])).toBe(1);
+      expect(ix.spendByAgent(WITH_LETTERS)).toBe(7n);
+      const rows = ix.actionsForAgent(WITH_LETTERS);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.agentId).toBe(lower);
+      // Unrelated ids still find nothing — normalisation must not widen matches.
+      const UNRELATED = ("0x" + "cD".repeat(32)) as Hash;
+      expect(ix.spendByAgent(UNRELATED)).toBe(0n);
+      expect(ix.actionsForAgent(UNRELATED)).toEqual([]);
     } finally {
       ix.close();
     }
@@ -288,17 +300,20 @@ describe("Flow A — core decode → indexer persist → agree", () => {
     const scopeTuple = grant!.inputs[1]!;
     expect(scopeTuple.type).toBe("tuple");
 
-    // The Scope keys are exactly the tuple's component names.
-    const scopeKeys = Object.keys({
-      expiresAt: 0,
-      windowSeconds: 0,
-      perActionCap: 0,
-      perWindowCap: 0,
-      merkleRoot: 0,
-      countersignAbove: 0,
-      enforceNativeDelta: 0,
-      tokenWatchlist: 0,
-    } satisfies Scope).sort();
+    // The Scope keys are exactly the tuple's component names. Keyed by NAME, never by
+    // faked values: the previous form created a literal object with placeholder numbers
+    // `satisfies Scope`, which the type checker rightly rejects — and which suggests the
+    // names can drift even when the values lie about them.
+    const scopeKeys = ([
+      "expiresAt",
+      "windowSeconds",
+      "perActionCap",
+      "perWindowCap",
+      "merkleRoot",
+      "countersignAbove",
+      "enforceNativeDelta",
+      "tokenWatchlist",
+    ] as const satisfies readonly (keyof Scope)[]).slice().sort();
     const componentNames = (scopeTuple as { components: readonly { name: string }[] }).components
       .map((c) => c.name)
       .sort();
@@ -327,5 +342,5 @@ describe("Flow A — core decode → indexer persist → agree", () => {
 
 /** A logger that keeps the test output clean without changing behaviour. */
 function silent() {
-  return silentLogger;
+  return silentLogger();
 }

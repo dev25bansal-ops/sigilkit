@@ -1,14 +1,20 @@
 /**
  * EIP-712 domain-constant drift guard.
  *
- * `signing.ts` hardcodes `name: "SigilKit", version: "1"` inline in the
- * `hashTypedData` domain, while `types.ts` exports the same two values as
- * `SIGILKIT_DOMAIN_NAME` / `SIGILKIT_DOMAIN_VERSION` "as the cross-language reference
- * for consumers building digests by hand". No test referenced either constant, so the
- * two copies could drift with nothing failing — a consumer building a digest by hand
- * from the exported constants would then produce a digest that does NOT match what
- * `signActionRequest` signs, and every such signature would be rejected on-chain as
- * InvalidSignature with no local warning.
+ * `types.ts` exports `SIGILKIT_DOMAIN_NAME` / `SIGILKIT_DOMAIN_VERSION` "as the
+ * cross-language reference for consumers building digests by hand", while `signing.ts`
+ * builds the EIP-712 domain it actually signs with. `signing.ts` used to inline
+ * `name: "SigilKit", version: "1"` as a second literal copy while `types.ts` exported the
+ * same two values unused — so nothing referenced the exported constants, the two copies
+ * could drift with nothing failing, and a consumer building a digest by hand from the
+ * exported constants would produce a digest that does NOT match what `signActionRequest`
+ * signs, and every such signature would be rejected on-chain as InvalidSignature with no
+ * local warning.
+ *
+ * The duplication no longer exists: `signing.ts` imports both constants from `types.ts`, so
+ * the risk this file guards is now a *re-introduction* risk rather than a live one. That is
+ * still worth a test — the fix that removed the second copy was a one-line import, and
+ * nothing at the type level stops it being undone by the next editor who "simplifies" it.
  *
  * This test pins the exported constants to the values the encoder actually uses, by
  * deriving the domain separator from both sides independently.
