@@ -10,8 +10,34 @@ pragma solidity 0.8.36;
 ///      and up to perWindowCap again immediately after rollover — at most ~2× perWindowCap
 ///      within any sliding window of the same length. Integrators needing smooth budgeting
 ///      should size windows so that a 2× boundary burst is acceptable.
-///      All state updates here are EFFECTS: callers must invoke `enforce` before any external
-///      interaction (Checks-Effects-Interactions).
+///
+/// @dev INV-1 scope: the cap is PER KEY, not per owner and not per key-lineage. Window state
+///      is keyed by the session key that spent, and NOTHING else consolidates it. Two
+///      consequences, both intended (owner-ruled, resolving SEC-10):
+///
+///      1. **A rotation starts the new key on a fresh window.** `SessionKeyManager`'s
+///         `windows` is a per-key mapping, and its grant/rotate path deliberately does not
+///         carry a window across a rotation: the successor key's slot has never been used,
+///         so its window opens at zero. `perWindowCap` therefore bounds a SINGLE KEY's
+///         rate — it is not an aggregate ceiling on how fast an owner may rotate.
+///
+///      2. **A re-grant over the SAME key preserves that key's window.** The window lives
+///         outside the scope record, so replacing a scope does not clear it. This is the
+///         deliberate asymmetry with (1): rotation moves to a different key, re-grant does
+///         not.
+///
+///      **Why this is not an agent-reachable bypass.** Both `grantSessionKey` and
+///      `rotateSessionKey` are `onlyOwner`, so an agent CANNOT rotate or re-grant itself out
+///      of an exhausted window — there is no path from inside the trust boundary to a fresh
+///      budget. What a rotation resets is the OWNER's own bookkeeping, and the owner is the
+///      same party that chose the cap and the rotation cadence. The security boundary is
+///      intact; the risk is a CONFIGURATION one: an owner who rotates on a schedule faster
+///      than `windowSeconds` will authorise a higher aggregate rate than a single key's
+///      `perWindowCap` suggests. Owners wanting a hard aggregate ceiling must either set
+///      `windowSeconds` comfortably above their rotation cadence, or not rotate.
+///
+///      @dev All state updates here are EFFECTS: callers must invoke `enforce` before any
+///      external interaction (Checks-Effects-Interactions).
 library SpendPolicy {
     struct WindowState {
         // Start timestamp of the current fixed (tumbling) window. 0 = none opened yet.
@@ -37,6 +63,11 @@ library SpendPolicy {
 
     /// @notice Checks `value` against the per-action cap and the fixed-window cap, then records
     ///         the spend against the window.
+    /// @dev The batch path (SessionKey7579Module._enforceBatch) calls this ONCE for the
+    ///      batch total with `perActionCap = type(uint256).max`, having already checked each
+    ///      tuple individually — so this function must never be the only per-action check
+    ///      on a path. A future caller that passes the aggregate as a single `value` with a
+    ///      real cap would silently get different semantics.
     /// @param window Storage slot holding the caller's fixed-window state.
     /// @param account The wallet whose funds are being spent (the manager, or the smart
     ///        account on the 7579 path) — indexed identity for WindowCharged.

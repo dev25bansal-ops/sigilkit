@@ -27,6 +27,7 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { verifyMessage } from "viem";
+import { assertSafeCdpTarget } from "./real-metamask-preflight.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CDP_URL = process.env.CDP_URL || "http://127.0.0.1:9222";
@@ -54,6 +55,16 @@ async function test(name: string, fn: () => Promise<void>): Promise<void> {
 }
 
 async function main() {
+  // AC-06: the CDP target must pass the safety preflight BEFORE any attach —
+  // loopback hosts and fixture-listed debug ports only, unless the operator
+  // explicitly opts out via env (SIGILKIT_CDP_ALLOW_REMOTE / SIGILKIT_CDP_EXTRA_PORTS).
+  assertSafeCdpTarget(CDP_URL, {
+    allowRemote: process.env.SIGILKIT_CDP_ALLOW_REMOTE === "1",
+    extraPorts: (process.env.SIGILKIT_CDP_EXTRA_PORTS ?? "")
+      .split(",")
+      .filter(Boolean)
+      .map(Number),
+  });
   console.log(`[cdp] attaching to real Chrome at ${CDP_URL}`);
   const browser = await chromium.connectOverCDP(CDP_URL);
   const context = browser.contexts()[0];

@@ -23,6 +23,9 @@ library MerkleWhitelist {
         return computed == root;
     }
 
+    /// @dev Sorts the pair before hashing, so a node has ONE canonical encoding. The
+    ///      strict `<` matters: an `a == b` pair takes the `else` branch, which still
+    ///      produces the same hash, so duplicate siblings stay deterministic.
     function _hashPair(bytes32 a, bytes32 b) private pure returns (bytes32) {
         return a < b ? keccak256(abi.encodePacked(a, b)) : keccak256(abi.encodePacked(b, a));
     }

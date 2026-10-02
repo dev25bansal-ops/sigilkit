@@ -3,6 +3,24 @@
   "_doc": "Versioned record of wallet RPC behaviors SigilKit depends on. The cross-wallet conformance CI asserts these; a mismatch fails the build BEFORE users hit the regression. Add entries per wallet+behavior with the extension/version they were verified on.",
   "behaviors": [
     {
+      "id": "metamask:agent-wallet-guard-rails",
+      "wallet": "metamask",
+      "behavior": "MetaMask Agent Wallet restricts agent spending via daily spend limits, allowlisted protocols, and a risk profile; out-of-policy actions require human approval (Guard Mode 2FA, 5-minute auto-decline).",
+      "expected": "accepted-or-documented-absent",
+      "verifiedOn": "documentation 2026-09-23 (metamask.io/agent-wallet; not harness-verified)",
+      "sigilkitDependency": "Competitive baseline: SigilKit's on-chain grants + fencing must be at least as restrictive; the positioning doc cites this.",
+      "assert": "documented-parity"
+    },
+    {
+      "id": "biconomy:smart-session-policies",
+      "wallet": "biconomy",
+      "behavior": "Biconomy Smart Sessions expose ERC-7579 policy types: value limits, ERC-20 limits, time bounds, target contract + function selectors, usage count, network restrictions.",
+      "expected": "accepted-or-documented-absent",
+      "verifiedOn": "documentation 2026-09-23 (docs.biconomy.io/new/smart-sessions/policies; not harness-verified)",
+      "sigilkitDependency": "Direct comparator: SigilKit's grant module must match or exceed these policy dimensions.",
+      "assert": "documented-parity"
+    },
+    {
       "id": "metamask:13x-gesture-request-ui",
       "wallet": "metamask",
       "behavior": "User-activated eth_requestAccounts and personal_sign (real button clicks) open the request/approval UI and resolve successfully on 13.x.",

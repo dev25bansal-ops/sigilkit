@@ -1,5 +1,9 @@
 {
   "_doc": "Golden vectors for the ActionRequest EIP-712 digest. Consumers: packages/core/test/vectors.test.ts (SDK equality) and contracts/test/GoldenVectors.t.sol (on-chain equality). Regenerate: npm run vectors:generate.",
+  "_provenance": {
+    "generator": "@sigilkit/core",
+    "externallyAnchored": false
+  },
   "casesCount": 4,
   "cases": [
     {
@@ -26,7 +30,7 @@
         "agentId": "0xabababababababababababababababababababababababababababababababab",
         "target": "0x0000000000000000000000000000000000009001",
         "selector": "0xa9059cbb",
-        "value": "0x1000000000000000000000000000000000000000000000000000000000000000",
+        "value": "7237005577332262213973186563042994240829374041602535252466099000494570602496",
         "nonce": "7",
         "expiry": 1900000000,
         "rationaleHash": "0xcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
@@ -42,8 +46,8 @@
         "agentId": "0x0000000000000000000000000000000000000000000000000000000000000000",
         "target": "0x0000000000000000000000000000000000000000",
         "selector": "0x00000000",
-        "value": "0x3000000000000000000000000000000000000000000000000000000000000000",
-        "nonce": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "value": "21711016731996786641919559689128982722488122124807605757398297001483711807488",
+        "nonce": "115792089237316195423570985008687907853269984665640564039457584007913129639935",
         "expiry": 281474976710655,
         "rationaleHash": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
         "data": "0xdeadbeef"

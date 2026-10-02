@@ -1,5 +1,9 @@
 {
   "_doc": "Golden vectors for EIP-7702 authorization digests. Digests are generated with viem's hashAuthorization — the canonical signer implementation — NOT with @sigilkit/core, so the SDK test pins our encoder to go-ethereum semantics.",
+  "_provenance": {
+    "generator": "viem:hashAuthorization",
+    "externallyAnchored": true
+  },
   "casesCount": 6,
   "cases": [
     {

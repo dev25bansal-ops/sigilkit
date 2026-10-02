@@ -11,7 +11,10 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { encodeAbiParameters, keccak256, pad, toHex, type Hash, type Hex, type Log, type PublicClient } from "viem";
 import { SigilIndexer } from "../src/indexer.js";
-import { silentLogger, type ActionLogRecord } from "@sigilkit/core";
+// P0-3: `silentLogger` is a logger symbol — it must come from the `/logger` subpath once
+// the root barrel drops its `logger.ts` re-export. `ActionLogRecord` (client.ts) is not.
+import { type ActionLogRecord } from "@sigilkit/core";
+import { silentLogger } from "@sigilkit/core/logger";
 
 const AGENT: Hash = ("0x" + "11".repeat(32)) as Hash;
 const AGENT2: Hash = ("0x" + "12".repeat(32)) as Hash;
@@ -298,11 +301,22 @@ interface StubChainOptions {
   missing?: Set<bigint>;
   /** Called after each header's value is chosen, so a test can flip the next read. */
   onGetBlock?: (n: bigint) => void;
+  /**
+   * Chain id this stub claims over `eth_chainId` (SEC-15). Defaults to 31337, the
+   * Anvil chain every `SigilIndexer` in this file is constructed with. A test that wants
+   * to reproduce a mis-pointed `--rpc` passes a different id and expects backfill to
+   * refuse. Note the stub is a double, not a configured client: this is deliberately a
+   * *separate* value from the indexer's own `chainId`, which is what makes the mismatch
+   * expressible at all.
+   */
+  chainId?: number;
 }
 
-/** Minimal PublicClient stub: getBlockNumber + getBlock + a block-range-filtered getLogs. */
+/** Minimal PublicClient stub: getChainId + getBlockNumber + getBlock + getLogs. */
 function stubChain(logs: Log[], head: bigint, opts: StubChainOptions = {}): PublicClient {
   return {
+    // SEC-15: every range fetch asks the endpoint who it is before trusting its logs.
+    getChainId: async () => opts.chainId ?? 31337,
     getBlockNumber: async () => head,
     getBlock: async (a: { blockNumber?: bigint }) => {
       const n = a.blockNumber ?? head;
@@ -423,6 +437,7 @@ describe("SigilIndexer durability (BUG-5/6/7, BUG-9, ARCH-2/3/4)", () => {
     );
     const ranges: Array<[bigint, bigint]> = [];
     const client = {
+      getChainId: async () => 31337, // SEC-15: matches this indexer's chainId
       getBlockNumber: async () => 5n,
       getBlock: async (a: { blockNumber?: bigint }) => ({ number: a.blockNumber ?? 5n, hash: blockHashFor(a.blockNumber ?? 5n) }),
       getLogs: async (a: { fromBlock: bigint; toBlock: bigint }) => {

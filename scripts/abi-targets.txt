@@ -9,8 +9,31 @@
 # and consumed by the drift test, but was missing from the CI regeneration loop — so a
 # change to SigilKitDelegator.sol could land with a stale committed ABI and still pass.
 #
-# One contract name per line. Blank lines and # comments are ignored.
+# Regression this prevents (ABI-01, 2026-09-15): the list covered only 4 of the 7
+# contracts in contracts/src/. ActionLogger (the INV-3 audit-event emitter), SpendPolicy
+# (the INV-1 tumbling-window cap logic) and MerkleWhitelist (the target/selector
+# whitelist verifier) were OUTSIDE the gate entirely — changing an ActionLogger event
+# field or a SpendPolicy error could not be detected locally or in CI, because there
+# was no committed ABI entry to diff against. The list is now directory-scanned by the
+# drift test: adding a .sol file under contracts/src/ without adding it here FAILS.
+#
+# HOW TO REGENERATE (requires Foundry / forge on PATH; run from the repo root):
+#   while IFS= read -r c; do
+#     c="${c%%#*}"; c="$(echo "$c" | tr -d '[:space:]')"
+#     [ -z "$c" ] && continue
+#     forge inspect "contracts/src/$c.sol:$c" abi --json > "packages/core/abis/$c.json"
+#   done < scripts/abi-targets.txt
+# CI runs exactly this loop and then `git diff --exit-code packages/core/abis`.
+# If forge is unavailable locally, the missing abis/<name>.json files are an EXPLICIT
+# test failure (see "every contract in scripts/abi-targets.txt has a committed ABI file"
+# in packages/core/test/abi-drift.test.ts) — generate them above, never hand-write them.
+#
+# One contract name per line, and it MUST equal both the .sol filename and the Solidity
+# contract/library name inside it (forge inspect addresses it as <file>:<name>).
 SessionKeyManager
 SessionKey7579Module
 ActionLog7579Executor
 SigilKitDelegator
+ActionLogger
+SpendPolicy
+MerkleWhitelist

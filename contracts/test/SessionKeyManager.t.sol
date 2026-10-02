@@ -27,6 +27,14 @@ contract OwnerOnlyTarget {
     function sweep() external payable {}
 }
 
+/// @dev A recipient whose receive() reverts, so `to.call{value:}("")` returns false and
+///      `withdraw` must surface it as `WithdrawFailed` rather than losing the funds silently.
+contract Rejector {
+    receive() external payable {
+        revert("no thanks");
+    }
+}
+
 /// @dev Targets with distinct revert behaviors for the E2 bubbling tests.
 contract RevertingTarget {
     error SomeUnknownError(uint256 x); // selector intentionally absent from the allowlist
@@ -208,6 +216,161 @@ contract SessionKeyManagerTest is Test {
 
     function scm_getExpiry(address k) internal view returns (uint48) {
         return skm.getScope(k).expiresAt;
+    }
+
+    // ------------------------------------------------------------------
+    // #2 · E11 watchlist bound (MAX_WATCHED_TOKENS)
+    //
+    // The gate `tokenWatchlist.length > MAX_WATCHED_TOKENS => InvalidScope` had no
+    // assertion at all: 8 legal was covered incidentally by a gas test, and 9 — the whole
+    // point of the bound — was never executed. A flipped comparison operator would have
+    // silently turned an E11 gas bound into a no-op, and nothing in the suite would go red.
+    // Both directions are asserted here, because "9 reverts" alone does not distinguish a
+    // working bound from one that rejects everything.
+    // ------------------------------------------------------------------
+    function test_ValidateScope_AcceptsExactlyEightWatchlistTokens() public {
+        address[] memory eight = new address[](8);
+        for (uint256 i = 0; i < 8; ++i) {
+            // Distinct non-zero addresses, so the length is what is under test.
+            // Synthetic test address; `i < 8`, so the value cannot truncate.
+            // forge-lint: disable-next-line(unsafe-typecast)
+            eight[i] = address(uint160(0xA000 + i));
+        }
+        defaultScope.tokenWatchlist = eight;
+        vm.prank(vm.addr(OWNER_KEY));
+        skm.grantSessionKey(agent, defaultScope);
+        assertEq(skm.getScope(agent).tokenWatchlist.length, 8, "all eight tokens must be stored");
+    }
+
+    function test_ValidateScope_RejectsNineWatchlistTokens() public {
+        address[] memory nine = new address[](9);
+        for (uint256 i = 0; i < 9; ++i) {
+            // Distinct non-zero addresses: the bound under test is the LENGTH, and reusing one
+            // address would let a de-duplicating implementation pass a test that should fail.
+            // Synthetic test address; `i < 9`, so the value cannot truncate.
+            // forge-lint: disable-next-line(unsafe-typecast)
+            nine[i] = address(uint160(0xA000 + i));
+        }
+        defaultScope.tokenWatchlist = nine;
+        vm.prank(vm.addr(OWNER_KEY));
+        vm.expectRevert(SessionKeyManager.InvalidScope.selector);
+        skm.grantSessionKey(agent, defaultScope);
+    }
+
+    // ------------------------------------------------------------------
+    // #3 · withdraw: the two WithdrawFailed branches + the event
+    //
+    // This is the only sanctioned way to move funds out (S6), and the only test of it was a
+    // happy path. `to == address(0)` would permanently burn the funds; a recipient that
+    // rejects ETH must not be able to consume the whole call either.
+    // ------------------------------------------------------------------
+    function test_Withdraw_RevertsOnZeroRecipient() public {
+        vm.deal(address(skm), 5 ether);
+        vm.prank(vm.addr(OWNER_KEY));
+        vm.expectRevert(SessionKeyManager.WithdrawFailed.selector);
+        skm.withdraw(payable(address(0)), 1 ether);
+        assertEq(address(skm).balance, 5 ether, "a rejected withdrawal must move nothing");
+    }
+
+    function test_Withdraw_RevertsWhenRecipientRejects() public {
+        Rejector r = new Rejector();
+        vm.deal(address(skm), 5 ether);
+        vm.prank(vm.addr(OWNER_KEY));
+        vm.expectRevert(SessionKeyManager.WithdrawFailed.selector);
+        skm.withdraw(payable(address(r)), 1 ether);
+        assertEq(address(skm).balance, 5 ether, "a rejected withdrawal must move nothing");
+    }
+
+    function test_Withdraw_EmitsTreasuryWithdrawal() public {
+        address recipient = address(0xBEEF);
+        vm.deal(address(skm), 5 ether);
+        uint256 before = recipient.balance;
+        vm.expectEmit(true, true, true, true, address(skm));
+        emit SessionKeyManager.TreasuryWithdrawal(recipient, 1.5 ether);
+        vm.prank(vm.addr(OWNER_KEY));
+        skm.withdraw(payable(recipient), 1.5 ether);
+        assertEq(recipient.balance, before + 1.5 ether, "recipient must receive the funds");
+        assertEq(address(skm).balance, 3.5 ether, "wallet must be debited");
+    }
+
+    // ------------------------------------------------------------------
+    // #4 · transferOwnership actually moves authority    //
+    // The suite covered the happy path and the zero-address revert, but never asserted that
+    // the NEW owner can act or that the OLD one is now powerless. Both halves matter: a
+    // transfer that emits the event without moving `_manager().owner` would leave the old
+    // owner in control of every admin selector while the logs claim otherwise.
+    // ------------------------------------------------------------------
+    function test_TransferOwnership_MovesAuthority() public {
+        address newOwner = address(0xFEED);
+        vm.expectEmit(true, true, true, true, address(skm));
+        emit SessionKeyManager.OwnershipTransferred(vm.addr(OWNER_KEY), newOwner);
+        vm.prank(vm.addr(OWNER_KEY));
+        skm.transferOwnership(newOwner);
+
+        // New owner can act.
+        vm.prank(newOwner);
+        skm.grantSessionKey(agent, defaultScope);
+        assertEq(skm.getScope(agent).expiresAt, defaultScope.expiresAt, "new owner's grant must land");
+
+        // Old owner is now powerless, with the specific error — not a bare failure.
+        vm.prank(vm.addr(OWNER_KEY));
+        vm.expectRevert(SessionKeyManager.NotOwner.selector);
+        skm.grantSessionKey(agent, defaultScope);
+
+        // And withdraw, the other admin surface, is likewise transferred.
+        vm.deal(address(skm), 1 ether);
+        vm.prank(vm.addr(OWNER_KEY));
+        vm.expectRevert(SessionKeyManager.NotOwner.selector);
+        skm.withdraw(payable(address(0xBEEF)), 1 ether);
+    }
+
+    // ------------------------------------------------------------------
+    // #6 · rotateSessionKey revert branches
+    //
+    // `KeyUnknown`, `OverlapBeyondOldExpiry` and the `oldKey == address(0)` path had no
+    // assertions. `OverlapBeyondOldExpiry` in particular is the guard that stops a rotation
+    // from EXTENDING a key's life past its original expiry, and it appeared only in comments.
+    // ------------------------------------------------------------------
+    function test_Rotate_RevertsUnknownOldKey() public {
+        address neverGranted = address(0xDEAD);
+        vm.prank(vm.addr(OWNER_KEY));
+        vm.expectRevert(SessionKeyManager.KeyUnknown.selector);
+        skm.rotateSessionKey(neverGranted, address(0xC0C), defaultScope, uint48(block.timestamp + 1 hours));
+    }
+
+    function test_Rotate_RevertsOverlapBeyondOldExpiry() public {
+        vm.startPrank(vm.addr(OWNER_KEY));
+        skm.grantSessionKey(agent, defaultScope);
+        // The old key expires in 1 day; ask for a 2-day overlap.
+        vm.expectRevert(SessionKeyManager.OverlapBeyondOldExpiry.selector);
+        skm.rotateSessionKey(agent, address(0xC0C), defaultScope, uint48(block.timestamp + 2 days));
+        vm.stopPrank();
+    }
+
+    /// @dev `oldKey == address(0)` is the documented "grant a fresh key with no predecessor"
+    ///      path — the `oldKey != address(0) &&` guard exists specifically to let it through
+    ///      `KeyUnknown`. Characterization, because it is reachable only in ONE shape:
+    ///
+    ///      The very next line compares `overlapEnds` against `scopes[address(0)].expiresAt`,
+    ///      which is 0 for the zero key because it was never granted. So ANY non-zero
+    ///      `overlapEnds` reverts `OverlapBeyondOldExpiry`, and the zero-old-key path survives
+    ///      only with `overlapEnds == 0`.
+    ///
+    ///      Both halves are asserted. The first is the surprising one and is the reason this
+    ///      test exists: the guard reads as "zero old key is supported", but any realistic
+    ///      overlap makes it revert. Recorded as behaviour, not as a verdict.
+    function test_Rotate_ZeroOldKey_RequiresZeroOverlap() public {
+        address fresh = address(0xC0C);
+
+        // (a) A non-zero overlap reverts, because the zero key's stored expiry is 0.
+        vm.prank(vm.addr(OWNER_KEY));
+        vm.expectRevert(SessionKeyManager.OverlapBeyondOldExpiry.selector);
+        skm.rotateSessionKey(address(0), fresh, defaultScope, uint48(block.timestamp + 1 hours));
+
+        // (b) With overlapEnds == 0 the path is reachable and does grant.
+        vm.prank(vm.addr(OWNER_KEY));
+        skm.rotateSessionKey(address(0), fresh, defaultScope, uint48(0));
+        assertEq(skm.getScope(fresh).expiresAt, defaultScope.expiresAt, "the new key must be granted");
     }
 
     // ------------------------------------------------------------------

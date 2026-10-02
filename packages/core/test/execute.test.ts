@@ -51,7 +51,8 @@ function harness(opts: { simFails?: boolean; logs?: Log[]; status?: "success" | 
       reads.push(a.functionName);
       opts.afterRead?.();
       if (a.functionName === "getNonce") return 0n;
-      if (a.functionName === "getWindowState") return [0n, 0n];
+      // ABI-02: one `SpendPolicy.WindowState` struct, not two positional outputs.
+      if (a.functionName === "getWindowState") return { windowStart: 0n, spentThisWindow: 0n };
       throw new Error(`unexpected read ${a.functionName}`);
     },
     call: async () => {

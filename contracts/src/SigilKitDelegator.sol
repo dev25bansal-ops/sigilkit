@@ -37,15 +37,24 @@ contract SigilKitDelegator is SessionKeyManager {
         if (s.owner != address(0)) revert AlreadyInitialized();
         s.owner = address(this);
         emit OwnershipTransferred(address(0), address(this));
-        // Seed the denylist exactly like the manager constructor (defense in depth):
-        // even an allow-all-merkle key can never reach administration.
-        // CQ-1: contract-qualified selectors (not `this.f.selector`).
-        _setSelectorDenied(SessionKeyManager.grantSessionKey.selector, true);
-        _setSelectorDenied(SessionKeyManager.revokeSessionKey.selector, true);
-        _setSelectorDenied(SessionKeyManager.rotateSessionKey.selector, true);
-        _setSelectorDenied(SessionKeyManager.transferOwnership.selector, true);
-        _setSelectorDenied(SessionKeyManager.setSelectorDenied.selector, true);
-        _setSelectorDenied(SessionKeyManager.withdraw.selector, true);
+        // C-04: the manager's admin list is a SINGLE SOURCE shared with its own
+        // constructor (`_seedAdminDenylist`); this used to be a hand-copied second list
+        // that silently drifted whenever an admin function was added. Only the ONE
+        // delegator-specific entry is added here.
+        _seedAdminDenylist();
         _setSelectorDenied(SigilKitDelegator.initializeSelfOwned.selector, true);
+    }
+
+    /// @notice C-04 comparison anchor, delegator side. Folds this contract's own extra
+    ///         admin selector into the manager's base digest, so the anchor tracks the
+    ///         delegator's true admin surface (6 inherited + 1 own) rather than the
+    ///         manager's alone.
+    /// @dev MUST be overridden whenever a subclass adds an `onlyOwner` function: an
+    ///      un-overridden digest would understate the surface, and
+    ///      `DenylistCoverage.t.sol` asserts this override exists and is folded.
+    function adminSelectorDigest() public pure override returns (bytes32 digest) {
+        digest = _foldSelector(
+            super.adminSelectorDigest(), SigilKitDelegator.initializeSelfOwned.selector
+        );
     }
 }
