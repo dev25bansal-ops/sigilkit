@@ -16,7 +16,6 @@ checklist run.
 | Job (ci.yml) | Waiver | Criterion to remove (must be met, in order) | Expiry hard stop |
 |---|---|---|---|
 | `wallet-e2e-weekly` | `continue-on-error: true` | The four scheduled runs of 2026-09-14, 2026-09-21, 2026-09-28 and 2026-10-05 were all green. Any red run is triaged and fixed **before the next run** — the waiver is not extended past a red run without a written postmortem here. | 2026-10-12 |
-| `echidna-nightly` | `continue-on-error: true` | Known non-gating corridor — evidence: local replay of the nightly invocation (echidna 2.2.5, solc 0.8.36, `--config echidna.yaml`, 2026-10-02) exits 1: `echidna_windowSpendUnderCap` FAILS while the other 3 properties pass (reproducer: `echidna-corpus/reproducers-unshrunk/`). Re-instatement: triage that property to green locally, then 14 consecutive green nightly runs (on or after 2026-09-26 if every run since 2026-09-12 passed). A red nightly is a real finding: triage, don't extend. | 2026-10-31 |
 | `foundry-canary` | `continue-on-error: true` | Two consecutive green monthly runs (2026-10-01 and 2026-11-01). A red canary is upstream Foundry drift: pin or adapt in a follow-up PR, then clear the waiver. | 2026-11-30 |
 
 ## Rules

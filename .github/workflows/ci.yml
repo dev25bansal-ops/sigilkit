@@ -491,11 +491,14 @@ jobs:
     name: Echidna property fuzzing (nightly)
     if: github.event_name == 'workflow_dispatch' || github.event.schedule == '17 3 * * *'
     runs-on: ubuntu-latest
-    # WHY NON-GATING (2026-10-02 local replay of this job, echidna 2.2.5 + solc 0.8.36):
-    # exits 1 — `echidna_windowSpendUnderCap` FAILS (3/4 properties pass), reproducer saved
-    # under echidna-corpus/reproducers-unshrunk/. Gating now would redden nightly until the
-    # property is triaged; see the echidna-nightly row in docs/CI-WAIVERS.md.
-    continue-on-error: true
+    # GATING as of 2026-10-02. This job was non-gating on the claim that a local replay
+    # failed `echidna_windowSpendUnderCap`; that replay did not reproduce. Run with echidna
+    # 2.2.5 + solc 0.8.36 against contracts/test/EchidnaProperties.t.sol
+    # (SessionKeyManagerEchidna, --config echidna.yaml), all four properties pass and the
+    # process exits 0. The earlier red came from dropping `--solc-version`, which the pinned
+    # binary rejects — that changed what got compiled, not a property result. A waiver whose
+    # stated evidence does not reproduce is worse than no waiver, so it is removed rather than
+    # extended. If a nightly goes red, that is a real finding: triage it.
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with: { submodules: recursive }
