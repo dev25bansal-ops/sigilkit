@@ -33,6 +33,9 @@ Thumbs.db
 
 # Coverage
 coverage/
+# Echidna writes its corpus, cache and coverage report into the CWD by default — including
+# on a nightly CI run. Tool byproduct, never a deliverable.
+/echidna-corpus/
 
 # Build output
 dist/
