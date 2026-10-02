@@ -1052,3 +1052,68 @@ test("the gate and the core logger make the same colour decision", async (t) => 
   }
 });
 
+
+// ── the false-green class itself: a gate that reports fewer checks than it declares ────────
+
+test("NEGATIVE CONTROL: a malformed wave entry is refused, not silently dropped", (t) => {
+  // The defect this pins: runWave filtered its queue on `typeof task.thunk === "function"`,
+  // and every wave entry is a `[key, thunk]` ARRAY, which has no `.thunk`. All 12 wave steps
+  // were discarded and the gate still printed "All 2 check(s) passed" and exited 0. The
+  // normalising fix handles arrays; this case proves the OTHER half — that an entry in a
+  // shape nobody anticipated now throws instead of quietly reducing the check count.
+  const root = mkdtempSync(join(tmpdir(), "verify-malformed-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  mkdirSync(join(root, "scripts"), { recursive: true });
+  const gate = VERIFY_SOURCE;
+
+  // Inject one malformed entry into the real wave list, leaving everything else intact.
+  const corrupted = gate.replace(
+    /await runWave\(\[\n/,
+    'await runWave([\n  ["broken", { task: () => Promise.resolve({ label: "broken", passed: true, ms: 0, skipped: false, timedOut: false, log: null }) }],\n',
+  );
+  assert.notEqual(corrupted, gate, "the fixture must actually inject a malformed wave entry");
+  writeFileSync(join(root, "scripts", "verify.mjs"), corrupted);
+
+  // Run it for real: `--list` answers a query and returns before any wave is dispatched, so
+  // only an actual run can reach the validation. A malformed entry must abort with the
+  // message, and the run must not print a pass on the way out.
+  const child = spawnSync(process.execPath, [join(root, "scripts", "verify.mjs"), "--only=workflow lint"], {
+    cwd: root, encoding: "utf8",
+  });
+  assert.match(child.stderr + child.stdout, /runWave: every entry must be/, "a malformed entry must be refused");
+  assert.doesNotMatch(child.stdout, /All \d+ check\(s\) passed/, "a refused run must not report a pass");
+});
+
+test("NEGATIVE CONTROL: an unqualified run must produce a result for every declared step", (t) => {
+  // The summary count is derived from `results`, which only steps that ran can populate — so
+  // it can never detect a step that was dropped, and "All N check(s) passed" would state what
+  // survived rather than what was promised. This deletes one declared step's dispatch and
+  // requires exit 2 naming it. The stubbed layout cannot run any step for real, so every
+  // step is reported missing; what this pins is that the run REFUSES rather than passing
+  // with a smaller number, and that the removed step appears by name in the verdict.
+  const root = mkdtempSync(join(tmpdir(), "verify-incomplete-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  mkdirSync(join(root, "scripts"), { recursive: true });
+  writeFileSync(join(root, "scripts", "foundry-scope.json"), JSON.stringify({ unitExclude: ".*Invariant|.*Fork" }));
+
+  // Remove the `typecheck` entry from wave 2, leaving every other line intact.
+  const entry = '  ["typecheck", () => run(labelOf("typecheck"), NPM[0], [...NPM[1], "run", "lint", "--workspaces", "--if-present"])],';
+  const corrupted = VERIFY_SOURCE.replace(`${entry}\n`, "");
+  assert.notEqual(corrupted, VERIFY_SOURCE, "the fixture must actually remove a declared step");
+  writeFileSync(join(root, "scripts", "verify.mjs"), corrupted);
+
+  // No --no-forge / --quick / --only here: the completeness guard applies to the
+  // UNQUALIFIED run, which is what CI's assurance job executes. Adding any of those flags
+  // would legitimately narrow the scope and bypass the very check under test.
+  const child = spawnSync(process.execPath, [join(root, "scripts", "verify.mjs")], {
+    cwd: root, encoding: "utf8", timeout: 90_000,
+  });
+  assert.equal(child.status, 2, `an incomplete run must exit 2\n${child.output.slice(0, 600)}`);
+  const verdict = JSON.parse((child.stdout.match(/^\{"gate":"verify".*$/m) ?? ["{}"])[0]);
+  assert.equal(verdict.verdict, "incomplete", "the verdict must say the run was incomplete");
+  assert.ok(
+    Array.isArray(verdict.missing) && verdict.missing.includes("typecheck"),
+    `the removed step must be named in the verdict: ${JSON.stringify(verdict.missing)}`,
+  );
+  assert.doesNotMatch(child.stdout, /All \d+ check\(s\) passed/, "an incomplete run must not report a pass");
+});

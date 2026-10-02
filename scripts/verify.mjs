@@ -877,10 +877,23 @@ async function runWave(tasks, limit) {
   // P0-WIRE wiring notes, the CI-parity comments) says the wave steps are mandatory, and
   // nothing at runtime disagreed. Recovered 2026-10-02 when a full run was audited step
   // by step. Normalise once, up front, so both shapes work and neither can silently vanish.
+  //
+  // A malformed entry is a defect, not an absence. Filtering it out would leave this gate
+  // reporting "All N check(s) passed" for N fewer steps than it declares — the very class of
+  // false green this block exists to prevent, with only the trigger shape changed. Refusing
+  // the whole run means a typo in a wave list can never look like a pass.
   const queue = tasks
     .filter((task) => task !== null && task !== undefined)
-    .map((task) => (Array.isArray(task) ? { key: task[0], thunk: task[1] } : task))
-    .filter((task) => typeof task.thunk === "function");
+    .map((task) => (Array.isArray(task) ? { key: task[0], thunk: task[1] } : task));
+  for (const task of queue) {
+    if (typeof task?.thunk !== "function" || typeof task?.key !== "string") {
+      throw new Error(
+        `runWave: every entry must be [key, thunk] or { key, thunk }; got ${JSON.stringify(task)}. ` +
+          `A malformed entry is refused rather than dropped — dropping it would silently reduce the ` +
+          `number of checks this gate reports, which is the false green this block exists to prevent.`,
+      );
+    }
+  }
   const results = new Array(queue.length);
   let next = 0;
   let inFlight = 0;
@@ -1094,6 +1107,28 @@ results.sort((a, b) => STEP_KEYS.indexOf(KEY_BY_LABEL.get(a.label.toLowerCase())
 // ── report ────────────────────────────────────────────────────────────────────
 const failed = results.filter((r) => !r.passed);
 const ran = results.filter((r) => !r.skipped);
+
+// The count below must state what this gate CLAIMED to run, not merely what survived to
+// produce a result. `results` is populated only by steps that ran, so deriving the total
+// from it can never detect a step that was skipped, dropped or never dispatched — the
+// false green that this file once shipped for its whole wave list. On an unqualified run
+// (no --only / --quick / --no-forge) the executed set must therefore equal the declared
+// set exactly, and a shortfall fails the gate rather than shrinking the summary.
+if (ONLY === undefined && !QUICK && !NO_FORGE) {
+  // `LABELS` is keyed by STEP KEYS ("trackedrefs") and its `label` is the display string
+  // ("tracked script refs") that lands in `results`. Compare like with like: build the
+  // expected set from the labels, not from the keys — KEY_BY_LABEL is the reverse map and
+  // indexing it with a key returns undefined, which would make every step look missing and
+  // refuse a healthy run.
+  const executed = new Set(results.map((r) => String(r.label).toLowerCase()));
+  const missing = STEP_KEYS.filter((key) => !executed.has(LABELS[key].label.toLowerCase()));
+  if (missing.length > 0) {
+    const verdict = { gate: "verify", verdict: "incomplete", missing };
+    sayHuman(`\n${paint("red", "!")} ${missing.length} declared step(s) produced no result: ${missing.join(", ")}`);
+    process.stdout.write(`${JSON.stringify(verdict)}\n`);
+    process.exit(2);
+  }
+}
 
 // UX-02 (hard requirement): a status is never carried by colour alone. Each verdict gets a
 // fixed-width word — PASS / FAIL / SKIP / TIMEOUT — and the colour only reinforces it. The
