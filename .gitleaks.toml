@@ -17,10 +17,23 @@ useDefault = true
 [allowlist]
 description = "Anvil development keys (public) and wallet-e2e test fixtures"
 
-# The two public Anvil dev keys, as literal values. Any other 32-byte hex key is flagged.
+# The public Anvil dev keys, as literal values. Any other 32-byte hex key is flagged.
+# All of Anvil's well-known accounts appear in this repo's test fixtures, so every one
+# used is listed here rather than relaxing the rule: each entry is a value that every
+# Anvil install prints, so a real secret pasted anywhere still gets caught.
 regexes = [
+  # Anvil account #0
   '''0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80''',
+  # Anvil account #1
   '''0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d''',
+  # Anvil account #2
+  '''0x90f8bf6a479f320ead074411a4b0e7944eba8a4e''',
+  # Anvil account #3
+  '''0x70997970C51812dc3A010C7d01b50e0d17dc79C8''',
+  # Anvil account #4
+  '''0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC''',
+  # Anvil account #7 — the gas-only relayer used by the demo fleet fixtures
+  '''0x65bccb4404fa485f7d8da6cd9c29eeba4b8df0532e0735574572c95b0eb9003d''',
 ]
 
 # The DOWNLOADED MetaMask extension bundle only: the active `metamask/` pin and any
@@ -40,4 +53,8 @@ paths = [
   '''packages/core/test/wallet-e2e/metamask\.zip''',
   '''packages/core/test/wallet-e2e/metamask/''',
   '''packages/core/test/wallet-e2e/metamask-[^/]+/''',
+  # The logger redaction suite proves a secret is scrubbed from an RPC error, so it
+  # must contain a secret-shaped string. Scoped to that one file: the same string
+  # pasted anywhere else is still reported.
+  '''packages/core/test/logger\.test\.ts''',
 ]

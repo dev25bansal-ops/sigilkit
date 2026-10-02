@@ -155,7 +155,7 @@ project without reading the source.
 - **Correction (re-measured 2026-10-02, supersedes the 2026-09-15 per-package totals below).**
   The four TypeScript totals recorded in this entry were a snapshot taken on 2026-09-15 and
   were never refreshed. A real `vitest run` per workspace against the current tree reports
-  Suites: core 573 · indexer 145 · mcp 131 · demo-agent 82. `npm run
+  Suites: core 573 · indexer 162 · mcp 131 · demo-agent 82. `npm run
   check:docs:full` now guards these figures, so the numbers in the next bullet are kept
   verbatim as that release's record rather than rewritten.
 - Suites: core 569 (+1 skipped) · indexer 87 · mcp 65 · demo-agent 36. _(as measured on 2026-09-15; retained as the record of that release)_

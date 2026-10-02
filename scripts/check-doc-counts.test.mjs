@@ -966,7 +966,7 @@ const read = (rel) => readFileSync(join(REPO_ROOT, ...rel.split("/")), "utf8");
 
 test("real CHANGELOG.md: the current entry's verdicts match what the guard reports", () => {
   // Read-only against the real file. The baseline below is the *live* one — the same numbers
-  // `--with-ts` measures (TS 573/145/131/82 with 0 skipped; re-measured 2026-10-02) — so the
+  // `--with-ts` measures (TS 573/162/131/82 with 0 skipped; re-measured 2026-10-02) — so the
   // verdict asserted here is the one the CLI prints, and the two cannot silently disagree.
   // `ts` uses tsTestCounts' real `{ passed, skipped }` shape: a flat number here would
   // reproduce the `[object Object]` bug's blind spot inside the test suite itself.
@@ -975,7 +975,7 @@ test("real CHANGELOG.md: the current entry's verdicts match what the guard repor
     invariant: { invariants: 4, suites: 1 },
     ts: {
       core: { passed: 573, skipped: 0 },
-      indexer: { passed: 145, skipped: 0 },
+      indexer: { passed: 162, skipped: 0 },
       mcp: { passed: 131, skipped: 0 },
       "demo-agent": { passed: 82, skipped: 0 },
     },
