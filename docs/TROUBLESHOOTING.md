@@ -34,6 +34,14 @@ export ANVIL_BIN="$HOME/.foundry/bin/anvil"
 `npm run setup` reports whether each binary was found, and skips Foundry-dependent steps
 rather than failing.
 
+> **Check `~/.foundry/bin` before concluding Foundry is absent.** A `foundryup` install puts all
+> four executables (`forge`, `cast`, `anvil`, `chisel`) in `~/.foundry/bin` and does **not** add
+> it to `PATH`, so "not on `PATH`" and "not installed" are different states. `npm run setup`
+> probes that directory as well as `PATH` and prints the exact `$env:` / `export` lines when the
+> tools are found there. It prints them rather than setting them: an environment variable set
+> inside the setup process cannot reach your shell, so a silent `process.env.FORGE_BIN = …`
+> would make setup report a working `forge` that the very next command still cannot find.
+
 ### `npm ci` fails with "lockfile out of sync"
 
 `npm ci` refuses to install when `package.json` and `package-lock.json` disagree — that is
@@ -152,6 +160,91 @@ cast receipt <txHash> --rpc-url http://127.0.0.1:8545
 
 ## Tests
 
+### A path check says a file is fine, but reading or listing it fails
+
+The symptom is a tool that reports a file or directory as present, followed immediately by a
+failure that names something else entirely:
+
+```
+npm error UNKNOWN: unknown error, lstat 'D:\SigilKit\node_modules\@sigilkit\mcp\dist\cli.js'
+```
+
+```
+Cannot find path 'D:\SigilKit\node_modules\@sigilkit\mcp\dist' because it does not exist.
+```
+
+**Cause.** `Test-Path` (PowerShell) and `existsSync` (Node) answer a narrower question than the
+one being asked: *can this name be resolved to something?* Neither answers *can this be used*.
+They also **fail in opposite directions**, which is why one habit cannot cover both:
+
+| Scenario | `Test-Path` | `existsSync` | `statSync` / `readdirSync` |
+|---|---|---|---|
+| plain file or directory | `True` | `true` | ok |
+| symlink whose target is gone | `False` | `false` | throws `UNKNOWN` |
+| **junction to a real directory** | **`True`** | **`false`** | **throws `UNKNOWN`** |
+| junction whose target is gone | `False` | `false` | throws `UNKNOWN` |
+
+> **Measured 2026-09-26 on Windows / Node v24.12.0 (sc-dx).** Every cell was produced by
+> creating each artifact and calling each API against it; none is quoted from documentation.
+> Note the third row: `Test-Path` reports a healthy junction as present while Node's
+> `existsSync` reports the *same* junction as absent. A `Test-Path` result of `True` is
+> therefore not evidence a Node check will agree, and `existsSync === false` is not evidence
+> the file is missing.
+
+`node_modules/@sigilkit/*` are junctions onto `packages/*` (npm creates them for workspaces), so
+this is reachable without anyone creating a link by hand. What makes it expensive is the
+combination: `Test-Path` says the link resolves, and the *first* real traversal of a path
+*through* it is what fails — naming the file being opened rather than the link that broke.
+
+**Fix — check by doing the operation, not by naming the path:**
+
+```powershell
+# PowerShell — enumerate or read; do not trust Test-Path
+Get-ChildItem node_modules\@sigilkit\mcp\dist          # ok  -> 4 entries
+Get-Content  node_modules\@sigilkit\mcp\dist\cli.js -TotalCount 1
+```
+
+```bash
+# Node — statSync follows links, so a link with no target throws here, where the
+# message can still name the variable that needs fixing
+node -e "const{statSync}=require('fs');console.log(statSync(process.argv[1]).isFile())" <path>
+```
+
+**Before doing either, check whether this host can host a link at all.** On a host whose
+reparse-point implementation is broken, recreating the link reproduces the fault, so the repair
+below cannot succeed and costs you a second partially-deleted `node_modules`:
+
+```bash
+node scripts/check-reparse-points.mjs --workspace-links
+```
+
+```
+host reparse-point capability — NOT CAPABLE (win32)
+  control: plain directory create + read OK (1 entries)
+  fs.symlinkSync(type='junction') BROKEN  isLink=true readlink=ok  throughLink=UNKNOWN errno=-4094
+  cmd mklink /J                  BROKEN  isLink=true readlink=ok  throughLink=UNKNOWN errno=-4094
+```
+
+Exit `0` means the host can create *and traverse* a link, so the repair below applies. Exit `1`
+means every method produced a well-formed link that cannot be read through — a host-level fault
+that reproduces in a clean temp directory with no repository involved. **No amount of
+`rmdir` + `npm install` fixes that**; use an environment with an intact reparse-point
+implementation (WSL2, a Linux container) or install with copying instead of linking. Exit `2`
+means the probe could not reach a verdict, and must not be read as "links work".
+
+If the verdict is `0` **and** the target itself is fine but traversal *through* the link is not,
+recreate the link rather than the content — `rmdir` on a junction removes the link only and
+leaves `packages/` untouched:
+
+```powershell
+cmd /c rmdir node_modules\@sigilkit\mcp        # link only; packages/mcp is not touched
+npm install                                    # recreates the workspace links
+```
+
+**Run `npm install` only after the bad links are gone.** Run against a broken junction it aborts
+part-way and leaves `node_modules` *more* damaged than before: one such attempt left
+`typescript`, `vitest` and `yaml` all missing, while every file under `packages/` stayed intact.
+
 ### A Foundry build fails with a lint or warning error
 
 `foundry.toml` sets `deny = "warnings"`, so every compiler warning and lint finding is a
@@ -163,7 +256,16 @@ design choice, annotate it in place:
 if (block.timestamp > scope.expiresAt) revert KeyExpired();
 ```
 
-with a comment explaining why. There are 31 such annotations in the repo to copy from.
+with a comment explaining why. There are 56 such annotations in the repo to copy from. The
+count moves as the contracts change, so re-derive it from the tree rather than trusting this page:
+
+```
+grep -rn 'forge-lint: disable-next-line' contracts/ | wc -l   # POSIX
+```
+
+`npm run check:docs` fails the build if this number drifts from the sources. The
+count grows over time because every new exemption is required to state its reason inline, and
+`deny = "warnings"` turns each one into a build failure unless it is documented.
 
 ### `forge test` cannot find `lib/forge-std`
 
@@ -233,10 +335,44 @@ environment reports success-with-skip. Set an archive RPC to enable it.
    wrap the server in a script that prints to stdout, you will corrupt the protocol.
 3. Turn up logging: `npx sigilkit-mcp --log-level debug`.
 
-### `audit_query` returns "database not found"
+### `audit_query` returns `DB_NOT_ALLOWED`
 
-The path is resolved relative to the **server's** working directory, which the agent
-framework chooses. Pass an absolute path.
+**This is a policy refusal, not a missing file.** The two are deliberately distinguishable:
+
+| Code | Meaning |
+|---|---|
+| `DB_NOT_ALLOWED` | Refused by policy — allowlist unset, forbidden path shape, or outside the configured root |
+| `DATABASE_NOT_FOUND` | Absent, a directory, not a regular file, wrong extension, or not a readable SQLite store |
+
+If you see `DB_NOT_ALLOWED: audit_query is disabled because SIGILKIT_AUDIT_DB_ROOT is not set`, no path
+will work until you allowlist a directory. Set it to the absolute directory holding your audit
+database(s); several roots may be separated by `;`:
+
+```
+SIGILKIT_AUDIT_DB_ROOT=/var/lib/sigilkit
+```
+
+Requirements, all of which fail quietly rather than loudly:
+
+- **Absolute paths only.** A relative entry is dropped with a warning in the server log, so it grants
+  nothing. On Windows use a drive-rooted path (`C:\data`), not a mapped drive.
+- **The read is latched at startup.** The variable is read once, when the module loads, so a later
+  change to the environment cannot widen it — that is deliberate. Restart the server for it to take
+  effect.
+- **Symlinks are resolved.** A root that is itself a symlink is accepted, but the *target* must still
+  be inside an allowlisted root after resolution.
+
+Once a root is configured, a genuinely missing file reports `DATABASE_NOT_FOUND`. Only then does the
+"pass an absolute path" advice apply — the path is resolved against the **server's** working directory,
+which the agent framework chooses.
+
+> **Measured 2026-09-26 (dc-law measured, ck-doc carried out):** `SIGILKIT_AUDIT_DB_ROOT` appears
+> **39×** in `packages/` and **17×** across `docs/`, but **0×** in every operator-facing document
+> (`README.md`, `CONFIGURATION.md`, `GETTING-STARTED.md`, `DEPLOYMENT.md`, `TROUBLESHOOTING.md` before
+> this entry). Every prior mention was in an audit or planning document, which an operator does not
+> read. Authority: the `audit_query` allowlist refusal branch and `readAuditDbRoots` in
+> `packages/mcp/src/server.ts` — located by symbol, since line numbers in that file have moved twice
+> today.
 
 ### A tool returns `isError: true` with a validation message
 

@@ -341,6 +341,23 @@ The trace distinguishes them, and the distinction is the whole point:
 | Per-window arithmetic | cap silently not applied | **each window respected its 2e18 cap** |
 | Status | fixed at `SpendPolicy.sol:80` (clean single condition, no `&&` residue — re-verified) | registered in `docs/CI-WAIVERS.md:63`, **intentionally red**, expiry 2026-10-31 |
 
+> **Clarification added 2026-10-01 (docs-2 audit pass) — the header cell "SEC-10 (open, by design)" must NOT be read as "the code behaves as intended".**
+> Per the Status row of this same table, "open, by design" describes the **test being intentionally red**
+> (`test_Sec10_LineageWindowCap`, waived in `docs/CI-WAIVERS.md:63`, expiry 2026-10-31). The *code* is recorded
+> elsewhere in this same document as **having an exploitable defect with zero passing coverage** — see the
+> `SEC-10` row of the "NEW (ck-test) — the catalog has no status field" table in §3b: "**has an exploitable
+> defect**" / "**zero coverage**" / "has an entry + two mutually-exclusive prescriptions, none landed". The two
+> statements are about different things — a waived red test versus an unfixed defect — but the four-word cell
+> header collapses them, and a reader who takes "by design" at face value will conclude the code is fine.
+>
+> **Unverified as of 2026-10-01:** the SEC-10 status itself was **not re-measured in this pass** —
+> `contracts/test/Sec10*.t.sol`, `contracts/src/SessionKeyManager.sol` and `docs/CI-WAIVERS.md` are all outside
+> this document’s set, and the pass could not run `forge`. Neither the existence of the characterisation test nor
+> the "intentionally red" waiver was re-confirmed here. A related tension is left open rather than
+> resolved: `docs/PROPERTY-TEST-PITFALLS-2026-09-26.md` §4 records the same test as "③ 已落地 … 因此当前为红" while
+> its §4.1 records "无任何测试确认当前行为". **Do not cite SEC-10’s status in either
+> direction until `forge test --match-contract Sec10*` has been re-run and recorded with its date.**
+
 In the SEC-10 trace, **`rotateSessionKey` is called 2 times, producing 3 keys**, and `WindowCharged`
 fires **4 times** — two spends of 1e18 on each of the **first two** keys (the third key is rotated in
 at the end of round 1 and never spends). So **each key spends 2e18**, which is exactly

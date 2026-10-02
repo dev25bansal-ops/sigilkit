@@ -81,6 +81,7 @@ found. On Windows the binaries are `forge.exe` / `anvil.exe`; both resolvers han
 | `SIGILKIT_MAX_BLOCK_RANGE` | `2000` | Largest block span per `eth_getLogs`; bigger catch-ups are chunked. |
 | `SIGILKIT_LOG_LEVEL` | `info` | `debug` · `info` · `warn` · `error` · `silent`. |
 | `SIGILKIT_LOG_FORMAT` | `text` | `text` for humans, `json` for a log collector. |
+| `SIGILKIT_AUDIT_DB_ROOT` | *(none — MCP `audit_query` is inert)* | **Required by the MCP server's `audit_query` tool.** `;`-separated list of **absolute** directories a database may live in. While unset, `audit_query` refuses **every** path, and the refusal surfaces as a "database not found"-style error rather than a "not configured" message. Read **once at startup** — a later change needs a restart. Relative entries are dropped with a warning. See [TROUBLESHOOTING.md](TROUBLESHOOTING.md#audit_query-returns-database-not-found). |
 
 ### Log output
 
@@ -105,8 +106,8 @@ JSON-RPC protocol.
 |---|---|---|
 | `RPC_BASE` | *(unset)* | Archive RPC for the nightly Base fork smoke test. Unset ⇒ that job skips cleanly. |
 | `RUN_WALLET_E2E` | *(unset)* | `1` enables the Playwright + MetaMask conformance harness. |
-| `WALLET_DAPP_PORT` | `8765` | Port for the local test dapp the harness drives. |
-| `DAPP_URL` | `http://127.0.0.1:8765/dapp.html` | URL the harness opens. |
+| `WALLET_DAPP_PORT` | *(unsupported)* | Not read by the CI wallet harness (`run.ts` honours `DAPP_URL` only); it survives solely in the standalone `dapp-server.ts` / `real-metamask.ts` dev helpers, which CI never invokes (DEBT-12). |
+| `DAPP_URL` | `http://127.0.0.1:8765/dapp.html` | The one dapp variable that matters: the harness opens this URL and derives the dapp port from it. |
 
 ## Per-command flags
 

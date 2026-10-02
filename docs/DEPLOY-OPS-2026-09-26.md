@@ -419,6 +419,17 @@ failure … Every remaining occurrence now carries an explicit
 `// forge-lint: disable-next-line(...)` … so a NEW one anywhere fails the build."* There
 are currently **49** such annotations across `contracts/` (counted).
 
+> **Unverified as of 2026-10-01 (documentation-truthfulness pass):** the "**49** such
+> annotations across `contracts/` (counted)" figure was **not re-measured** in this pass — this
+> machine has no Foundry, and the `forge-lint: disable-next-line` occurrences live in
+> `contracts/**/*.sol`, which is outside this audit slice's editable set. The sentence is left
+> in place but is **no longer established fact**; re-run the count before citing it.
+> **Conflict registered:** `docs/VERIFY-FIELD-DESIGN-2026-09-26.md` §7.1 states the repository
+> actually holds **56** `forge-lint:` annotations, and `docs/SUPPLYCHAIN-2026-09-26.md` restates
+> **49**. All three self-date 2026-09-26 and predate this audit, so **no document can be shown
+> to supersede the others on date alone**; none of 49 / 56 is treated as proven.
+> (The 56 figure in VERIFY-FIELD-DESIGN carries the same unverified marker.)
+
 Solc warnings are unambiguously gated by `deny = "warnings"`. The **linter** is a
 half-step: `forge build` runs an inline linter that `deny` does cover, but `forge lint`
 is a separate subcommand with a **superset** rule set. Grepping the whole repo for
@@ -684,6 +695,14 @@ fixtures and are never rotated.
 | `forge build` fails on a lint finding you cannot suppress cleanly | 49 annotations already exist; the policy is a written justification per line. | Fix the code, or add a justified `// forge-lint: disable-next-line(<rule>)`. Never add a blanket disable. |
 | `check-doc-counts` fails on forge-lint annotations | It counts `forge-lint: disable-next-line` occurrences and compares to the number in `docs/TROUBLESHOOTING.md`. | `node scripts/check-doc-counts.mjs --write`, then update the prose by hand. |
 | Echidna job is red | The job is under a registered waiver (`docs/CI-WAIVERS.md`, expiry 2026-10-31) — **a red nightly is a real finding to triage, not a waiver to extend.** | Triage it. Clear the waiver only after the documented criterion is met. |
+
+> **Unverified as of 2026-10-01 (documentation-truthfulness pass):** the troubleshooting row
+> above, "`forge build` fails on a lint finding you cannot suppress cleanly", repeats
+> "49 annotations already exist". That is the **same unmeasured figure** flagged in **OPS-15**
+> (§ the annotation after OPS-15, and contradicted by the **56** in
+> `docs/VERIFY-FIELD-DESIGN-2026-09-26.md` §7.1). Not re-measured here; do not cite without
+> re-running the count. The row's *advice* — a written justification per suppression line, never
+> a blanket disable — is unaffected by the count.
 
 ---
 

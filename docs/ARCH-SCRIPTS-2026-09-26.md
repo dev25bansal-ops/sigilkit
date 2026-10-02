@@ -333,10 +333,120 @@ import 期就执行一个门禁。`sync-facts.mjs:87-91` 的 JSDoc 明确记录�
 
 关于 `continue-on-error`：`ci.yml` 里 3 个 `continue-on-error: true`
 （`:335` wallet-e2e-weekly、`:400` echidna-nightly、`:418` foundry-canary）
-**都不跑 `scripts/` 下的任何门禁**，所以 exit code 分裂**当前不会**直接使这 3 个
+**都不跑 `scripts/` 下任何门禁**，所以 exit code 分裂**当前不会**直接使这 3 个
 waiver 判断失效。真正受影响的是 `verify.mjs` 的聚合报告与任何未来按码分支的包装器。
 但 `check-waivers.mjs` 正是这些 waiver 的守卫——**守卫本身的退出码语义是分裂的**
 （X2），这个讽刺值得记一笔。
+
+### 3.4 实测复核（sc-e2e，2026-09-26）
+
+3.1–3.3 是**静态推导**：读源码推断每个分支会返回什么码。本节是**实测**：把每个门禁作为
+真实子进程跑成功与失败两条路径，看它实际上返回什么。两者的差集就是静态分析漏掉的东西。
+
+证据脚本：`scripts/e2e-gates.test.mjs`（20 个测试）。它 spawn 真实门禁二进制，断言的是
+**进程边界**——退出码、stdout/stderr 分离、幂等、门禁间不干扰——这些在单元测试里看不到，
+因为它们只存在于进程边界。
+
+**结论：11 个门禁逐一实测，P0 假阴性 0 个。没有一个门禁在失败时返回 0。**
+
+| 门禁 | 干净树 | 破坏后 | 崩溃码? | findings→stderr | 计数可解析 |
+|---|---|---|---|---|---|
+| `validate-workflows` | 0 | 1 | 无 | ✅ | ✅ `N problem(s):` |
+| `check-waivers` | 0 | 1 | 无 | ✅ findings→stderr，warnings→stdout | ✅ `N problem(s)` |
+| `check-vectors` | 0 | 1 | 无（JSON 解析失败被捕获→1） | ✅ | ✅ `N problem(s)` |
+| `check-dockerfile` | 0 | 1 | 无 | ✅ | ✅ `problems (N):` |
+| `check-package-artifacts` | 0 | 1 | 无（顶层 throw 被捕获→1） | ✅ | ✅ `N problem(s)` |
+| `check-runtime` | 0 | 1 | 无 | ✅ | ❌ `FAIL: <一句话>`，无计数 |
+| `check-doc-counts` | 0 | 1 | **2 = forge 缺失**（有意，见 X1） | ✅ | ✅ `drift (N):` |
+| `verify.mjs` | 0 | 1 | **2 = 参数/环境错误**（`abort()`，有意） | ✅ `--json` 时 stdout 独占 JSON | ✅ 有 `--json` |
+| `assurance-inventory` | 0 | 0 | 无（只读报告，无失败模式） | — | — |
+| `sync-facts` | 0 | 1 | — | — | — |
+| `clean.mjs` | 0 | 1 | — | — | — |
+
+#### 实测修正了静态表的一处
+
+`validate-workflows.mjs` 在 3.2 里记为「无 2」且「环境问题报成 1」（X2）。实测确认
+「无目录 → 1」仍然成立（这是**真 finding**：没有 workflow 就是仓库坏了），但参数路径已改：
+
+```
+$ node scripts/validate-workflows.mjs --root /tmp/nope
+validate-workflows: takes no arguments, got --root /tmp/nope
+it validates the workflows in the repository this script lives in (…\.github\workflows).
+exit 2
+```
+
+`check-package-artifacts.mjs` 同步（它有合法的 `--json`，所以只拒绝未知参数）。两者都改为
+**exit 2 + 明确说明**，理由见 3.5。
+
+#### 一处刻意的例外：warnings 走 stdout 是对的
+
+`check-waivers.mjs` 把 **warnings 打到 stdout，findings 打到 stderr**。这不是不一致，
+是正确的：warning 不让运行失败，混进 stderr 会污染失败信号。测试里为此单独开了例外
+并写明理由，以免后人"修正"它。
+
+#### 两条无法用计数聚合的失败路径
+
+`check-runtime` 的 `FAIL: <一句话>` 没有数字；`check-vectors` 的 JSON 解析失败路径直接
+`exit 1` 不输出计数。后者是**正当做法**——读不出来时不该编造"0 problems"，但 CI 聚合器
+刮 `N problem(s)` 时会把它读成"无问题"。测试里显式记录为**不对称**而非缺陷。
+
+#### 非恒真证据
+
+断言"退出码是 0 或 1，而不是崩溃码 2"这种测试最容易恒真——因为一个什么都不做的门禁也能
+通过。所以每个断言都用**变异测试**验证过：在门禁**副本**上做 8 种手术式变异（失败时
+`exit 0`、findings 打到 stdout、抛未捕获异常、计数不符、问题列表与计数不符……），
+整套测试 **8/8 全部变红**，control（无变异）20/20 绿。
+
+变异只在副本上做，不改仓库原文件——当时 9 个 agent 正并行编辑 `scripts/`。
+
+> **交叉印证**：本节的 CI-only 清单（`check-waivers` `check-vectors` `sync-facts`
+> `generate-vectors` 从不在 `verify` 里跑）与 4.2-A 的静态发现、sc-test 独立跑出的
+> CI-parity 缺口三条路径指向同一结论。已在 `verify.mjs` 的 `CI_ONLY_GATES` 常量里
+> 补齐这 4 项——该常量原先只列 `slither, gitleaks, halmos, fork, deep-fuzz`，
+> 读起来像"CI 独有"的完整清单，实际漏了一半。
+
+### 3.5 `--root` 静默吞掉：门在，但没连上它声称校验的那一端
+
+1.1 记录了 14 处根路径解析全部是 `dirname(import.meta.url) + "/.."`。实测补上了这个设计的
+**后果**：11 个门禁里只有 3 个真的接受根目录，其余的接受一个 `--root` 然后**完全无视它**，
+并报告自己所在仓库的结果。
+
+```
+$ node scripts/check-vectors.mjs --root /tmp/nope-xyz
+ok   actionrequest.json   generator=@sigilkit/core (self-certified)
+...
+exit 0
+```
+
+**这是本轮最危险的静默失败模式**，因为它同时骗过两方：
+
+- **测试**：一个 fixture 测试可以通过，但它实际检查的是真实仓库——你以为在测坏树，其实在测好树。
+- **调用方**：任何想把门禁指向另一个 checkout 的人，会拿到一个"干净"的判决，而那棵树
+  从来没被打开过。
+
+**修法选择**：不是实现 `--root`（改动面 8 个门禁 + 它们的测试，而当前**没有真实调用方
+需要它**），而是**明确拒绝**——exit 2 + 一行说明。理由：静默吞掉 flag 比拒绝它危险得多，
+因为调用方会以为检的是另一棵树。这与 1.5 记录的 `KNOWN_FLAGS` 拒绝机制同形，仓库已有
+这个模式，8 个门禁没跟上。
+
+**已修（2/8）**：`validate-workflows.mjs`（不接受任何参数）、`check-package-artifacts.mjs`
+（有合法 `--json`，只拒绝未知参数）。
+
+> 实施注记：拒绝逻辑**故意内联**而非调用 `lib/exit.mjs` 的 `reportUsage`——
+> `validate-workflows.test.mjs:50-60` 把脚本**单独**复制进 fixture 仓库，import 相邻模块
+> 会让每个 fixture 都 `ERR_MODULE_NOT_FOUND`。**fixture 复制模式与 lib 迁移直接冲突**，
+> 这是修 fixture 而不是回避 import 的理由。
+
+**未修（6/8）**：`check-waivers` `check-vectors` `check-dockerfile` `check-runtime`
+`check-doc-counts` `generate-vectors` —— 测量时正被其他 agent 编辑，未触碰。
+
+> `generate-vectors` 比其他几个更糟：它无视 `--root` 的同时**还往仓库里写文件**
+> （`vectors/*.json`）。一个指向别处的 `--root` 会静默改写**本**仓库。
+
+**测试如何固定这个契约**：`e2e-gates.test.mjs` 的 `ROOT_CONTRACT` 逐条断言每个门禁的
+当前行为。`ignored` 行断言 exit 0（把缺陷钉住，防止被遗忘），`rejected` 行断言 exit 2 +
+消息点名被拒的 flag + **stdout 不得同时出现判决**。`R4` 双向校验这张表与源码，防止
+陈言。变异测试证明这些断言非恒真：把两个门禁改回静默吞掉，测试立刻变红。
 
 ---
 

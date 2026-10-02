@@ -11,6 +11,22 @@
 
 **Latest result (September 17): all 7 verification gates passed with explicitly selected Node 24.12.0 and npm 11.6.2.** Contracts: 115 passed. TypeScript: core 190 passed + 1 skipped, demo-agent 12 passed, indexer 20 passed, MCP 40 passed (262 passed + 1 skipped total). The earlier 6/7 collection failure is historical and its root cause remains unresolved; the latest successful run is not proof that pinning runtime alone caused recovery. **Recommendation: resolve the remaining P1 issues before promoting affected workflows; consider a bounded developer preview, not unrestricted production readiness.** Priorities remain restrictive scope-builder defaults, cross-process lease correctness, release identity, and verification gaps. The strongest product direction is an auditable, standards-oriented agent execution toolkit with demonstrable wallet compatibility—not a claim to have invented session keys or spending limits.
 
+> **2026-10-01 文档真实性审计：以下执行状态数字为 2026-09-17 的历史快照，不可当作现行计数。**
+> 1. **7/7 与 6/7 的矛盾在本文档内已由第 3 行的 addendum 自行裁决**（addendum 声明 supersede，
+>    第 12 行亦注明 6/7 为历史），因此**无需改写**，两处原文均保留。
+> 2. **但所有计数均未在本次审计中复测，且已被更晚的记录取代：**
+>    - `Contracts: 115 passed`（第 3、12、30、217 行）与 `docs/CI-WAIVERS.md` 记录的
+>      **2026-09-28**「A full-suite run on the same day passed **224/225** (1 skipped, 0 failed)」
+>      相差甚远 —— 后者晚 11 天，**取代**本文件的 115；
+>    - `262 TypeScript tests`、`29/29` doc-guard、`core 190 / demo-agent 12 / indexer 20 / MCP 40`
+>      同样停留在 2026-09-17；
+>    - `docs/INDEX-2026-09-26.md`（组 10）对本文的既有标注已经写明：
+>      「**其执行状态数字早于当前测试套件，不是现行计数**」—— 本条审计确认该警告仍然有效。
+> 3. **Unverified as of 2026-10-01：** 上述任何一个数字都**没有**在本次审计中重跑（无 Foundry、
+>    无法执行 `npm run verify`）。**不要在没有复跑的情况下引用 115 / 262 / 29 / 190 / 12 / 20 / 40。**
+> 4. 本文档的**定性结论**（证据分级规则、F28 工作绕过、P1 优先级、维护者决策项）不受影响，
+>    本次仅对**数字**加注。
+
 This report covers all six requested categories plus implementation status, evidence corrections, and release sequencing. The accepted allocation was **70 agents / 80 assignments**: 60 review assignments, ten implementation assignments, and ten validation assignments using returning reviewers. This is allocation history from the resumed session, not 80 independently verified agent identities. The on-disk review set contains R01–R60 and V61–V70. Builder evidence has inconsistent locations: B65 and B69 are at the review-folder root; no standalone B70 handoff was located in the file inventory. Runtime work is supported by its script and V70 instead.
 
 **Date provenance:** this continuation's supplied date is September 15, 2026; inherited artifacts use September 17. The requested `PROJECT-REVIEW-2026-09-17.md` filename and existing folder names are retained for continuity. Their timestamps should not be treated as independently validated chronology.

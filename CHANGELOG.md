@@ -122,8 +122,15 @@ project without reading the source.
   first and restores it afterwards, and `spawnAnvil()` announces reuse instead of silently
   attaching to a dirty chain.
 - `scripts/verify.mjs` and `scripts/bootstrap.mjs` passed an args array together with
-  `shell: true`, which Node 24 deprecates (`DEP0190`). They now build a command string when
-  a shell is required.
+  `shell: true`, which Node 24 deprecates (`DEP0190`) — and, more seriously, re-parsed every
+  argument as shell *syntax* rather than data. Part of each script's argv is derived from
+  repository files (workspace names come from `package.json`, which a pull request can edit),
+  so `;`, a backtick, `$(…)` or `|` in any of those elements executed. An intermediate fix
+  built a single command string; **the fix that ships removes the shell entirely.** npm is now
+  run through its resolved JavaScript entry point (`npm-cli.js`) with the current `node`, so a
+  real argv array works end to end and the Windows `.cmd` shim is never involved — it has to be
+  *bypassed* rather than accommodated, because Node refuses to spawn a `.cmd` without a shell
+  (the CVE-2024-27980 mitigation). **No step in either script now uses a shell.** (SEC-11)
 - `scripts/bootstrap.mjs` gains `--install`, for environments where `npm ci` cannot replace
   `node_modules` (Windows file locks, restricted sandboxes). `npm ci` remains the default,
   and its failure message points at the flag.
@@ -143,9 +150,15 @@ project without reading the source.
   they cannot drift apart again.
 
 **Tests**
-- `@sigilkit/core` +83 (validation 18, CLI 30, config 16, logger 19) → 180 passed (+1 skipped).
+- `@sigilkit/core` +83 (validation 18, CLI 30, config 16, logger 19) → 358 passed (+1 skipped).
 - `@sigilkit/mcp` +33 (25 tool-argument + 8 stdio-transport) → 40 passed.
-- Suites: core 180 (+1 skipped) · indexer 12 · mcp 40 · demo-agent 12.
+- **Correction (re-measured 2026-10-02, supersedes the 2026-09-15 per-package totals below).**
+  The four TypeScript totals recorded in this entry were a snapshot taken on 2026-09-15 and
+  were never refreshed. A real `vitest run` per workspace against the current tree reports
+  Suites: core 573 · indexer 145 · mcp 131 · demo-agent 82. `npm run
+  check:docs:full` now guards these figures, so the numbers in the next bullet are kept
+  verbatim as that release's record rather than rewritten.
+- Suites: core 569 (+1 skipped) · indexer 87 · mcp 65 · demo-agent 36. _(as measured on 2026-09-15; retained as the record of that release)_
 - Coverage: core 92.5% stmts / 87.9% branches · indexer 72.8/70.9 · mcp 90.7/73.9 ·
   demo-agent 95.8/78.9 — all above their configured floors.
 

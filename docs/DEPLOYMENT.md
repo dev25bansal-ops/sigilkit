@@ -220,6 +220,20 @@ The MCP server is spawned by the agent framework, not run as a daemon:
 directories, tables or rows — pointing it at a missing file returns a "database not found"
 result instead of writing anything.
 
+**It is inert until you allowlist a directory.** `audit_query` refuses **every** path while
+`SIGILKIT_AUDIT_DB_ROOT` is unset, and the refusal is reported as a database-not-found style error
+rather than a "not configured" message — so an operator can spend a long time on the wrong diagnosis.
+Set it to the absolute directory holding the store before starting the server:
+
+```
+export SIGILKIT_AUDIT_DB_ROOT=/var/lib/sigilkit   # several roots: ";"-separated
+```
+
+The value is read **once at startup**, so it must be exported before the MCP process launches — adding
+it to the environment of an already-running framework has no effect. Relative entries are dropped with
+a warning. Full symptom-to-fix entry:
+[TROUBLESHOOTING.md](TROUBLESHOOTING.md#audit_query-returns-database-not-found).
+
 ### Containers
 
 A `Dockerfile` and `docker-compose.yml` are provided for the indexer:
@@ -245,6 +259,25 @@ problems. Neither can be fixed by a change to this repository.
 |---|---|---|---|
 | 1 | **A public repository at the declared URL** | `github.com/sigilkit/sigilkit` and `github.com/sigilkit` both return **HTTP 404** anonymously — not created yet, or still private | The README/GETTING-STARTED `git clone` fails; `.well-known/security.txt`'s Contact and Policy URIs are dead; `repository.url` in every `package.json` resolves to nothing; the whitepaper's "installable via `forge install`" is not possible |
 | 2 | **An npm namespace this project controls** | `@sigilkit/core` exists on npm at v0.11.1, owned by an unrelated project; `@sigilkit/indexer` and `@sigilkit/mcp` return E404 | `npm install @sigilkit/core` installs someone else's package; `npm publish` fails E403 |
+
+> **2026-10-01 文档真实性审计：本表的前提已部分过期。**
+> **已证伪并更正的部分：** 本行称 `repository.url` in every `package.json` "resolves to
+> nothing"，并以 `github.com/sigilkit/sigilkit` 为前提。2026-10-01 实读：
+> `packages/core/package.json`、`packages/indexer/package.json`、`packages/mcp/package.json`、
+> `packages/demo-agent/package.json` 四份的 `repository.url` 全部是
+> `git+https://github.com/dev25bansal-ops/sigilkit.git`（**不是** `github.com/sigilkit/sigilkit`），
+> 且 `.git/config` 的 `[remote "origin"]` 指向同一地址。「仓库尚不存在」的前提因此不成立。
+> **仍然未证的部分（不得据此认为前置条件 #1 已解除）：**
+> - 上述 URL 是否**公开可匿名访问** —— 本次审计无网络、无法发起 HTTP 请求，**未复测**；
+> - `github.com/sigilkit/sigilkit` 与 `github.com/sigilkit` 在 2026-09-15 是否真的 404 ——
+>   **未复测**；
+> - npm 命名空间（前置条件 #2，`@sigilkit/*` 被他人占用）—— **未复测**。
+> **冲突登记：** `docs/WHITEPAPER-v2.1.md`「⚠ Distribution status」写「Contracts are
+> installable today via `forge install`」，与本行「the whitepaper's "installable via
+> `forge install`" is not possible」直接矛盾。DEPLOYMENT.md 的外部检查标注为 2026-09-15，
+> 白皮书 v2.1 标注为 2026 年 8 月的复核；文件 mtime 同为 2026-09-26（DEPLOYMENT 16:07Z，
+> WHITEPAPER 12:28Z），**两文均晚于各自声明的检查日期，无法据日期判定谁取代谁**。
+> 两段原文均按审计规则保留，未删除。
 
 Resolving them:
 
