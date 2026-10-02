@@ -1,11 +1,11 @@
 blank_issues_enabled: false
 contact_links:
   - name: Security vulnerability
-    url: https://github.com/sigilkit/sigilkit/security/advisories/new
+    url: https://github.com/dev25bansal-ops/sigilkit/security/advisories/new
     about: Report vulnerabilities privately. Please do not open a public issue.
   - name: Setup or usage question
-    url: https://github.com/sigilkit/sigilkit/blob/master/docs/GETTING-STARTED.md
+    url: https://github.com/dev25bansal-ops/sigilkit/blob/master/docs/GETTING-STARTED.md
     about: Getting started, configuration and deployment docs.
   - name: Something is failing
-    url: https://github.com/sigilkit/sigilkit/blob/master/docs/TROUBLESHOOTING.md
+    url: https://github.com/dev25bansal-ops/sigilkit/blob/master/docs/TROUBLESHOOTING.md
     about: Check the troubleshooting guide before filing a bug.

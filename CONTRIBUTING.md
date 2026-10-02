@@ -6,7 +6,7 @@ project is built, tested and reviewed.
 ## Setup
 
 ```bash
-git clone https://github.com/sigilkit/sigilkit.git
+git clone https://github.com/dev25bansal-ops/sigilkit.git
 cd sigilkit
 npm run setup        # checks Node/Foundry, installs deps, builds all packages
 npm run verify       # the full gate — run this before opening a PR
@@ -132,6 +132,26 @@ invocation.
 - The indexer's durability properties (lossless, idempotent, resumable, reorg-aware) have
   dedicated tests in `packages/indexer/test/indexer.test.ts` — extend them rather than
   adding parallel coverage elsewhere.
+
+### Declaring ownership of a new test file
+
+Work is often parallel, and a test file that appears in `git status` without an owner is
+expensive to untangle. Two rules keep that cheap:
+
+- **When you add a new test file, say so in the same change that adds it** — a comment at the
+  top of the file naming the author and what it covers is enough. No `OWNERS.json`; this file
+  and the test directory's own README are the whole mechanism.
+- **If you hit a compile error in someone else's new test file, confirm the owner before you
+  touch it.** A half-written test file legitimately does not compile, and a missing helper
+  contract in it is the *expected* state of work in progress, not a bug to fix.
+
+  Do **not** "helpfully" supply the missing definition. It will usually conflict with what the
+  author is about to write, and completing a stub freezes their intermediate state into the
+  implementation. Asking costs one message; a merge conflict costs the author their afternoon.
+
+  Note that `forge build` succeeding does **not** mean `forge test --list` succeeds — the build
+  does not always compile the test tree the way the test runner does. So a green build is not
+  evidence that a test file is complete.
 
 ## Pull requests
 

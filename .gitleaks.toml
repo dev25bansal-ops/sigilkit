@@ -23,8 +23,21 @@ regexes = [
   '''0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d''',
 ]
 
-# Test fixtures and the downloaded MetaMask extension bundle (gitignored, but scanned when
-# present in a working tree).
+# The DOWNLOADED MetaMask extension bundle only: the active `metamask/` pin and any
+# versioned copy kept side-by-side for a rollback (`metamask-12.5.0/`), plus its archive.
+#
+# SCOPE (SEC-07): this used to be `packages/core/test/wallet-e2e/.*`, which excluded the
+# ENTIRE directory — including the 8 git-tracked harness sources (coinbase.ts, run.ts,
+# run-all.ts, real-metamask.ts, dapp.html, dapp-server.ts, playwright.config.ts, README.md).
+# That is where a real private key is most likely to be pasted while debugging a wallet
+# failure, and the exclusion meant gitleaks never looked there. Match only the downloaded
+# binary dirs now; every tracked harness source is scanned again.
+#
+# Note each pattern is pinned to a download product specifically: the `metamask.zip` archive,
+# the unpacked `metamask/` build, and any versioned `metamask-<version>/` build. A tracked
+# `metamask.ts` harness source matches none of them, so it stays in scope.
 paths = [
-  '''packages/core/test/wallet-e2e/.*''',
+  '''packages/core/test/wallet-e2e/metamask\.zip''',
+  '''packages/core/test/wallet-e2e/metamask/''',
+  '''packages/core/test/wallet-e2e/metamask-[^/]+/''',
 ]

@@ -1,20 +1,46 @@
-# RFC 9116 security.txt for SigilKit (TD-7, Issues-Catalog-2026-09-12).
-#
-# Publication status (verified 2026-09-15): the repository declares
-# github.com/sigilkit/sigilkit as its home (see `repository.url` in every
-# packages/*/package.json), and it is NOT publicly reachable — an anonymous request for both
-# the repo and the owner returns HTTP 404 (the repo does not exist yet, or is still private).
-#
-# Consequence: the Contact and Policy URIs below are dead links until the repository is public.
-# They are written out anyway so the first public push ships a machine-readable disclosure
-# channel on day one. Until then, SECURITY.md in this repository is the authoritative channel.
-#
-# Before public launch: confirm the repository resolves at the declared URL, then replace the
-# advisory Contact with a mailto: you control, add an Encryption key line, and refresh Expires.
-
-Contact: https://github.com/sigilkit/sigilkit/security/advisories/new
-Contact: https://github.com/sigilkit/sigilkit/blob/master/SECURITY.md
-Expires: 2027-09-12T23:59:00Z
+Contact: mailto:dev25bansal@gmail.com
+Contact: https://github.com/dev25bansal-ops/sigilkit/security/advisories/new
+Contact: https://github.com/dev25bansal-ops/sigilkit/blob/master/SECURITY.md
+Expires: 2027-09-26T23:59:00Z
 Preferred-Languages: en
-Canonical: https://github.com/sigilkit/sigilkit/blob/master/.well-known/security.txt
-Policy: https://github.com/sigilkit/sigilkit/blob/master/SECURITY.md
+Canonical: https://github.com/dev25bansal-ops/sigilkit/blob/master/.well-known/security.txt
+Policy: https://github.com/dev25bansal-ops/sigilkit/blob/master/SECURITY.md
+# RFC 9116 §2.5.5 Encryption. NO `Encryption:` FIELD IS PRESENT YET — DO NOT ADD ONE
+# UNTIL A REAL KEY EXISTS. An `Encryption:` value must be a resolvable OpenPGP key
+# identifier; publishing a fingerprint that resolves to no key is worse than publishing
+# nothing, because a reporter who encrypts to an unresolvable key silently loses the
+# report. This omission is deliberate and must be closed by the steps below, not by
+# pasting a placeholder.
+#
+# TO CLOSE THIS (maintainer, ~5 minutes, no private key leaves your machine):
+#   1. Create a key dedicated to this purpose (do NOT reuse a personal key):
+#        gpg --full-generate-key --expert
+#        Key type: RSA and RSA  # Key strength: 4096
+#        Name/email:          SigilKit Security <dev25bansal@gmail.com>
+#        No passphrase is acceptable here — the private key must be usable unattended.
+#   2. Publish the PUBLIC key where the fingerprint resolves, e.g.
+#        gpg --keyserver hkps://keys.openpgp.org --send-keys <FPR>
+#        gpg --keyserver hkps://keyserver.ubuntu.com --send-keys <FPR>
+#   3. Verify it actually resolves BEFORE editing this file:
+#        gpg --keyserver hkps://keys.openpgp.org --recv-keys <FPR>
+#   4. Add the line below (uncomment), then re-run `npm run check:docs`:
+#        # Encryption: https://keys.openpgp.org/vks/v1/by-fingerprint/<FPR>
+#      (a raw ASCII-armored block, or `mailto:dev25bansal@gmail.com?fingerprint=<FPR>`,
+#       is also RFC 9116-valid.)
+#   5. Update SECURITY.md's "Safe harbour" section to point at the encrypted channel.
+#
+# Until then: the mailto: Contact above is the working channel. The safe harbour in
+# SECURITY.md covers it, so an unencrypted report is still protected.
+#
+# Contact ordering note: RFC 9116 §2.5.2 takes the FIRST usable value as primary. The
+# mailto: is first because the repository is not yet publicly reachable, so the GitHub
+# advisory URL 404s for an anonymous reporter.
+
+# Publication status (re-verified 2026-09-26): the repository declares
+# github.com/dev25bansal-ops/sigilkit as its home (see `repository.url` in every
+# packages/*/package.json) and is still not publicly reachable. The two https Contacts
+# therefore remain secondary until the repository is public; the mailto: is the primary
+# and does not depend on repository visibility.
+#
+# Before public launch: confirm the repository resolves at the declared URL, then refresh
+# Expires, and complete the Encryption steps above.

@@ -17,6 +17,13 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Least privilege: this workflow only ever reads the repo. Without an explicit block the
+# job inherits the repository/org default token permissions, which may include write on
+# contents, packages, pull-requests and more — so a compromised step (see SEC-07) would
+# have far more reach than the workflow needs. Pin it read-only at the top level.
+permissions:
+  contents: read
+
 env:
   FOUNDRY_PROFILE: ci
   # Pinned Foundry: nightly moved `--invariant-runs` into config-only and can break
@@ -32,15 +39,44 @@ jobs:
     name: Workflow lint (actionlint)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with: { submodules: recursive }
-      - uses: foundry-rs/foundry-toolchain@v1
+      - uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1.9.1
         with: { version: "${{ env.FOUNDRY_VERSION }}" }
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with: { node-version: "24", cache: npm }
       - run: npm ci
       - name: Validate workflow YAML
         run: node scripts/validate-workflows.mjs
+      # CI-02: docs/CI-WAIVERS.md is a real register (dated criteria, hard expiries, rule
+      # #3 "red runs don't reset silently") but nothing enforced it: adding a
+      # `continue-on-error` without a row was invisible, and an expired row never turned any
+      # job red. This is the machine half of that register, so the waiver governance cannot
+      # silently rot. Failing here fails the PR.
+      - name: Test CI waiver guard
+        run: node --test scripts/check-waivers.test.mjs
+      - name: Check CI waivers are registered and unexpired
+        run: node scripts/check-waivers.mjs
+      # P1-WIRE: docs/CI-WAIVERS.md carries TWO registers. The step above checks the first
+      # (job-level `continue-on-error`, which must be registered and unexpired). This step
+      # checks the second — the "Item (not a CI job)" table, whose rows are a promise that a
+      # specific Foundry test is red ON PURPOSE. `check-waivers.mjs` deliberately skips that
+      # table, correctly: a failing Solidity test is not a `continue-on-error` job, so a row
+      # there would read as a stale row and redden this job for no reason. The consequence was
+      # that the second table had no enforcement at all, and its SEC-10 row outlived its own
+      # removal criterion — the test was rewritten under Option B and went green while the row
+      # kept claiming an "intentionally failing assertion".
+      #
+      # THIS STEP IS EXPECTED TO BE RED. That is the gate working: the SEC-10 row is stale and
+      # this is what says so. Do NOT relax the check, add a continue-on-error, or drop the
+      # step to get a green run — the red is the finding, and the fix is to resolve the row
+      # (delete it, or re-point the test under Option A), not to silence the report. Tracked
+      # for disposition by the P1 handoff; see docs/CI-WAIVERS.md for the row itself.
+      #
+      # Exit 2 (forge unavailable) is a failure here, not a skip: an unverifiable waiver is not
+      # a satisfied one, and the job has foundry-toolchain installed two steps earlier.
+      - name: Check intentional test-failure waivers are still red
+        run: node scripts/check-test-waivers.mjs
       # The image is the one deliverable CI cannot build cheaply, so check its static
       # invariants (COPY sources exist, .dockerignore does not exclude them, ENTRYPOINT
       # resolves) here rather than discovering a broken image at release time.
@@ -56,19 +92,69 @@ jobs:
       # previously dead in CI — a regression could land without any gate noticing.
       - name: Test package artifact guard and helper suites
         run: node --test scripts/check-package-artifacts.test.mjs scripts/check-runtime.test.mjs scripts/assurance-inventory.test.mjs scripts/benchmark-indexer.test.mjs
-      - name: Download actionlint
-        run: bash <(curl -sSf https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
+      # P0-WIRE: these three guards each had a full test suite but were executed by NOTHING —
+      # not by this job, not by `npm run verify`. Their suites were referenced in verify.mjs's
+      # `helpers` --test list and that was the whole of their existence, so a regression in any
+      # of them landed while the suites stayed green. They are real steps now.
+      - name: Check every test suite on disk is actually run
+        run: node scripts/check-helper-suites.mjs
+      - name: Test the suite-registry guard
+        run: node --test scripts/check-helper-suites.test.mjs
+      - name: Check workflow-invoked script paths are committed
+        run: node scripts/check-tracked-refs.mjs
+      - name: Test the tracked-refs guard
+        run: node --test scripts/check-tracked-refs.test.mjs
+      # The reparse-point probe asks whether THIS host can create and traverse a symbolic
+      # link/junction. It is a portability signal, not a dependency gate: on the Linux runner
+      # it is structurally always green, and its own header says not to read it as one. It is
+      # wired in so the suite is genuinely executed somewhere, and so a Windows contributor
+      # gets the same answer CI would give. Exit 2 = no verdict, and is not a pass.
+      - name: Probe host reparse-point capability
+        run: node scripts/check-reparse-points.mjs
+      - name: Test the reparse-point probe
+        run: node --test scripts/check-reparse-points.test.mjs
+      # SEC-07: this used to pipe an unpinned script from actionlint's *default branch*
+      # into bash (`bash <(curl -sSf .../main/scripts/download-actionlint.bash)`), so anyone
+      # who could push to rhysd/actionlint:main got RCE in every CI run of this repo, with
+      # its token and secrets. The installer pins the version AND verifies the tarball
+      # SHA256 before extracting, and writes the binary to $RUNNER_TEMP instead of the repo
+      # root. `bin` is captured from stdout so the path is resolved once and reused.
+      #
+      # ================= ACTIONLINT DIGEST — MAINTAINER ACTION REQUIRED =================
+      # OPEN (UNVERIFIED) — recorded by the 2026-09 CI-security audit round.
+      #
+      # scripts/install-actionlint.sh pins ACTIONLINT_VERSION and an ACTIONLINT_SHA256
+      # constant. The DIGEST WAS NOT VERIFIED. It was supplied out-of-band, and the sandbox
+      # that produced this fix had no network access, so it could neither compute the real
+      # SHA256 of actionlint_1.7.9_linux_amd64.tar.gz nor fetch the published digest list.
+      # Nobody has confirmed it equals upstream's actionlint_1.7.9_checksums.txt entry.
+      #
+      # IMPACT IF WRONG: fail-CLOSED, not a security hole. `sha256sum -c` runs BEFORE `tar`
+      # and aborts the step on mismatch, so a bad digest cannot be turned into RCE — but it
+      # WILL red the workflow-lint job, i.e. every push and PR, until it is corrected.
+      #
+      # BEFORE MERGE, A MAINTAINER MUST:
+      #   1. curl -sSfL https://github.com/rhysd/actionlint/releases/download/v1.7.9/actionlint_1.7.9_checksums.txt
+      #   2. compare the linux_amd64 entry against ACTIONLINT_SHA256 in
+      #      scripts/install-actionlint.sh, and correct the constant if it differs.
+      # Do NOT resolve a mismatch by deleting or relaxing the digest check — that is the
+      # exact vulnerability this step replaced.
+      # ============================================================================
+      - id: actionlint-install
+        name: Install actionlint (pinned + checksum-verified)
+        run: echo "bin=$(bash scripts/install-actionlint.sh)" >> "$GITHUB_OUTPUT"
       - name: Run actionlint
-        run: ./actionlint -color
+        run: >-
+          "${{ steps.actionlint-install.outputs.bin }}" -color
 
   # 1. Forge unit + fuzz (PR gate) — 2k fuzz runs/test via [profile.ci.fuzz]
   forge-unit:
     name: Forge unit + fuzz
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with: { submodules: recursive }
-      - uses: foundry-rs/foundry-toolchain@v1
+      - uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1.9.1
         with: { version: "${{ env.FOUNDRY_VERSION }}" }
       - run: forge build --sizes
       # Fork smoke runs nightly against a real Base fork; its assertions are
@@ -81,9 +167,9 @@ jobs:
     name: Forge invariant (INV-1..4)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with: { submodules: recursive }
-      - uses: foundry-rs/foundry-toolchain@v1
+      - uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1.9.1
         with: { version: "${{ env.FOUNDRY_VERSION }}" }
       - run: forge test --match-contract '.*Invariant'
 
@@ -92,11 +178,11 @@ jobs:
     name: Slither static analysis
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with: { submodules: recursive }
-      - uses: foundry-rs/foundry-toolchain@v1
+      - uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1.9.1
         with: { version: "${{ env.FOUNDRY_VERSION }}" }
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with: { python-version: "3.12" }
       # 6.x does not exist on PyPI (latest line is 0.11.x); pin the current release.
       - run: pip install slither-analyzer==0.11.6
@@ -110,28 +196,25 @@ jobs:
     name: Secret scanning (gitleaks)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with: { fetch-depth: 0 }
-      - name: Install gitleaks (pinned + checksum-verified)
-        run: |
-          curl -sSfL -o gitleaks.tar.gz \
-            https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
-          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  gitleaks.tar.gz" | sha256sum -c -
-          tar -xzf gitleaks.tar.gz gitleaks
-          ./gitleaks version
+      - id: gitleaks-install
+        name: Install gitleaks (pinned + checksum-verified)
+        run: echo "bin=$(bash scripts/install-gitleaks.sh)" >> "$GITHUB_OUTPUT"
       - name: Scan full history
-        run: ./gitleaks detect --config .gitleaks.toml --redact --no-banner --verbose
+        run: >-
+          "${{ steps.gitleaks-install.outputs.bin }}" detect --config .gitleaks.toml --redact --no-banner --verbose
 
   # 4. TS SDK — typecheck, lint, build both workspaces, conformance against Anvil (PR gate)
   ts-sdk:
     name: TS SDK conformance (Anvil)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with: { submodules: recursive }
-      - uses: foundry-rs/foundry-toolchain@v1
+      - uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1.9.1
         with: { version: "${{ env.FOUNDRY_VERSION }}" }
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with: { node-version: "24", cache: npm }
       - run: npm ci
       # CQ-3: lint and test EVERY workspace, not just core. The indexer and mcp suites
@@ -142,10 +225,44 @@ jobs:
       # dist/*.d.ts (its exports point at dist), which only exists after a build. On a
       # fresh clone, lint-before-build cannot resolve the module at all (CI-found).
       - run: npm run build --workspaces
+      # T-05 vector no-op gate. `actionrequest.json` and `merkle-v2.json` are generated
+      # from @sigilkit/core's OWN dist, so a breaking SDK change followed by a generator
+      # re-run produces a clean `git diff` — the self-certifying loop absorbs the break
+      # silently. Regenerating here and failing on any diff turns "absorbed" into "must
+      # be reviewed": a diff here is a request to change the committed vectors, not a
+      # no-op. `-- vectors/` limits the check to the corpus; --ignore-cr-at-eol is
+      # deliberately NOT used, because a line-ending-only change is still a change the
+      # reviewer should see.
+      #
+      # The generator needs no forge, but it does need packages/core/dist, which the build
+      # above produced — hence the placement. The diff check is enforced whenever
+      # generation succeeds; a generation failure degrades to a visible warning rather
+      # than a hard fail, because a broken generator is a different defect from a vector
+      # change and must not be able to red every unrelated PR. The warning is an
+      # annotation, not a silent pass: `check-vectors.mjs` below still enforces counts,
+      # 32-byte shapes and `_provenance` on the committed corpus.
+      - name: Vector regeneration must be a no-op (T-05)
+        run: |
+          if npm run vectors:generate; then
+            git diff --exit-code -- vectors/
+          else
+            echo "::warning::vector regeneration skipped (generator unavailable) — the no-op gate did not run; review vectors/ by hand"
+          fi
+      - name: Check vector corpus counts and provenance
+        run: node scripts/check-vectors.mjs
+      - name: Test vector corpus guard
+        run: node --test scripts/check-vectors.test.mjs
       # Static entry-point guard, after build so dist/ exists on a fresh checkout
       # (mirrors verify.mjs ordering). Working-tree check only — not an install test.
       - name: Check workspace package artifacts
         run: node scripts/check-package-artifacts.mjs
+      # Cross-document fact-source guard (node engine floor, forge test scope, foundry
+      # version). It is NOT a step inside `npm run verify` — a run-time error here (for
+      # example the digit-slice floor in bootstrap.mjs that turned ">=100" into "10")
+      # would otherwise stay invisible until the tag-publish path, because only
+      # publish.yml runs verify. ~0.2s, so it runs on every PR instead of only on release.
+      - name: Check cross-file fact sources
+        run: npm run check:facts
       - run: npm run lint --workspaces
       - run: npm test --workspaces --if-present
       # TD-2: coverage thresholds for EVERY workspace, not just core. The vitest configs in
@@ -157,7 +274,7 @@ jobs:
       - run: npm run test:coverage --workspace @sigilkit/mcp
       - run: npm run test:coverage --workspace @sigilkit/demo-agent
       - name: Upload vitest coverage summaries
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: vitest-coverage
@@ -193,9 +310,9 @@ jobs:
     env:
       FOUNDRY_PROFILE: deep
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with: { submodules: recursive }
-      - uses: foundry-rs/foundry-toolchain@v1
+      - uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1.9.1
         with: { version: "${{ env.FOUNDRY_VERSION }}" }
       - run: forge test --match-contract '.*Invariant'
       - run: forge coverage --report lcov --report summary
@@ -214,7 +331,7 @@ jobs:
             git diff .gas-snapshot >> "$GITHUB_STEP_SUMMARY"
             echo '```' >> "$GITHUB_STEP_SUMMARY"
           fi
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: forge-lcov
           path: lcov.info
@@ -226,17 +343,30 @@ jobs:
     name: Base fork tests (nightly)
     if: github.event_name == 'workflow_dispatch' || github.event.schedule == '17 3 * * *'
     runs-on: ubuntu-latest
+    # Promoted to job outputs so a downstream summary job can tell "skipped because
+    # RPC_BASE is unset" apart from "passed". `skip` is empty when the gate did not run,
+    # which is itself the signal that the fork tests were expected to execute.
+    outputs:
+      skip: ${{ steps.gate.outputs.skip }}
+      reason: ${{ steps.gate.outputs.reason }}
     env:
       RPC_BASE: ${{ secrets.RPC_BASE }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with: { submodules: recursive }
+      # Skip must be DISTINGUISHABLE from a pass. `skip=true` feeds the step-level `if:`s
+      # below, but a skipped run and a green run look identical in the job list, so a
+      # regression that broke the gate could hide behind a quiet nightly. Emit an explicit
+      # annotation so the reason shows in the run UI, and record the reason as an output a
+      # downstream summary job can read to report "skipped" instead of "passed".
       - id: gate
         if: env.RPC_BASE == ''
         run: |
+          echo "::notice title=Fork tests skipped::RPC_BASE secret is not set, so no Base fork tests ran. Treat this run as SKIPPED, not passed."
           echo "RPC_BASE secret not set; skipping Base fork tests." >> "$GITHUB_STEP_SUMMARY"
           echo "skip=true" >> "$GITHUB_OUTPUT"
-      - uses: foundry-rs/foundry-toolchain@v1
+          echo "reason=RPC_BASE secret not set" >> "$GITHUB_OUTPUT"
+      - uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1.9.1
         if: steps.gate.outputs.skip != 'true'
         with: { version: "${{ env.FOUNDRY_VERSION }}" }
       - run: forge test --fork-url "$RPC_BASE" --match-contract '.*Fork'
@@ -250,11 +380,11 @@ jobs:
     env:
       HALMOS_ALLOW_DOWNLOAD: "1" # required: halmos downloads solc on first run
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with: { submodules: recursive }
-      - uses: foundry-rs/foundry-toolchain@v1
+      - uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1.9.1
         with: { version: "${{ env.FOUNDRY_VERSION }}" }
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with: { python-version: "3.12" }
       - run: pip install halmos==0.3.3
       - run: halmos --version
@@ -264,7 +394,7 @@ jobs:
   # Real browsers + a real extension: heads-up Chromium on ubuntu (xvfb not needed —
   # Playwright launches headed Chromium fine with --no-sandbox on Linux runners).
   # TD-6 REMOVAL CRITERION (tracked: remove `continue-on-error` on or after 2026-10-12
-  # if the four scheduled runs of 2026-09-15/22/29 and 2026-10-06 were green; if any
+  # if the four scheduled runs of 2026-09-14/21/28 and 2026-10-05 were green; if any
   # run fails, fix it before the next one instead of extending the waiver. This waiver
   # exists only while the harness has no green history; it must not outlive Q3 2026.)
   wallet-e2e-weekly:
@@ -273,29 +403,38 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with: { submodules: recursive }
-      - uses: foundry-rs/foundry-toolchain@v1
+      - uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1.9.1
         with: { version: "${{ env.FOUNDRY_VERSION }}" }
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with: { node-version: "24", cache: npm }
       - run: npm ci
       # CQ-6/TD-5: the harness pulls a 24.4 MB extension bundle and a Chromium build on every
       # run. Both are pinned by version, so cache them — this job is the slowest and least
       # reliable in the pipeline, and re-downloading is pure flake surface.
       - name: Cache Playwright browsers
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/.cache/ms-playwright
           key: playwright-chromium-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - run: npx playwright install chromium --with-deps
+      # The ARCHIVE is cached, not just the extracted tree. A cache holding only the
+      # extracted tree cannot be integrity-checked at all — the bytes upstream published a
+      # digest for are gone, so a substituted tree is indistinguishable from a good one.
+      # Caching the zip restores a checkable artifact on every later run.
+      #
+      # -v2 suffix: v1 entries hold an extracted tree with no zip, so they cannot be
+      # verified. They must not satisfy this key, or the step below would fail closed on a
+      # legitimate hit and look like a flaky supply-chain failure.
       - name: Cache pinned MetaMask 13.49.0 extension
         id: metamask-cache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
-          path: packages/core/test/wallet-e2e/metamask
-          # -v1 suffix: the 12.5.0 artefact must not be able to satisfy this key.
-          key: metamask-chrome-13.49.0-v1
+          path: |
+            packages/core/test/wallet-e2e/metamask.zip
+            packages/core/test/wallet-e2e/metamask
+          key: metamask-chrome-13.49.0-v2
       - name: Fetch pinned MetaMask 13.49.0 extension
         if: steps.metamask-cache.outputs.cache-hit != 'true'
         run: |
@@ -306,11 +445,25 @@ jobs:
           curl -sSfL -o metamask.zip \
             "https://github.com/MetaMask/metamask-extension/releases/download/v13.49.0/metamask-chrome-13.49.0.zip"
           echo "7ba00bfe4fe8b0ffb27be1e8fc06506248f1b888cb4f2e5e5e8b1c37f461f262  metamask.zip" | sha256sum --check
+      # Deliberately NOT gated on cache-hit. The digest is re-checked on BOTH paths, so a
+      # poisoned or substituted cache entry aborts here instead of feeding the harness an
+      # unknown build.
+      #
+      # The tree is deleted and re-extracted rather than extracted over, so the harness only
+      # ever sees files that came out of a digest-verified archive. `unzip -o` alone would
+      # leave any extra file in a poisoned tree in place.
+      - name: Verify extension archive digest and extract
+        run: |
+          cd packages/core/test/wallet-e2e
+          echo "7ba00bfe4fe8b0ffb27be1e8fc06506248f1b888cb4f2e5e5e8b1c37f461f262  metamask.zip" | sha256sum --check
+          rm -rf metamask
           unzip -q -o metamask.zip -d metamask
-          rm metamask.zip
-      # Runs on the cache-hit path too: a poisoned cache entry would otherwise bypass
-      # the checksum entirely, and the harness's locators are version-specific.
-      - name: Verify pinned extension build identity
+      # NOTE ON WHAT THIS STEP DOES AND DOES NOT ASSERT. It reads a version string out of
+      # the extension's own manifest, so a tampered build that still says 13.49.0.0 passes
+      # it. It is NOT an integrity check — the digest step above is. This one exists to turn
+      # a wrong-extension-mount failure into a legible error, and it keeps its
+      # version-specific locators honest.
+      - name: Check extension build identity (self-declared, not integrity)
         run: |
           node -e '
             const m = require("./packages/core/test/wallet-e2e/metamask/manifest.json");
@@ -320,12 +473,14 @@ jobs:
             }'
       - run: npx tsx test/wallet-e2e/run-all.ts
         working-directory: packages/core
-      - uses: actions/upload-artifact@v4
+      # Fail closed: this upload runs under `if: always()` so a run that produced no
+      # results artifact must fail the job loudly, not pass it off as an empty log.
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: wallet-e2e-log
           path: packages/core/test-results/
-          if-no-files-found: ignore
+          if-no-files-found: error
 
   # 9b. Nightly — Echidna property fuzzing (independent second fuzzer over the same
   # invariants; enhancement E19). TD-6 REMOVAL CRITERION: remove `continue-on-error`
@@ -336,11 +491,15 @@ jobs:
     name: Echidna property fuzzing (nightly)
     if: github.event_name == 'workflow_dispatch' || github.event.schedule == '17 3 * * *'
     runs-on: ubuntu-latest
+    # WHY NON-GATING (2026-10-02 local replay of this job, echidna 2.2.5 + solc 0.8.36):
+    # exits 1 — `echidna_windowSpendUnderCap` FAILS (3/4 properties pass), reproducer saved
+    # under echidna-corpus/reproducers-unshrunk/. Gating now would redden nightly until the
+    # property is triaged; see the echidna-nightly row in docs/CI-WAIVERS.md.
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with: { submodules: recursive }
-      - uses: crytic/echidna-action@v2
+      - uses: crytic/echidna-action@f7e374e42bf7131f7307a92f5549ed6b2fd17c9d # v2.0.2 (refs/heads/v2, also tag v2.0.2)
         with:
           files: contracts/test/EchidnaProperties.t.sol
           contract: SessionKeyManagerEchidna
@@ -356,9 +515,9 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with: { submodules: recursive }
-      - uses: foundry-rs/foundry-toolchain@v1
+      - uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1.9.1
         with: { version: nightly }
       - run: forge build
       - run: forge test --match-contract '.*Invariant'

@@ -6,7 +6,8 @@ node_modules/
 out/
 cache/
 broadcast/
-lib/forge-std/  # installed via submodule/clone at build time
+# installed via submodule/clone at build time
+lib/forge-std/
 
 # Env / secrets
 .env
@@ -14,8 +15,9 @@ lib/forge-std/  # installed via submodule/clone at build time
 *.key
 
 # Local assistant-tool configuration (SK-01): models.json carries populated
-# credential fields and must never be committed. The .codebuddy/ folder itself
-# stays available for project data — only the credential file is excluded.
+# credential fields and must never be committed. This single-file rule is
+# redundant with the blanket `.codebuddy/` rule further down and is kept as an
+# explicit pin on the credential file, in case the directory rule is dropped.
 .codebuddy/models.json
 
 # Obsidian
@@ -54,6 +56,16 @@ outputs/
 crytic-export/
 actionlint.exe
 
+# CI tool binaries and their tarballs. `scripts/install-actionlint.sh` and
+# `scripts/install-gitleaks.sh` now extract into $RUNNER_TEMP (or outputs/ locally), so these
+# should never appear in a working tree — but an older local checkout, or a run of the script
+# from the repo root, can still leave them behind, and `gitleaks` alone is ~40MB. Ignoring
+# them keeps a stray `git add -A` from committing a large binary.
+gitleaks
+gitleaks.tar.gz
+actionlint
+actionlint.tar.gz
+
 # Assistant-worknote dirs, not project deliverables
 .workbuddy-ai/
 agents/
@@ -76,6 +88,61 @@ fleet-manifest.json
 *.db
 *.db-shm
 *.db-wal
+
+# Agent scratch: probes, sandboxes, one-shot debug scripts and backup copies. During the
+# 2026-09 audit round 301 files under .sc-gate-sandbox/ and .codebuddy/ were untracked
+# AND unignored (73% of all untracked paths), so a single `git add -A` would have committed
+# 301 agent session/sandbox files into the repo. Patterns are deliberately broad because
+# these are throwaway by construction; nothing the project ships matches them
+# (verified: `git ls-files | grep -E 'probe|\.bak-|^tmp-|\.tmp|\.mcp-|^scratch-'` is empty).
+# `.codebuddy/` is listed explicitly rather than via a glob because it was previously only
+# PARTIALLY ignored (`.codebuddy/models.json` alone, line 19) — the rest of the directory
+# (49 team/session files) was never covered.
+.codebuddy/
+.sc-gate-sandbox/
+.sigilkit-junction-probe/
+# Agent working artifacts from the 2026-09/10 review waves: audit manifests, slices,
+# work orders, and per-agent result reports. Scratch by construction, not deliverables.
+/.audit-*
+/.ck-*
+/.docgate-*
+/.perf-audit/
+*_probe*
+.*probe*
+probe-*
+_probe*
+_probe?.???
+*.crperf*
+.bak-*
+tmp-*
+*.tmp
+*.tmp.*
+.mcp-*
+.vitest-perf.json
+.vitest-recheck.json
+scratch-*
+# scripts/ scratch: the audit round created 15 `_`-prefixed throwaway scripts (_probe1..7,
+# _calibrate, _census, _count-forge, _forge-shim.ps1, _forge-stub, _inject, _sandbox-setup,
+# _triage). `*_probe*` does NOT match these: it requires `<chars>_probe<chars>`, and a name
+# that STARTS with `_probe` has no leading characters for `*` to consume. Caught by sc-clean
+# via `git check-ignore --no-index scripts/_probe1.mjs` returning "not ignored" — the rule
+# looked correct in the file but matched nothing in practice. `scripts/lib/` is the only
+# non-underscore new dir and is unaffected. Verified: `git ls-files scripts/ | grep /_` is
+# empty, so no tracked script is at risk.
+scripts/_*.mjs
+scripts/_*.ps1
+scripts/._*
+scripts/.bench-probe-*
+
+# Repo-root scratch, same family as the scripts/ rules above but pinned to the root with a
+# leading `/` so a nested `PROJECT-MAP.md` or `_notes.txt` in a real source directory is not
+# accidentally ignored. The 2026-09 audit left twelve root files untracked AND unignored; all
+# twelve are regenerable (a vitest log, a one-off PowerShell counter, and two dated audit
+# snapshots), so none of them belong in history.
+/.tmp-*
+/_*.txt
+/PROJECT-MAP.md
+/FILE-MANIFEST.md
 
 # Docker compose local state
 data/

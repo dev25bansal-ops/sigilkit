@@ -54,6 +54,13 @@ maintainers through the private channel listed in
 [`.well-known/security.txt`](.well-known/security.txt). All complaints will be reviewed and
 investigated promptly and fairly.
 
+**That file is primarily the vulnerability-disclosure channel, not a conduct channel.**
+Code-of-conduct reports sent there are still read and acted on, but they are handled as
+conduct — they carry no severity rating, no 90-day disclosure clock, and no 7-day
+vulnerability-triage SLA (those belong to [SECURITY.md](SECURITY.md)). Conversely, a security
+report that describes unacceptable behaviour is still triaged as a vulnerability. Say which
+you are reporting so it reaches the right reviewer.
+
 All maintainers are obligated to respect the privacy and security of the reporter of any
 incident.
 

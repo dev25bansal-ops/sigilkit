@@ -5,6 +5,7 @@
   "license": "MIT",
   "private": true,
   "type": "module",
+  "packageManager": "npm@11.18.0",
   "workspaces": [
     "packages/*"
   ],
@@ -23,9 +24,12 @@
     "lint:workflows": "node scripts/validate-workflows.mjs",
     "lint:docker": "node scripts/check-dockerfile.mjs",
     "check:artifacts": "node scripts/check-package-artifacts.mjs",
-    "test:helpers": "node scripts/verify.mjs --only=helper",
+    "check:facts": "node scripts/sync-facts.mjs --check",
+    "test:helpers": "node scripts/verify.mjs --only=helpers",
     "check:docs": "node scripts/check-doc-counts.mjs",
     "check:docs:full": "node scripts/check-doc-counts.mjs --with-ts",
+    "check:doc-location": "node scripts/check-doc-location.mjs",
+    "test:doc-location": "node --test scripts/check-doc-location.test.mjs",
     "clean": "node scripts/clean.mjs",
     "vectors:generate": "node scripts/generate-vectors.mjs",
     "demo": "npm run demo --workspace @sigilkit/demo-agent --",
@@ -36,5 +40,8 @@
     "@playwright/test": "^1.62.1",
     "@vitest/coverage-v8": "^5.0.0",
     "yaml": "^2.9.1"
+  },
+  "overrides": {
+    "@types/node": "^24.13.3"
   }
 }

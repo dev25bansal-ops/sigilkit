@@ -17,7 +17,12 @@
 # Foundry toolchain would multiply the image size for no runtime benefit.
 
 # ── build ─────────────────────────────────────────────────────────────────────────
-FROM node:24-bookworm-slim AS build
+# Pinned by digest, not by tag: a mutable tag lets upstream repoint `24-bookworm-slim` at a
+# different image with no change here. Digest taken from the Docker Hub registry API for
+# library/node:24-bookworm-slim on 2026-10-27 (that tag's last_updated was 2026-09-19). Both
+# stages use the SAME digest, so the two stages still share one base layer.
+# Refresh with: docker buildx imagetools inspect node:24-bookworm-slim
+FROM node:24-bookworm-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6 AS build
 WORKDIR /app
 
 # Dependency manifests first, so a source-only change reuses the install layer.
@@ -32,7 +37,7 @@ COPY packages ./packages
 RUN npm run build --workspaces --if-present
 
 # ── runtime ───────────────────────────────────────────────────────────────────────
-FROM node:24-bookworm-slim AS runtime
+FROM node:24-bookworm-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6 AS runtime
 
 ENV NODE_ENV=production \
     SIGILKIT_DB_PATH=/data/audit.db \
