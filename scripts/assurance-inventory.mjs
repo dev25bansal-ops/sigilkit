@@ -20,8 +20,12 @@
  * Output (stdout, JSON):
  *   git      commit hash when the repository is readable, plus a dirty flag
  *   source   counts of Solidity `check_*` (Halmos) and `echidna_*` property functions,
- *            split into total declarations and those declaring `returns (bool)`
- *   ci       workflow files with their configured job ids and display names
+ *            split into total declarations and those declaring `returns (bool)`, plus
+ *            `present` — false when contracts/ was not there, so an all-zero count cannot
+ *            pass for a measurement of an empty repository
+ *   ci       workflow files with their configured job ids and display names, plus `present`
+ *            for the same reason; `jobDetails` adds per-job `{name, blocking, condition}`
+ *            gating posture (blocking = no `continue-on-error: true` and no `if:` gate)
  *   evidence STATIC_INVENTORY marker and the executed=false flags
  *
  * Exit codes: 0 = inventory produced, 1 = inventory could not be produced.
@@ -30,6 +34,7 @@ import { readFileSync, readdirSync, existsSync, statSync } from "node:fs";
 import { join, dirname, relative, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
+import { parse as parseYaml } from "yaml";
 
 export const KIND = "STATIC_INVENTORY";
 export const SCHEMA = "sigilkit.assurance-inventory/1";
@@ -151,45 +156,60 @@ export function countPropertiesInSource(source) {
 /**
  * Parses a GitHub Actions workflow and returns its configured jobs in file order.
  *
- * A deliberately small reader: it walks the top-level `jobs:` block and takes each
- * 2-space-indented key as a job id and that job's first 4-space-indented `name:` as its
- * display name. It reports what is declared and nothing about whether the job ran.
+ * Uses the `yaml` package — the same parser `validate-workflows.mjs` already guards these
+ * workflows with, and the same one `check-doc-counts.mjs` counts jobs with, so all three
+ * readers now agree by construction instead of by coincidence. The hand-rolled
+ * indentation reader this replaced is pinned by the differential test in
+ * `assurance-inventory.test.mjs`: it read `name: >-` as the literal display name `">-"`,
+ * and it silently dropped a job when a job id or the `jobs:` key carried a trailing
+ * comment — a quiet edit to the CI-inventory number this script publishes.
+ *
+ * It reports what is declared and nothing about whether the job ran.
  */
 export function parseWorkflowJobs(text) {
-  const jobs = [];
-  let inJobs = false;
-  let current = null;
-  for (const rawLine of text.split(/\r?\n/)) {
-    const line = rawLine.replace(/\s+$/, "");
-    if (line === "" || line.trimStart().startsWith("#")) continue;
-    const indent = line.length - line.trimStart().length;
-    if (indent === 0) {
-      inJobs = line.trim() === "jobs:";
-      current = null;
-      continue;
-    }
-    if (!inJobs) continue;
-    const jobMatch = indent === 2 ? /^([A-Za-z0-9_.-]+):\s*$/.exec(line.trim()) : null;
-    if (jobMatch) {
-      current = { id: jobMatch[1], name: null };
-      jobs.push(current);
-      continue;
-    }
-    if (current && current.name === null && indent === 4) {
-      const nameMatch = /^name:\s*(.+?)\s*$/.exec(line.trim());
-      if (nameMatch) current.name = unquote(nameMatch[1]);
-    }
-  }
-  return jobs;
+  const jobs = jobsMapping(text);
+  return Object.entries(jobs).map(([id, job]) => ({
+    id,
+    // An unnamed job — or a reusable-workflow call, which carries no `name:` — is
+    // reported under its id, which is also what GitHub displays for it.
+    name: typeof job?.name === "string" ? job.name : id,
+  }));
 }
 
-/** Strips one layer of matching quotes from a YAML scalar. */
-function unquote(value) {
-  const trimmed = value.trim();
-  if (trimmed.length >= 2 && (trimmed[0] === '"' || trimmed[0] === "'") && trimmed.at(-1) === trimmed[0]) {
-    return trimmed.slice(1, -1);
-  }
-  return trimmed;
+/**
+ * Per-job gating posture for a workflow, in the same order as `parseWorkflowJobs`.
+ *
+ * `blocking` is true only when the job carries neither a `continue-on-error: true`
+ * nor an `if:` condition — i.e. the job runs on every trigger and can fail the run.
+ * `condition` carries the `if:` expression text when one gates the job, else null.
+ * This is still declared-configuration data, not a run outcome.
+ */
+export function parseWorkflowJobDetails(text) {
+  const jobs = jobsMapping(text);
+  return Object.entries(jobs).map(([id, job]) => {
+    const name = typeof job?.name === "string" ? job.name : id;
+    const condition = job?.if == null ? null : String(job.if);
+    const continueOnError = job?.["continue-on-error"] === true;
+    return { name, blocking: !continueOnError && condition === null, condition };
+  });
+}
+
+/**
+ * The `jobs:` mapping of a workflow, or `{}` when the file declares none.
+ *
+ * A non-mapping `jobs:`, a document that is not a mapping at all, and a `jobs:` block that
+ * is empty are all "no jobs declared" rather than an error: this is a read-only inventory,
+ * and one file it cannot interpret must not take the whole snapshot down. A genuinely
+ * malformed document is a different matter — it is `validate-workflows.mjs`'s gate, which
+ * fails the build, so letting the parse error propagate is safe, and it keeps a broken
+ * workflow from being reported as one that simply declares no jobs.
+ */
+function jobsMapping(text) {
+  const doc = parseYaml(text) ?? {};
+  if (typeof doc !== "object" || Array.isArray(doc)) return {};
+  const jobs = doc.jobs;
+  if (typeof jobs !== "object" || jobs === null || Array.isArray(jobs)) return {};
+  return jobs;
 }
 
 /** Recursively lists `.sol` files under `dir`, sorted, as root-relative posix paths. */
@@ -206,6 +226,27 @@ export function listSolidityFiles(root, dir = join(root, "contracts")) {
     }
   }
   return out;
+}
+
+/**
+ * Whether the two directories this inventory counts from were actually there.
+ *
+ * `listSolidityFiles` answers `[]` for a missing `contracts/`, and `inventoryCi` answers
+ * `{files: [], jobNames: [], jobDetails: []}` for a missing `.github/workflows/`. Both are
+ * the right answer to "what is in there" and both are indistinguishable from "there is
+ * nothing". A snapshot taken against the wrong `--root`, or against a checkout that failed
+ * halfway, therefore emitted a complete, well-formed document with every count at zero and
+ * no reader could tell it apart from a real measurement of an empty repository.
+ *
+ * The counts themselves are unchanged — they still say what is there. This says whether there
+ * was anything to count. A directory that exists but holds no matching file is `true`: that
+ * is a measurement, not a missing input.
+ */
+export function inventoryInputs(root) {
+  return {
+    contracts: existsSync(join(root, "contracts")),
+    workflows: existsSync(join(root, ".github", "workflows")),
+  };
 }
 
 /** Reads every `.sol` file and totals the property functions per prefix. */
@@ -228,21 +269,25 @@ export function inventorySource(root) {
   return { filesScanned: files.length, properties: totals };
 }
 
-/** Reads workflow files and returns the configured job names, per file. */
+/** Reads workflow files and returns the configured job names and gating postures. */
 export function inventoryCi(root) {
   const dir = join(root, ".github", "workflows");
-  if (!existsSync(dir)) return { files: [], jobNames: [] };
+  if (!existsSync(dir)) return { files: [], jobNames: [], jobDetails: [] };
   const files = readdirSync(dir)
     .filter((name) => name.endsWith(".yml") || name.endsWith(".yaml"))
     .sort((a, b) => a.localeCompare(b));
   const workflows = files.map((name) => {
-    const jobs = parseWorkflowJobs(readFileSync(join(dir, name), "utf8"));
-    return {
-      file: `.github/workflows/${name}`,
-      jobs: jobs.map((job) => ({ id: job.id, name: job.name ?? job.id })),
-    };
+    const text = readFileSync(join(dir, name), "utf8");
+    const jobs = parseWorkflowJobs(text);
+    // `parseWorkflowJobs` already resolves an unnamed job to its id, so the object is
+    // passed through unchanged and the published shape stays byte-identical to before.
+    return { file: `.github/workflows/${name}`, jobs, jobDetails: parseWorkflowJobDetails(text) };
   });
-  return { files: workflows, jobNames: workflows.flatMap((w) => w.jobs.map((j) => j.name)) };
+  return {
+    files: workflows,
+    jobNames: workflows.flatMap((w) => w.jobs.map((j) => j.name)),
+    jobDetails: workflows.flatMap((w) => w.jobDetails),
+  };
 }
 
 /** Best-effort git identity. Never throws: a missing git is reported, not fatal. */
@@ -267,6 +312,7 @@ function run(cwd, args) {
 export function buildInventory(root) {
   const source = inventorySource(root);
   const ci = inventoryCi(root);
+  const inputs = inventoryInputs(root);
   return {
     schema: SCHEMA,
     kind: KIND,
@@ -275,13 +321,19 @@ export function buildInventory(root) {
     git: inventoryGit(root),
     source: {
       root: "contracts",
+      present: inputs.contracts,
       filesScanned: source.filesScanned,
       halmos: source.properties["check_"],
       echidna: source.properties["echidna_"],
     },
     ci: {
+      present: inputs.workflows,
       jobNames: ci.jobNames,
       jobCount: ci.jobNames.length,
+      // Sibling of `jobNames`, not a replacement: `jobNames` stays a plain string array
+      // for consumers that read it as one, while `jobDetails` exposes per-job gating
+      // posture so a configured job is not read as an enforcing one.
+      jobDetails: ci.jobDetails,
       workflows: ci.files,
     },
     evidence: {
@@ -317,7 +369,10 @@ Options:
 Reports:
   git.commit / git.dirty                 revision when the repo is readable
   source.halmos / source.echidna         check_* and echidna_* declarations, bool vs total
+  source.present                         false when contracts/ is missing; the counts are then empty
   ci.jobNames                            configured job names from .github/workflows/*.yml
+  ci.jobDetails                          per-job {name, blocking, condition} gating posture
+  ci.present                             false when .github/workflows/ is missing; counts then empty
   evidence                               STATIC_INVENTORY marker, executed flags false
 `;
 

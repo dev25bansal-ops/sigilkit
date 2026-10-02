@@ -35,5 +35,5 @@ SessionKey7579Module
 ActionLog7579Executor
 SigilKitDelegator
 ActionLogger
-SpendPolicy
 MerkleWhitelist
+SpendPolicy

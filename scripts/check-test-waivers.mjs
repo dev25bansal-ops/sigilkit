@@ -147,11 +147,23 @@ export function runGate({
   if (!exists(register)) {
     return { code: 1, failures: ["docs/CI-WAIVERS.md is missing — the waiver register is gone."], stillRed: [] };
   }
-  const rows = parseRows(read(register, "utf8"));
+  const text = read(register, "utf8");
+  const rows = parseRows(text);
   if (rows.length === 0) {
-    // Fail closed. An empty parse means the table was renamed, mangled or removed, and a gate
-    // that reports "no waivers, all good" for a register it could not read is the exact
-    // failure mode this script exists to prevent.
+    // The register's own documentation declares an EMPTY table the healthy terminal state
+    // ("there are no deliberate standing test failures … An empty table is the healthy
+    // state") — every intentional red has been closed. That state must PASS, but only when
+    // the table itself is recognisably present. A register whose table was renamed, mangled
+    // or deleted still fails closed here: with no recognisable table the script cannot tell
+    // "nothing registered" from "could not read the register", and reporting that as "all
+    // good" is the exact failure mode this branch exists to prevent. The header cell is the
+    // register's own convention, reading only the "Item (not a CI job)" table and never the
+    // job table above it.
+    const tablePresent = /^\s*\|[^|]*Item \(not a CI job\)/m.test(text);
+    if (tablePresent) {
+      return { code: 0, failures: [], stillRed: [] };
+    }
+    // Fail closed. An unreadable register must never read as "no waivers, all good".
     return {
       code: 1,
       failures: [
@@ -212,7 +224,7 @@ function main() {
   const stillRed = result.stillRed;
 
   if (result.code === 0) {
-    console.log(`check-test-waivers OK — ${stillRed.length} registered intentional failure(s), all still red:`);
+    console.log(`check-test-waivers OK — ${stillRed.length} registered intentional failure(s)${stillRed.length > 0 ? ", all still red:" : " (register present, table empty — every deliberate red is closed)."}`);
     for (const note of stillRed) console.log(note);
     console.log("  scope: rows naming a Foundry test in docs/CI-WAIVERS.md; tests run from the working tree");
     return 0;

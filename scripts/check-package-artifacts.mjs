@@ -279,6 +279,17 @@ function safeList(dir) {
 
 function main() {
   const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+  // Only `--json` is a real flag here; anything else is a typo, and a typo that is silently
+  // dropped is a check running with less coverage than its author believed. `--root` in
+  // particular must not be swallowed: it reads as "check that other tree", and this gate
+  // always inspects the repository it is installed in, so honouring the impression would mean
+  // reporting on a checkout it never opened. Exit 2 = "could not run as asked".
+  const strayArgs = process.argv.slice(2).filter((a) => a !== "--json");
+  if (strayArgs.length > 0) {
+    console.error(`check-package-artifacts: unrecognized argument(s): ${strayArgs.join(", ")}`);
+    console.error(`it checks the packages in the repository this script lives in (${root}).`);
+    process.exit(2);
+  }
   let results;
   try {
     const packages = discoverWorkspacePackages({ readFileSync, readdirSync, existsSync }, root);

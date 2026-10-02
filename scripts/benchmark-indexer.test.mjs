@@ -322,6 +322,23 @@ function ownedTestDirectory(t) {
   return dir;
 }
 
+/**
+ * A child's stderr with Node's own warnings removed, for use as an assertion message.
+ *
+ * OBS-01: warnings and real errors arrive in the same stream, so a raw `child.stderr` as the
+ * assertion message lets an `ExperimentalWarning` read like the cause. Measured on this
+ * failure: the warning said "SQLite is experimental", the actual cause was `Cannot find
+ * package '@sigilkit/core'`, and setting `NODE_NO_WARNINGS=1` did not change the outcome —
+ * which is what proves the warning was noise. A warning-only stream yields an explicit
+ * "(no warnings; stderr held only Node warnings)" rather than an empty message, so "failed
+ * with no output" stays distinguishable from "failed and said nothing".
+ */
+function diagnostic(stderr) {
+  const lines = String(stderr ?? "").split(/\r?\n/);
+  const kept = lines.filter((line) => line.trim() !== "" && !/^\(node:\d+\)\s+\[?[A-Z]+\d*\]?/.test(line.trim()));
+  return kept.length ? kept.join("\n") : "(no output; stderr held only Node warnings)";
+}
+
 class FixtureIndexer {
   records = [];
   db = { prepare: () => ({ all: () => this.records.map((r) => ({ chain_id: r.chainId,
@@ -440,11 +457,63 @@ test("failed benchmark completion yields nonzero child exit and an invalid saved
       collectIdentity:()=>({digest:'a'.repeat(64)}), load:async()=>({SigilIndexer:Broken,silentLogger:()=>({})})})
       .catch(()=>{process.exitCode=1});`;
   const child = spawnSync(process.execPath, ["--input-type=module", "-e", source], { encoding: "utf8" });
-  assert.equal(child.status, 1, child.stderr);
+  assert.equal(child.status, 1, diagnostic(child.stderr));
   const report = JSON.parse(readFileSync(join(dir, readdirSync(dir)[0], "benchmark.json")));
   assert.equal(report.validity.valid, false);
   assert.equal(report.authoritative, false);
   assert.equal(report.results.disk.summary, null);
+});
+
+test("an invalid report's message names the real cause instead of only 'validation failed'", () => {
+  // OBS-01, the regression this pins. The thrown message used to be a constant string with the
+  // cause parked on `error.report.errors[]`, so every consumer that printed `error.message` —
+  // including a child's `.catch(e => console.error(e.message))` — printed nothing actionable.
+  // Two agents in a row misattributed the failure to an ExperimentalWarning because of it.
+  //
+  // Asserted against the *exported* function so the guarantee is about the public contract,
+  // not about one call site's formatting.
+  const report = {
+    validity: { valid: false, runtimeEligible: true, completed: false, correctness: false, timingValid: true },
+    errors: [{ stage: "execution", message: "Cannot find package '@sigilkit/core'" }],
+  };
+  assert.throws(
+    () => assertValidReport(report),
+    (error) => {
+      assert.match(error.message, /execution: Cannot find package '@sigilkit\/core'/, "the cause must be in the message");
+      assert.match(error.message, /failed validity checks: completed, correctness/, "the failed flags must be in the message");
+      assert.equal(error.report, report, "the report stays attached for programmatic use");
+      return true;
+    },
+  );
+
+  // The worst case is the one that says nothing: invalid with no recorded error at all. It
+  // must still name the failed checks rather than degrade to the old constant string.
+  assert.throws(
+    () => assertValidReport({ validity: { valid: false, completed: false }, errors: [] }),
+    /no error was recorded.*failed validity checks: completed/s,
+  );
+
+  // And a valid report must not throw — a gate that cannot pass is not a gate.
+  assert.doesNotThrow(() => assertValidReport({ validity: { valid: true }, errors: [{ stage: "x", message: "y" }] }));
+});
+
+test("diagnostic strips Node warnings and keeps real errors, and never returns empty", () => {
+  // The other half of OBS-01: the assertion message must not let a warning read as the cause.
+  const mixed = [
+    "(node:37992) [DEP0190] DeprecationWarning: Passing `args` to a child process with `shell` option",
+    "    can lead to security vulnerabilities",
+    "Error: Cannot find package '@sigilkit/core' imported from D:\\SigilKit\\packages\\indexer\\dist\\indexer.js",
+  ].join("\n");
+  const cleaned = diagnostic(mixed);
+  assert.doesNotMatch(cleaned, /DEP0190/, "the warning must not reach the assertion message");
+  assert.match(cleaned, /Cannot find package '@sigilkit\/core'/, "the real error must survive");
+  assert.match(cleaned, /imported from/, "continuation lines of a real stack must survive");
+
+  // "Failed with no output" and "failed but said nothing" must stay distinguishable, or the
+  // next reader is back to guessing.
+  assert.match(diagnostic("(node:1) [DEP0190] only a warning here"), /no output; stderr held only Node warnings/);
+  assert.equal(diagnostic(""), "(no output; stderr held only Node warnings)");
+  assert.equal(diagnostic(undefined), "(no output; stderr held only Node warnings)");
 });
 
 test("worker-isolated real runs validate the saved report end to end", { skip: !existsSync(resolve("packages/indexer/dist/index.js")) ? "requires the built indexer artifact" : false }, (t) => {
@@ -453,7 +522,11 @@ test("worker-isolated real runs validate the saved report end to end", { skip: !
     runBenchmark({rows:2,reps:1,seed:7,log:()=>{}}, {outDir:${JSON.stringify(dir)}})
       .then(()=>{process.exitCode=0}).catch((error)=>{console.error(error.message);process.exitCode=1});`;
   const child = spawnSync(process.execPath, ["--input-type=module", "-e", source], { encoding: "utf8" });
-  assert.equal(child.status, 0, child.stderr);
+  // OBS-01: assert on the non-warning lines only. Node's ExperimentalWarning and the real
+  // failure share stderr, and passing the whole stream as the assertion message made the
+  // warning look like the cause — it was not. `NODE_NO_WARNINGS=1` still failed, which is what
+  // ruled the warning out. Stripping warnings here means the message names the actual error.
+  assert.equal(child.status, 0, diagnostic(child.stderr));
   const report = JSON.parse(readFileSync(join(dir, readdirSync(dir)[0], "benchmark.json")));
   assert.equal(report.validity.valid, true);
   assert.equal(report.authoritative, false);

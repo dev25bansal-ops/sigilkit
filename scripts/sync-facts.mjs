@@ -1401,8 +1401,14 @@ export function makeIo(root) {
     listDir: (rel) => {
       try {
         return readdirSync(at(rel));
-      } catch {
-        return [];
+      } catch (err) {
+        // "Not there" is the answer this contract promises — `packages/` may simply not exist —
+        // and that case stays `[]`. Every other error was swallowed into the same `[]`, so an
+        // EACCES, an EPERM or a mid-scan I/O failure became indistinguishable from an empty
+        // workspace list: nodeFloorFindings() iterates this listing and would report "no
+        // workspace drifted" over a tree it never managed to see. Only absence is absence.
+        if (err.code === "ENOENT" || err.code === "ENOTDIR") return [];
+        throw err;
       }
     },
     exists: (rel) => existsSync(at(rel)),

@@ -13,8 +13,9 @@
  * contains only execPath/version strings and resolved module paths.
  *
  * Exit 1 when the runtime is below the declared floor or when workspaces disagree with
- * the root vitest version. Exit 0 otherwise, explicitly reporting that no diagnosis of
- * any historic failure can be made from these facts alone.
+ * the root vitest version. Exit 2 for an unrecognized argument. Exit 0 otherwise,
+ * explicitly reporting that no diagnosis of any historic failure can be made from these
+ * facts alone.
  */
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -24,6 +25,10 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const DEFAULT_FLOOR = 24;
+
+/** The only flag this diagnostic takes; anything else is a caller mistake, not a request. */
+const USAGE = "usage: check-runtime [--json]";
+const KNOWN_FLAGS = new Set(["--json"]);
 
 /** Parses ">=24", "^24.1", "~24.1.2", "24" and bare numbers into [major, minor, patch]. */
 export function parseVersion(input) {
@@ -54,11 +59,16 @@ export function meetsFloor(version, floor) {
 
 /** Compares workspace vitest resolutions against the root one. Pure. */
 export function evaluateVitest(rootEntry, workspaceEntries) {
+  // A root that failed to resolve is still an object (`{version: null, entry: null}`), so
+  // its truthiness says nothing about whether vitest was found. Resolvability has to be
+  // read off the version, or an unresolved root compares "equal" to itself and every
+  // workspace looks fine — a check that cannot fail.
+  const rootResolves = Boolean(rootEntry?.version);
   const workspaces = (workspaceEntries ?? []).map((entry) => ({
     name: entry.name,
     version: entry.version ?? null,
     entry: entry.entry ?? null,
-    matchesRoot: Boolean(rootEntry && entry.version && entry.version === rootEntry.version),
+    matchesRoot: rootResolves && Boolean(entry.version) && entry.version === rootEntry.version,
     resolvable: Boolean(entry.version),
   }));
   const mismatched = workspaces.filter((entry) => !entry.matchesRoot).map((entry) => entry.name);
@@ -66,7 +76,7 @@ export function evaluateVitest(rootEntry, workspaceEntries) {
   return {
     root: rootEntry ?? null,
     workspaces,
-    consistent: Boolean(rootEntry) && mismatched.length === 0 && unresolved.length === 0,
+    consistent: rootResolves && mismatched.length === 0 && unresolved.length === 0,
     mismatched,
     unresolved,
   };
@@ -78,15 +88,19 @@ export function evaluateReport({ runtime, vitest }) {
   if (!runtime.compatible) {
     reasons.push(`node ${runtime.version} is below the required floor ${runtime.required}`);
   }
-  if (vitest.root && !vitest.consistent) {
+  // An unresolved root is a truthy `{version: null}` object, so "did we find vitest" has
+  // to be read off the version. Testing the object's truthiness instead let an unresolved
+  // root fall through both branches below and produce no reason at all — the check then
+  // reported "no diagnosis" and exited 0 while having inspected nothing.
+  if (!vitest.root?.version) {
+    reasons.push("vitest is not resolvable from the repository root");
+  } else if (!vitest.consistent) {
     if (vitest.mismatched.length > 0) {
       reasons.push(`workspace vitest version differs from root: ${vitest.mismatched.join(", ")}`);
     }
     if (vitest.unresolved.length > 0) {
       reasons.push(`vitest not resolvable in: ${vitest.unresolved.join(", ")}`);
     }
-  } else if (!vitest.root) {
-    reasons.push("vitest is not resolvable from the repository root");
   }
   if (reasons.length > 0) {
     return { ok: false, exitCode: 1, reasons, conclusion: reasons.join("; ") };
@@ -215,6 +229,16 @@ function render(report, verdict) {
 }
 
 function main(argv) {
+  // Every other argument used to be ignored outright, so `--jsonn` produced the human report
+  // while the caller — who asked for JSON — parsed prose as a document. Rejected, not
+  // ignored: a diagnostic that silently drops what it was asked for is worse than one that
+  // says it cannot do it. Exit 2, matching the rest of scripts/: 2 is a usage error, 1 is a
+  // runtime that does not meet the declared floor.
+  const unknown = argv.filter((arg) => !KNOWN_FLAGS.has(arg));
+  if (unknown.length > 0) {
+    process.stderr.write(`check-runtime: unrecognized argument(s): ${unknown.join(", ")}\n${USAGE}\n`);
+    return 2;
+  }
   const asJson = argv.includes("--json");
   const report = collect();
   const verdict = evaluateReport(report);

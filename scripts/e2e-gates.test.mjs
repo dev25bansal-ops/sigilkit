@@ -129,6 +129,11 @@ function copy(src, dst) {
 /** Installs a gate under the fake root, so `ROOT` becomes the fake root. */
 function install(root, ...names) {
   for (const name of names) copy(join(SCRIPTS, name), join(root, "scripts", name));
+  // Every gate in the inventory imports `./lib/exit.mjs` and `./lib/cli.mjs` relative to
+  // itself, so a fixture holding only the gate dies with ERR_MODULE_NOT_FOUND — exit 2 from
+  // the abort path, which the chain test would report as "the gate aborted instead of
+  // reporting". Copy the shared modules with the gate, unconditionally.
+  for (const lib of ["lib/exit.mjs", "lib/cli.mjs"]) copy(join(SCRIPTS, lib), join(root, "scripts", lib));
   return join(root, "scripts");
 }
 
@@ -247,9 +252,20 @@ const FIXTURES = {
  * Unlike npm, `forge` needs no `.cmd` shim: it resolves as a plain executable, so an argv
  * array works directly on Windows with no shell and no fallback.
  */
+/**
+ * Whether `check-doc-counts.mjs` can actually run here, probed the way *the gate itself* decides.
+ *
+ * The gate honours `FORGE_BIN` first and only then falls back to `forge` on PATH. An earlier
+ * version of this probe ran `forge --version` and nothing else, so on a machine where foundry is
+ * installed but not on PATH — which is the normal case on Windows, where the installer does not
+ * edit PATH — `HAS_FORGE` was false even with `FORGE_BIN` correctly exported. The suite then took
+ * the "no forge" branch and T1d skipped, so the exit-2 contract went **unasserted** in exactly
+ * the configuration the team runs in. Probing PATH alone made the test silently weaker.
+ */
 function forgeAvailable() {
-  const probe = spawnSync("forge", ["--version"], { encoding: "utf8", timeout: 30_000 });
-  return probe.status === 0;
+  const fromEnv = process.env.FORGE_BIN;
+  if (fromEnv) return spawnSync(fromEnv, ["--version"], { encoding: "utf8", timeout: 30_000 }).status === 0;
+  return spawnSync("forge", ["--version"], { encoding: "utf8", timeout: 30_000 }).status === 0;
 }
 
 const HAS_FORGE = forgeAvailable();
@@ -287,6 +303,12 @@ test("T1 · four gates in sequence each report a verdict, and none of them crash
   copy(join(REPO, "docs", "WHITEPAPER-v2.1.md"), join(root, "docs", "WHITEPAPER-v2.1.md"));
   copy(join(REPO, ".well-known"), join(root, ".well-known"));
   copy(join(REPO, "foundry.toml"), join(root, "foundry.toml"));
+  // `forge-std` is a git submodule, so a fixture that copies `contracts/` without `lib/` gives
+  // forge a test file it cannot compile — `Error: Source "forge-std/Test.sol" not found`. That
+  // arrives as exit 2, which this chain reads as "the gate aborted", so the missing submodule
+  // masquerades as a gate defect. Copied only when forge is present, since without it the gate
+  // never reaches a compiler and the copy would be pure cost.
+  if (HAS_FORGE && existsSync(join(REPO, "lib"))) copy(join(REPO, "lib"), join(root, "lib"));
 
   const runs = [];
   for (const script of chain) {
@@ -322,7 +344,14 @@ test("T1d · check-doc-counts reports a missing forge as a named toolchain probl
     "the ENOENT must be reported, not thrown — a stack trace here would mean the gate crashed\n" +
       `${result.stderr.slice(0, 400)}`,
   );
-  assert.equal(result.stdout, "", "a gate that cannot run has no verdict to print on stdout");
+  // A gate that cannot run still emits its machine-readable verdict — the repo's
+  // `announce()` convention puts `{gate, verdict, tool}` on stdout for every outcome,
+  // including `tool-missing`. What it must NOT do is print a *pass* verdict, or print one
+  // while also crashing. The earlier "stdout must be empty" assertion predated that
+  // convention and now fails against a correctly-reported tool-missing.
+  const verdict = JSON.parse(result.stdout.trim() || "{}");
+  assert.equal(verdict.verdict, "tool-missing", "a gate that cannot run must not report a pass");
+  assert.equal(verdict.tool, "sigilkit-no-such-forge", "the verdict must name the missing tool");
 });
 
 test("T1b · verify --list is a query, not a run: it must not execute a gate", (t) => {
@@ -638,9 +667,9 @@ test("T5b · a path with spaces is handled as one path, not as two arguments", (
 const ROOT_CONTRACT = {
   "validate-workflows.mjs": "rejected",
   "check-package-artifacts.mjs": "rejected",
-  "check-waivers.mjs": "ignored",
+  "check-waivers.mjs": "rejected",
   "check-vectors.mjs": "ignored",
-  "check-dockerfile.mjs": "ignored",
+  "check-dockerfile.mjs": "rejected",
 };
 
 test("R1 · --root is either honoured or loudly refused — never silently swallowed", (t) => {
@@ -651,7 +680,10 @@ test("R1 · --root is either honoured or loudly refused — never silently swall
   // fix — in either direction — has to be a deliberate update to this table.
   const root = fakeRepo(t, { real: [".github", "docs", "vectors", "Dockerfile", "package.json", "package-lock.json", "packages"] });
   const scripts = Object.keys(ROOT_CONTRACT);
-  install(root, ...scripts);
+  // check-vectors verifies which corpora are self-certified by reading the generator's
+  // source, so a fixture that omits it makes the gate fail closed — correctly, and for a
+  // reason unrelated to --root. Copy it so R1 measures the flag, not the fixture.
+  install(root, ...scripts, "generate-vectors.mjs");
   const bad = join(root, "no-such-directory");
 
   for (const script of scripts) {
@@ -801,7 +833,13 @@ test("E1 · a clean repository exits 0 for every gate that can run here", (t) =>
     if (script === "check-runtime.mjs" && !VITEST_RESOLVED) {
       // Not a defect: `check-runtime`'s subject *is* the environment, so a missing toolchain is
       // a correct exit 1. Asserting 0 here would be asserting the machine is provisioned.
-      t.skip(`check-runtime.mjs — vitest is not resolvable, so its exit 1 is a true finding`);
+      //
+      // Printed as well as skipped: a skip nobody can see is a gate that quietly stops being
+      // checked, and the next person to trust this suite would not know it. The line says
+      // *environment*, not *gate*, so the reader knows the gate is fine and the machine is not.
+      const reason = "SKIPPED: vitest not resolvable (environment, not gate)";
+      console.error(`  ${reason}`);
+      t.skip(`check-runtime.mjs — ${reason}`);
       continue;
     }
     const result = runGate(script);

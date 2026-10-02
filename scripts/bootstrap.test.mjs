@@ -305,6 +305,201 @@ test("bootstrap: install runs npm ci/install, which does execute dependency life
   assert.match(src, /npm run setup -- --install/, "the retry hint must name the flag that helps");
 });
 
+// ── the Foundry probe: found and not-found, both asserted ──────────────────────
+//
+// `bootstrap.mjs` is NOT importable — its whole CLI runs at module scope and calls
+// `process.exit`. Every test here therefore drives it as a child process, including these.
+// Importing it to reach `probeFoundry` is the mistake this file's own header warns about:
+// `bootstrap.mjs:344-348` runs `install()` and `build()` on import, so an `import()` reaches
+// `npm ci`. Read what a module's top level does before importing it.
+
+/**
+ * A throwaway home directory, optionally pre-seeded with a `.foundry/bin` containing the
+ * four executables.
+ *
+ * `os.homedir()` honours `USERPROFILE` on win32 and `HOME` elsewhere, so overriding both in
+ * the child's environment moves the probe's search directory without touching the real one.
+ * That is what makes the not-found branch reachable on a machine that *does* have Foundry
+ * installed — without it, the negative control could only be exercised on a host without
+ * Foundry, and this file would pass on the author's machine while proving nothing.
+ *
+ * @param {object} t the node:test context, for cleanup
+ * @param {{omit?: RegExp, seed?: boolean}} [opts] `omit` leaves tools out of the seeded
+ *   directory; `seed: false` creates a home with no `.foundry` at all
+ * @returns {string} the temporary home directory
+ */
+function foundryHome(t, { omit = null, seed = true } = {}) {
+  const home = mkdtempSync(join(tmpdir(), "sigilkit-home-"));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  if (!seed) return home;
+  const bin = join(home, ".foundry", "bin");
+  mkdirSync(bin, { recursive: true });
+  for (const name of ["forge", "cast", "anvil", "chisel"]) {
+    if (omit?.test(name)) continue;
+    const exe = process.platform === "win32" ? `${name}.exe` : name;
+    // Not a real binary: the probe stats it, and the `--version` call it then makes against the
+    // resolved path fails — which the step tolerates and reports as "unknown". So these tests
+    // assert *resolution*, never that a stub executes.
+    writeFileSync(join(bin, exe), `stub for ${name}\n`);
+  }
+  return home;
+}
+
+/** Runs bootstrap in `root` with a substituted home directory. */
+function runWithHome(t, home, extra = []) {
+  const root = fixture(t);
+  const env = {
+    ...process.env,
+    NO_COLOR: "1",
+    USERPROFILE: home,
+    HOME: home,
+    // Defeat the PATH branch so the assertion is about the ~/.foundry/bin branch only.
+    PATH: "",
+  };
+  delete env.FORGE_BIN;
+  delete env.CAST_BIN;
+  delete env.ANVIL_BIN;
+  delete env.CHISEL_BIN;
+  delete env.npm_execpath;
+  const result = spawnSync(process.execPath, [join(root, "scripts", "bootstrap.mjs"), "--no-install", "--no-build"], {
+    cwd: root,
+    encoding: "utf8",
+    timeout: 60_000,
+    env,
+  });
+  assert.ifError(result.error);
+  return { status: result.status, output: stripAnsi(result.stdout + result.stderr) };
+}
+
+test("bootstrap: the Foundry probe reports all four tools, not just forge", (t) => {
+  // ck-arch reported "cast unavailable" across two rounds on a machine where all four were
+  // installed under ~/.foundry/bin. The probe used to ask only "is it on PATH".
+  const out = runWithHome(t, foundryHome(t)).output;
+  for (const name of ["cast", "anvil", "chisel"]) {
+    assert.match(out, new RegExp(`\\b${name}\\b`), `${name} must be reported when installed:\n${out}`);
+  }
+  assert.match(out, /cast, anvil, chisel/, `the companions must be listed as found:\n${out}`);
+});
+
+test("bootstrap: a tool that is genuinely absent is named as absent", (t) => {
+  // The negative control for the line above. Without it, "reports all four" is satisfied by a
+  // probe that reports all four unconditionally — which is the failure this whole change is
+  // about. A probe with no negative branch is a probe that cannot be wrong about absence.
+  const out = runWithHome(t, foundryHome(t, { omit: /^(cast|chisel)$/ })).output;
+  assert.match(out, /not on this machine:.*cast/, `an absent tool must be named:\n${out}`);
+  assert.match(out, /not on this machine:.*chisel/, `an absent tool must be named:\n${out}`);
+  // …and the ones that *are* present must not be swept up in that sentence.
+  assert.doesNotMatch(out, /not on this machine:[^\n]*\banvil\b/, `anvil is present here:\n${out}`);
+});
+
+test("bootstrap: an empty ~/.foundry/bin reports every tool missing and stays non-fatal", (t) => {
+  // The whole-probe-missed branch. Two things must hold at once: the run must not fail (the
+  // TypeScript packages build without Foundry), and it must not claim any tool was found.
+  const out = runWithHome(t, foundryHome(t, { seed: false })).output;
+  assert.match(out, /no Foundry tools found/, `an empty bin must be reported as empty:\n${out}`);
+  assert.equal(runWithHome(t, foundryHome(t, { seed: false })).status, 0, `Foundry must stay non-fatal:\n${out}`);
+  assert.doesNotMatch(out, /✓ cast/, `nothing may be claimed found:\n${out}`);
+  assert.match(out, /\.foundry[\\/]bin/, `the searched directory must be named:\n${out}`);
+});
+
+test("bootstrap: tools found outside PATH print the export lines but do not set them", (t) => {
+  // The second half of the finding, and the reason this is a print and not an assignment.
+  //
+  // Setting `process.env.FORGE_BIN` inside the setup process would make this run report a
+  // working forge while the parent shell — and every later command — still had none. The next
+  // command would fail with "command not found", i.e. the fix would manufacture a second false
+  // report. So: the lines must be printed, and the child must not have mutated its own
+  // environment in a way that outlives it.
+  const home = foundryHome(t);
+  const root = fixture(t);
+  const env = { ...process.env, NO_COLOR: "1", USERPROFILE: home, HOME: home, PATH: "" };
+  delete env.FORGE_BIN;
+  const result = spawnSync(process.execPath, [join(root, "scripts", "bootstrap.mjs"), "--no-install", "--no-build"], {
+    cwd: root,
+    encoding: "utf8",
+    timeout: 60_000,
+    env,
+  });
+  assert.ifError(result.error);
+  const out = stripAnsi(result.stdout + result.stderr);
+
+  assert.match(out, /not on PATH/, `the PATH gap must be stated, not silently absorbed:\n${out}`);
+  for (const name of ["FORGE_BIN", "CAST_BIN", "ANVIL_BIN", "CHISEL_BIN"]) {
+    const assign = process.platform === "win32" ? `$env:${name}=` : `export ${name}=`;
+    assert.ok(out.includes(assign), `${name} must be printable as \`${assign}\`:\n${out}`);
+  }
+  // The printed path must be the real one, or the "fix" is worse than no fix.
+  const expected = join(home, ".foundry", "bin", process.platform === "win32" ? "forge.exe" : "forge");
+  assert.ok(out.includes(expected), `the printed FORGE_BIN must be the probed path ${expected}:\n${out}`);
+
+  // The point of printing rather than assigning: an env var set inside the child cannot reach
+  // the caller's shell. The observable proof that nothing was applied is that the child's own
+  // report is derived from the *probe*, and the run still exits 0 without the tool having run.
+  assert.equal(result.status, 0, out);
+});
+
+test("bootstrap: an explicit FORGE_BIN is honoured and not overridden by ~/.foundry/bin", (t) => {
+  // The override is a statement of fact by the caller. A probe that overrules it would make
+  // `FORGE_BIN=/path/to/my/forge` a lie whenever a different install also exists.
+  //
+  // The observable is the *absence* of the PATH hint: the hint only prints when the resolved
+  // forge is the one inside ~/.foundry/bin, so it printing would mean the probe overruled the
+  // caller. (Asserting the version string cannot work here — a stub is not executable, so the
+  // override and the discovered copy both report "unknown".)
+  const home = foundryHome(t);
+  const root = fixture(t);
+  const mine = join(root, "my-forge");
+  writeFileSync(mine, "not a real binary\n");
+  const result = spawnSync(
+    process.execPath,
+    [join(root, "scripts", "bootstrap.mjs"), "--no-install", "--no-build"],
+    {
+      cwd: root,
+      encoding: "utf8",
+      timeout: 60_000,
+      env: { ...process.env, NO_COLOR: "1", USERPROFILE: home, HOME: home, FORGE_BIN: mine },
+    },
+  );
+  assert.ifError(result.error);
+  const out = stripAnsi(result.stdout + result.stderr);
+  assert.match(out, /forge \(unknown\)/, `the override must resolve to a forge:\n${out}`);
+  assert.doesNotMatch(out, /not on PATH/, `the override must win over the discovered copy:\n${out}`);
+  assert.doesNotMatch(out, /\$env:FORGE_BIN=|export FORGE_BIN=/,
+    `a resolved override needs no export hint:\n${out}`);
+});
+
+test("bootstrap: a FORGE_BIN pointing at a directory is rejected, not accepted as a tool", (t) => {
+  // `isUsableFile` exists for this case. `existsSync` is true for a directory, so without the
+  // `isFile()` check a `FORGE_BIN` pointing at `~/.foundry/bin` would pass every existence test
+  // and then fail at spawn with a message about the tool rather than about the variable.
+  //
+  // A directory override must be refused, so the probe falls through to the real copy — and the
+  // PATH hint comes back, because now the resolved forge *is* the discovered one.
+  const home = foundryHome(t);
+  const root = fixture(t);
+  const result = spawnSync(
+    process.execPath,
+    [join(root, "scripts", "bootstrap.mjs"), "--no-install", "--no-build"],
+    {
+      cwd: root,
+      encoding: "utf8",
+      timeout: 60_000,
+      env: {
+        ...process.env,
+        NO_COLOR: "1",
+        USERPROFILE: home,
+        HOME: home,
+        FORGE_BIN: join(home, ".foundry", "bin"),
+      },
+    },
+  );
+  assert.ifError(result.error);
+  const out = stripAnsi(result.stdout + result.stderr);
+  assert.match(out, /✓ cast, anvil, chisel/, `the real copy must still be found:\n${out}`);
+  assert.match(out, /not on PATH/, `the directory override must be refused, not used:\n${out}`);
+  assert.match(out, /forge \(unknown\)/, `the real copy is a stub here, so "unknown" is expected:\n${out}`);
+});
+
 /** Strips ANSI so assertions read the same in a colour and a non-colour terminal. */
 function stripAnsi(text) {
   return text.replace(/\u001b\[[0-9;]*m/g, "");

@@ -11,23 +11,78 @@
  * one Contact URI, and an unexpired Expires date. An expired security.txt fails this
  * job, so the disclosure channel cannot silently rot (TD-7).
  *
- *   node scripts/check-doc-counts.mjs           # verify (exit 1 on drift)
- *   node scripts/check-doc-counts.mjs --write   # rewrite the README numbers, then re-verify
+ * DEBT-07: the header claimed a CHANGELOG guard that the code never implemented — only
+ * the README and whitepaper were read. The CHANGELOG had six drifted restatements
+ * (`core` 180 against a real 255, `indexer` 12 against 34, a MetaMask 12.5.0 pin against
+ * ci.yml's 13.49.0, "4 invariant suites" against 4 invariants in 1 suite, coverage
+ * percentages and a 91/10 Foundry total) none of which could fail the build. The same
+ * class of drift hides in `docs/STATUS.md` (the vault note count) and
+ * `docs/TROUBLESHOOTING.md` (the forge-lint annotation count), so all three are checked
+ * now. Only the CHANGELOG's *latest* dated entry is guarded: an older entry's numbers
+ * were true when written, and rewriting a historical record would be a lie.
  *
- * Sources of truth: `forge test --list` (no execution) and `.github/workflows/*.yml`.
+ *   node scripts/check-doc-counts.mjs           # verify (exit 1 on drift)
+ *   node scripts/check-doc-counts.mjs --write   # rewrite the derivable numbers, then re-verify
+ *   node scripts/check-doc-counts.mjs --with-ts # also verify the TypeScript test totals (~1 min)
+ *
+ * An unrecognised argument exits 2: the check could not run as asked, which is not a pass.
+ *
+ * Sources of truth: `forge test --list` (no execution), `.github/workflows/*.yml`, the
+ * per-package `vitest.config.ts` coverage thresholds, the Solidity sources, and the
+ * vault directory listing.
  *
  * The pure helpers below (counts, claim comparison, report summarising) are exported so
  * `scripts/check-doc-counts.test.mjs` can exercise them against isolated fixtures without
- * touching the real README/whitepaper. The script only runs when invoked directly.
+ * touching the real documents. The script only runs when invoked directly.
  */
 import { execFileSync } from "node:child_process";
 import { readFileSync, readdirSync, writeFileSync, existsSync, rmSync } from "node:fs";
+import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parse as parseYaml } from "yaml";
+import { announce, messageOf, reportUsage, VERDICT } from "./lib/exit.mjs";
+import { parseArgs, usage } from "./lib/cli.mjs";
+
+/** This gate's name as it appears in the machine-readable verdict line. */
+const GATE = "check-doc-counts";
+
+/** The flags this gate accepts. Anything else is a usage error, not a silently dropped token. */
+const FLAGS = Object.freeze({
+  write: { type: "boolean", describe: "rewrite the derivable counts, then re-verify" },
+  "with-ts": { type: "boolean", describe: "also verify the TypeScript test totals (~1 min)" },
+});
+
+const USAGE = usage([`usage: ${GATE} [--write] [--with-ts]`], FLAGS);
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-const FORGE = process.env.FORGE_BIN ?? "forge";
+const IS_WIN = process.platform === "win32";
+
+/**
+ * Where forge lives, discovered exactly as `resolveForge()` in scripts/verify.mjs does:
+ * `FORGE_BIN`, then the well-known `~/.foundry/bin/forge[.exe]`, then plain `forge` on PATH.
+ *
+ * Without the filesystem probe this gate exited 2 with `{"verdict":"tool-missing"}` on a
+ * default Windows install even though forge was installed — foundryup puts its binaries in
+ * `~/.foundry/bin` without putting that directory on PATH, so `FORGE_BIN` was the only way in
+ * and nothing set it. That is the same class of defect as the drift this gate exists to catch:
+ * two entry points disagreeing about the world. They must not drift apart again.
+ *
+ * `FORGE_BIN` stays authoritative when it is set but does not resolve: an explicit override
+ * naming a binary that is not there is a hard error, not a reason to silently run some other
+ * forge. The tool-missing verdict reports the candidate it tried, which is what that override
+ * is for. So this returns the bare string `forge` rather than null as verify.mjs's copy does,
+ * leaving the exec-time `tool-missing` + exit 2 in forgeCounts() unchanged.
+ *
+ * @returns {string} the forge executable to invoke.
+ */
+function resolveForge() {
+  if (process.env.FORGE_BIN) return process.env.FORGE_BIN;
+  const local = join(homedir(), ".foundry", "bin", IS_WIN ? "forge.exe" : "forge");
+  return existsSync(local) ? local : "forge";
+}
+
+const FORGE = resolveForge();
 
 /** Contracts excluded from the PR-gated `npm test` scope (see root package.json). */
 export const EXCLUDED = /Invariant|Fork/;
@@ -186,6 +241,13 @@ export function checkWhitepaperCounts(text, { counts, ci, ts, halmos, invariant 
       problems.push(`${label}: could not find the claim in the whitepaper (prose changed shape?)`);
       return;
     }
+    // P0-ZERO: `actual === null` means the measurement was unavailable, not that it was zero.
+    // Reporting "whitepaper says 4, actual is null" would be noise dressed as a finding, and the
+    // comparison is meaningless either way — so it is named as unavailable and not compared.
+    if (actual === null) {
+      problems.push(`${label}: could not be measured (input unavailable), so the whitepaper's claim of ${m[group]} was NOT checked`);
+      return;
+    }
     if (Number(m[group]) !== actual) {
       problems.push(`${label}: whitepaper says ${m[group]}, actual is ${actual}`);
     }
@@ -263,6 +325,13 @@ export function checkReadmeCounts(readme, { counts, ci, halmos, echidna, invaria
       problems.push(`${label}: pattern not found in README (docs drifted structurally)`);
       return;
     }
+    // P0-ZERO: same contract as `expect()` in checkWhitepaperCounts — a `null` actual is an
+    // unavailable measurement, not a zero, and comparing against it would either manufacture
+    // false drift or (if the doc happened to claim 0) silently pass. Named, never compared.
+    if (actual === null) {
+      problems.push(`${label}: could not be measured (input unavailable), so the README's claim of ${m[group]} was NOT checked`);
+      return;
+    }
     if (Number(m[group]) !== actual) {
       problems.push(`${label}: README says ${m[group]}, actual is ${actual}`);
     }
@@ -323,6 +392,432 @@ export function checkReadmeCounts(readme, { counts, ci, halmos, echidna, invaria
     }
   }
 
+  return problems;
+}
+
+/**
+ * The guarded window: the newest dated entry under `## [Unreleased]` (DEBT-07).
+ *
+ * Entries are newest-first, so the guarded entry is the *first* dated `###` heading after
+ * `[Unreleased]` — the release in flight. Everything below it is history: the 2026-09-11
+ * entry's "38 Foundry tests", a MetaMask 12.5.0 pin, "4 invariant suites" and 91 tests
+ * across 10 suites were each true when written, and re-litigating them on every commit
+ * would make the changelog unusable as a historical record. Only the current entry can
+ * have drifted away from today's toolchain.
+ *
+ * A `###` heading not led by an ISO date (`### Added — Contracts`) is a category, not a
+ * release; the file uses them inside older entries, so "the newest dated entry" must never
+ * resolve to one. Returns `null` when no dated entry exists under `[Unreleased]`, which
+ * callers must treat as a problem rather than "nothing to check" — a changelog with no
+ * current entry has stopped recording releases.
+ */
+export function latestChangelogSection(text) {
+  const unreleased = /^##[^\S\n]*\[Unreleased\][^\S\n]*$/m.exec(text);
+  if (!unreleased) return null;
+  const rest = text.slice(unreleased.index + unreleased[0].length);
+  // The next level-2 heading starts the previous released version, which ends the block.
+  const nextRelease = /^##(?!#)[^\S\n]*\S/m.exec(rest);
+  const block = nextRelease ? rest.slice(0, nextRelease.index) : rest;
+  for (const heading of block.matchAll(/^(###[^\S\n]+[^\n]*)$/gm)) {
+    if (!/^###[^\S\n]+\d{4}-\d{2}-\d{2}\b/.test(heading[1])) continue;
+    // Cut at the next `###` so a later entry's counts cannot leak into this one.
+    const after = block.slice(heading.index + heading[1].length);
+    const next = after.match(/^###/m);
+    return (heading[1] + after.slice(0, next ? next.index : after.length)).trim();
+  }
+  return null;
+}
+
+/**
+ * Pure CHANGELOG comparison (DEBT-07). Guards the current entry only.
+ *
+ * Unlike the README, a changelog entry makes whichever claims it happens to make — a
+ * docs-only release states no counts at all, and demanding a "Suites:" line from it
+ * would block the release on an unrelated edit. So each claim type is verified when
+ * present and ignored when absent; a *wrong* claim is never ignored.
+ *
+ * `actuals`: `{ counts, invariant, ts, metamask, coverage }` — `ts` is the per-package
+ * map from `tsTestCounts` (null without `--with-ts`), `metamask` the version pinned in
+ * ci.yml, `coverage` the v8 thresholds read from the per-package vitest configs.
+ */
+export function checkChangelogCounts(text, { counts, invariant, ts, metamask, coverage }) {
+  const problems = [];
+  const section = latestChangelogSection(text);
+  if (section === null) {
+    return ["CHANGELOG: no dated entry under `## [Unreleased]` (structure changed?)"];
+  }
+  // The claims wrap across lines in the source; match against a whitespace-normalised copy.
+  const flat = section.replace(/\s+/g, " ");
+
+  // --- per-package TypeScript counts ("Suites: core 255 (+1 skipped) · indexer 34 · …") ---
+  // Pinned against a real run, because `core 180` and `indexer 12` were both written
+  // for an earlier revision while the suites now hold 255 and 34. Optional like every
+  // other claim: a release that reports no TS totals is not asserting wrong ones.
+  if (ts) {
+    const suites = /Suites: core (\d+)(?:\s*\(\+\d+ skipped\))?[^0-9]+indexer (\d+)[^0-9]+mcp (\d+)[^0-9]+demo-agent (\d+)/.exec(flat);
+    if (suites) {
+      const claimed = { core: Number(suites[1]), indexer: Number(suites[2]), mcp: Number(suites[3]), "demo-agent": Number(suites[4]) };
+      // `tsTestCounts` returns `{ passed, skipped }` per package, so the claim must be compared
+      // against `.passed`. Comparing the whole object to a number is never equal, which made
+      // this branch report four `[object Object]` drifts for a fully correct changelog.
+      for (const p of Object.keys(claimed)) {
+        const actual = ts[p]?.passed;
+        if (actual === undefined) continue;
+        if (claimed[p] !== actual) {
+          problems.push(`CHANGELOG: says ${p} has ${claimed[p]} tests, actual is ${actual}`);
+        }
+      }
+    }
+  }
+
+  // --- Foundry totals ("115 Foundry unit/fuzz tests across 11 suites") ---
+  // A quoted past figure is an anecdote, not a claim: the current entry documents the
+  // guard by saying the numbers "had once" read "38 Foundry tests" against a real 86.
+  // Verifying that quotation against today's 115 would flag the sentence that explains
+  // why the guard exists, so quotations are stripped before any Foundry number is read.
+  const live = flat.replace(/"[^"]*"/g, " ");
+  const total = /(\d+) Foundry (?:unit\/fuzz )?tests across (\d+) suites/.exec(live);
+  if (total) {
+    if (Number(total[1]) !== counts.total) {
+      problems.push(`CHANGELOG: says ${total[1]} Foundry tests, actual is ${counts.total}`);
+    }
+    if (Number(total[2]) !== counts.suites) {
+      problems.push(`CHANGELOG: says ${total[2]} Foundry suites, actual is ${counts.suites}`);
+    }
+  }
+  // The short form ("38 Foundry tests") restates the same total in a form the parenthesised
+  // pattern misses, and it is what the 0.1.0 entry uses, so it is pinned too.
+  for (const m of live.matchAll(/(\d+) Foundry tests\b/g)) {
+    if (Number(m[1]) !== counts.total) {
+      problems.push(`CHANGELOG: says ${m[1]} Foundry tests, actual is ${counts.total}`);
+    }
+  }
+
+  // --- invariant phrasing ---
+  // "4 invariant suites" is the recurring error: there is one invariant *file* holding
+  // four invariants, so a per-invariant suite count is a category mistake, not a
+  // stale number, and no run can reconcile it.
+  const miscountedSuites = /(\d+) invariant suites?\b/.exec(live);
+  // P0-ZERO: an unavailable invariant measurement is reported as unavailable and the two
+  // arithmetic checks below are skipped — comparing against `null` would flag every shape as
+  // drift, which is how a "could not measure" gets filed as a documentation defect.
+  if (invariant.invariants === null || invariant.suites === null) {
+    problems.push(
+      "CHANGELOG: the invariant counts are UNAVAILABLE (contracts/test/ is missing) — this entry's claim was not checked",
+    );
+  } else if (miscountedSuites) {
+    problems.push(
+      `CHANGELOG: says "${miscountedSuites[0]}", but the contracts hold ${invariant.invariants} invariants in ${invariant.suites} suite — one suite, not one per invariant`,
+    );
+  } else {
+    const shaped = /(\d+) invariants in (\d+) suites?\b/.exec(live);
+    if (shaped) {
+      if (Number(shaped[1]) !== invariant.invariants) {
+        problems.push(`CHANGELOG: says ${shaped[1]} invariants, actual is ${invariant.invariants}`);
+      }
+      if (Number(shaped[2]) !== invariant.suites) {
+        problems.push(`CHANGELOG: says ${shaped[2]} invariant suites, actual is ${invariant.suites}`);
+      }
+    }
+  }
+
+  // --- pinned MetaMask build ---
+  // The entry documents a version that CI fetches by URL and verifies by SHA256; a
+  // stale pin in the changelog tells a reader which build was validated when it is not.
+  for (const m of live.matchAll(/MetaMask (\d+\.\d+\.\d+)/g)) {
+    if (metamask && m[1] !== metamask) {
+      problems.push(`CHANGELOG: says MetaMask ${m[1]}, ci.yml pins ${metamask}`);
+    }
+  }
+
+  // --- coverage percentages ---
+  // Measured coverage cannot be reproduced without a coverage run, but the entry claims
+  // "all above their configured floors", and the floors are static config. A claimed
+  // number below its floor falsifies that sentence; a number above it is unverifiable
+  // here and is left alone rather than guessed at.
+  const cov = /Coverage: core ([\d.]+)% stmts \/ ([\d.]+)% branches[^0-9]+indexer ([\d.]+)\/([\d.]+)[^0-9]+mcp ([\d.]+)\/([\d.]+)[^0-9]+demo-agent ([\d.]+)\/([\d.]+)/.exec(live);
+  if (cov) {
+    const pairs = [
+      ["core", cov[1], cov[2]],
+      ["indexer", cov[3], cov[4]],
+      ["mcp", cov[5], cov[6]],
+      ["demo-agent", cov[7], cov[8]],
+    ];
+    for (const [pkg, stmts, branches] of pairs) {
+      const floor = coverage?.[pkg];
+      if (!floor) {
+        problems.push(`CHANGELOG: claims ${pkg} coverage but its vitest thresholds are missing`);
+        continue;
+      }
+      // `stmts` in the changelog is the first of the v8 line/statement figures; the
+      // packages that differ between the two floors must clear the stricter one.
+      const stmtsFloor = Math.min(floor.lines ?? Infinity, floor.statements ?? Infinity);
+      if (Number(stmts) < stmtsFloor) {
+        problems.push(`CHANGELOG: claims ${pkg} ${stmts}% stmts, below its configured floor of ${stmtsFloor}%`);
+      }
+      if (Number(branches) < (floor.branches ?? 0)) {
+        problems.push(`CHANGELOG: claims ${pkg} ${branches}% branches, below its configured floor of ${floor.branches}%`);
+      }
+    }
+  }
+
+  return problems;
+}
+
+/**
+ * Pure `docs/STATUS.md` comparison. The file indexes the repo's documents, so its one
+ * derivable number is the vault note count — it was 21 against a real 22, and the file
+ * itself says the directory wins when the two disagree. Every occurrence is checked, so
+ * a partial fix (one table updated, the other left stale) still fails.
+ *
+ * TWO shapes carry the count, and a guard that knows only one of them guards a subset
+ * while looking complete:
+ *
+ *   1. "22 notes"                     — `(vault/) (22 notes)` in the L4 table
+ *   2. "22 `vault/` notes"            — "Audit of the 22 `vault/` notes" in the VAULT-AUDIT
+ *                                       row, where the digits are separated from "notes" by
+ *                                       an inline-code path and a space
+ *
+ * Shape 2 is the one that rotted. `(\d+) notes\b` cannot see it (the text is
+ * "22 `vault/` notes", not "22 notes"), so when the count changed, the check stayed green
+ * and --write reported "changed" while leaving the wrong number in place. Both shapes are
+ * now matched, and the pairs below are shared with `rewriteStatus` — a check and a repair
+ * that use different patterns is a check whose repair silently does nothing.
+ *
+ * WHEN CHANGING EITHER REGEX, CONFIRM THE NEW SHAPE MATCHES AT LEAST ONE REAL SITE.
+ * The obvious guard against a wrong pattern is "run it and look", but the better one is
+ * earlier: this function is fail-closed, so a pattern that matches nothing is not a silent
+ * no-op — `claims.length === 0` returns "could not find the vault note count". A contributor
+ * who adds a shape that does not match gets a RED build, not a quietly unfixed document.
+ * That property is worth protecting: verify match count >= 1 against the real file, and
+ * never weaken the claim extraction to make a new shape "work" without that check.
+ *
+ * BUT MATCH COUNT >= 1 IS NECESSARY, NOT SUFFICIENT — there are three gates, not one.
+ * They cover three different failures, and none of them subsumes another:
+ *
+ *   1 EXISTENCE. fail-closed: a shape matching nothing yields claims.length === 0 and a
+ *     reported problem, so a wrong pattern is a red build rather than a quiet no-op.
+ *   2 UNIQUENESS. A shape loose enough to also swallow prose still matches >= 1 site and
+ *     still goes green. Measured on the real STATUS.md: `(\d+)[^|]*notes\b` and `\d+.*notes\b`
+ *     match 5 sites instead of 3, running past the table pipe into the next column.
+ *   3 NON-COLLATERAL REWRITE. The quietest failure, and the reason gate 2 is not enough. Under
+ *     rewriteStatus a loose shape changes digits that were never a declared count. Measured on
+ *     the real rule line (686 chars):
+ *       - `(\d+)[^|]*notes\b` / `\d+.*notes\b` -> 347 chars: the rule line is truncated, so the
+ *         damage is loud.
+ *       - a bare `(\d+)/g` (every digit run)     -> 686 chars, `occurrences` intact, but
+ *         `L4` -> `L23` and `2026-09-26` -> `23-23-23`. The rule still reads intact while
+ *         pointing at a layer and a document that do not exist, and the guard stays green.
+ *     Truncation announces itself; corrosion does not. Gate 3 is "the declared count is the only
+ *     thing that may change", asserted structurally (L-labels, ISO dates and document names are
+ *     captured before and after) rather than by asserting one failure mechanism — a mechanism-shaped
+ *     assertion would go stale the moment the harm changed shape, which is exactly what happened
+ *     here during F-15.
+ *
+ * Gates 2 and 3 live in check-doc-counts.test.mjs ("loosening a shape is caught even when it
+ * still matches >= 1 site"). A change to either regex needs all three.
+ */
+export function checkStatusCounts(text, { vault }) {
+  const problems = [];
+  const claims = [
+    ...[...text.matchAll(/(\d+) notes\b/g)].map((m) => ({ source: `\`vault/\` (${m[0]})`, n: Number(m[1]) })),
+    ...[...text.matchAll(/(\d+) `vault\/` notes\b/g)].map((m) => ({ source: `the VAULT-AUDIT row (${m[0]})`, n: Number(m[1]) })),
+    ...[...text.matchAll(/`(\d+)` occurrences/g)].map((m) => ({ source: "the 'update all occurrences' rule", n: Number(m[1]) })),
+  ];
+  if (claims.length === 0) {
+    return ["STATUS: could not find the vault note count (structure changed?)"];
+  }
+  for (const { source, n } of claims) {
+    if (n !== vault) {
+      problems.push(`STATUS: ${source} says ${n} vault notes, actual is ${vault}`);
+    }
+  }
+  return problems;
+}
+
+/**
+ * Pure `SECURITY.md` comparison.
+ *
+ * The disclosure policy tells a reporter how to reproduce symbolic verification:
+ * "`halmos --match-contract Halmos` (11 specs: 6 spend-cap/Merkle core + 5 auth-path
+ * over a …)". Both the total and the per-file split are derivable from the Halmos
+ * contracts, and a security document that under- or over-states the verification
+ * surface is exactly the claim a reader cannot check for themselves.
+ *
+ * This claim was unguarded until an injection run rewrote it to "99 specs" and all five
+ * gates exited 0. It is checked here rather than in a new script because the count is
+ * already computed — `halmosSpecCount()` returns `{ total, perFile }` — and because a
+ * sixth gate reading one more document is a worse trade than one more claim in the gate
+ * that already owns the number.
+ *
+ * Every occurrence is checked, so a partial fix still fails. The per-file split is
+ * verified as a *sum*, not against fixed per-file numbers: a new `Halmos*.t.sol` must be
+ * addable without editing this function, which is the same rule the vault and annotation
+ * guards follow.
+ */
+export function checkSecurityDocCounts(text, { halmos }) {
+  const problems = [];
+  // P0-ZERO: an unavailable measurement must never be compared. `halmos.total` is `null` when
+  // `contracts/test/` could not be read, and `n !== null` is true for every n — so without this
+  // guard a missing directory would report every spec claim as drift AND, worse, would still
+  // have passed had the doc said 0. "Could not measure" is reported as itself, once, and the
+  // arithmetic below is skipped because there is nothing to check it against.
+  if (halmos.total === null) {
+    return ["SECURITY: the Halmos spec count is UNAVAILABLE (contracts/test/ is missing) — the document's claim was not checked, and an unmeasured count is not a passing one"];
+  }
+  const totals = [...text.matchAll(/\((\d+)\s+specs?\b/g)].map((m) => Number(m[1]));
+  if (totals.length === 0) {
+    return ["SECURITY: could not find the Halmos spec count (structure changed?)"];
+  }
+  for (const n of totals) {
+    if (n !== halmos.total) {
+      problems.push(`SECURITY: says ${n} Halmos specs, actual is ${halmos.total}`);
+    }
+  }
+
+  // The parenthetical breakdown ("6 spend-cap/Merkle core + 5 auth-path") must account
+  // for every spec. Only the *total* is derivable, so the individual parts are checked
+  // for arithmetic completeness rather than against a per-file table: a breakdown that
+  // does not sum to the headline is a claim no run can reconcile.
+  const breakdown = /\(\s*\d+\s+specs?:\s*([^)]*)\)/.exec(text);
+  if (breakdown) {
+    const parts = [...breakdown[1].matchAll(/(\d+)\s+[a-zA-Z]/g)].map((m) => Number(m[1]));
+    if (parts.length === 0) {
+      problems.push(`SECURITY: could not parse the per-area spec split from ${JSON.stringify(breakdown[1].trim())}`);
+    } else {
+      const sum = parts.reduce((a, b) => a + b, 0);
+      if (sum !== halmos.total) {
+        problems.push(`SECURITY: the per-area spec split sums to ${sum}, the real total is ${halmos.total}`);
+      }
+    }
+  }
+  return problems;
+}
+
+/**
+ * Pure `docs/TROUBLESHOOTING.md` comparison. The file tells a reader how many
+ * forge-lint annotations exist to copy from ("There are 31 such annotations"); the
+ * real count is greppable from the Solidity sources, and was 31 against a real 28
+ * when this guard was written. The count moves as the contracts change, which is the
+ * point — a reader copying an annotation needs that many to exist.
+ */
+export function checkTroubleshootingCounts(text, { annotations }) {
+  const problems = [];
+  const claims = [...text.matchAll(/(\d+) such annotations?\b/g)];
+  if (claims.length === 0) {
+    return ["TROUBLESHOOTING: could not find the forge-lint annotation count (structure changed?)"];
+  }
+  for (const m of claims) {
+    if (Number(m[1]) !== annotations) {
+      problems.push(`TROUBLESHOOTING: says ${m[1]} forge-lint annotations, actual is ${annotations}`);
+    }
+  }
+  return problems;
+}
+
+/**
+ * Rewrites the derivable STATUS/TROUBLESHOOTING numbers (pure). The CHANGELOG is
+ * deliberately absent: its numbers belong to a past entry, and an automatic rewrite
+ * would silently falsify the release record.
+ */
+export function rewriteStatus(status, { vault }) {
+  return (
+    status
+      // Order matters: the backticked shape first, so "22 `vault/` notes" is not first
+      // mangled by a looser pattern. Mirrors the claim extraction in checkStatusCounts —
+      // see the note there on why the two must stay in step.
+      .replace(/(\d+) `vault\/` notes\b/g, `${vault} \`vault/\` notes`)
+      .replace(/(\d+) notes\b/g, `${vault} notes`)
+      .replace(/`(\d+)` occurrences/g, `\`${vault}\` occurrences`)
+  );
+}
+
+export function rewriteTroubleshooting(troubleshooting, { annotations }) {
+  return troubleshooting.replace(/(\d+) such annotations?\b/g, `${annotations} such annotations`);
+}
+
+/**
+ * Extracts the MetaMask build CI actually fetches (pure). Anchored on the release
+ * asset filename because ci.yml also names a superseded 12.5.0 in a cache-key comment.
+ */
+export function metamaskPinFromCi(ciText) {
+  const m = /metamask-chrome-(\d+\.\d+\.\d+)\.zip/.exec(ciText);
+  return m ? m[1] : null;
+}
+
+/** Reads the v8 coverage thresholds out of one `vitest.config.ts` (pure). */
+export function parseCoverageFloors(configText) {
+  const block = /thresholds:\s*\{([^}]*)\}/.exec(configText);
+  if (!block) return null;
+  const floors = {};
+  for (const m of block[1].matchAll(/(\w+):\s*(\d+)/g)) floors[m[1]] = Number(m[2]);
+  return floors;
+}
+
+/** Reads the per-package vitest coverage floors; statically derivable, so it needs no run. */
+function coverageFloors() {
+  const floors = {};
+  for (const p of ["core", "indexer", "mcp", "demo-agent"]) {
+    const file = join(ROOT, "packages", p, "vitest.config.ts");
+    if (!existsSync(file)) continue;
+    floors[p] = parseCoverageFloors(readFileSync(file, "utf8"));
+  }
+  return floors;
+}
+
+/** Counts the markdown notes in the research vault. */
+function vaultNoteCount() {
+  const dir = join(ROOT, "vault");
+  if (!existsSync(dir)) return 0;
+  return readdirSync(dir).filter((f) => f.endsWith(".md")).length;
+}
+
+/** Recursively lists the Solidity sources under a directory. */
+function soliditySources(dir) {
+  if (!existsSync(dir)) return [];
+  const out = [];
+  const walk = (d) => {
+    for (const entry of readdirSync(d, { withFileTypes: true })) {
+      const p = join(d, entry.name);
+      if (entry.isDirectory()) walk(p);
+      else if (entry.name.endsWith(".sol")) out.push(p);
+    }
+  };
+  walk(dir);
+  return out;
+}
+
+/**
+ * Counts `forge-lint: disable-next-line` annotations, matching `grep -r … | wc -l`
+ * (lines, not occurrences) so the documented figure and the shell one agree.
+ */
+function forgeLintAnnotationCount() {
+  return soliditySources(join(ROOT, "contracts")).reduce(
+    (n, f) => n + (readFileSync(f, "utf8").match(/^.*forge-lint: disable-next-line.*$/gm) ?? []).length,
+    0,
+  );
+}
+
+/** Reads the MetaMask build pinned by the CI workflow. */
+function ciMetamaskPin() {
+  const file = join(ROOT, ".github", "workflows", "ci.yml");
+  if (!existsSync(file)) return null;
+  return metamaskPinFromCi(readFileSync(file, "utf8"));
+}
+
+/**
+ * Shared I/O wrapper for the three derived-document guards: read, delegate, report.
+ * `checker` returns a list of problems (empty = OK); `log` names the OK line.
+ */
+function checkDocument(relativePath, checker, log) {
+  const path = join(ROOT, ...relativePath.split("/"));
+  if (!existsSync(path)) return [`${relativePath}: is missing`];
+  const problems = checker(readFileSync(path, "utf8"));
+  if (problems.length === 0) {
+    console.log(log);
+  } else {
+    for (const p of problems) console.error(`  ${p}`);
+  }
   return problems;
 }
 
@@ -401,7 +896,7 @@ function forgeCounts() {
       `could not run \`${FORGE} test --list\`. Set FORGE_BIN to the forge executable path.\n` +
         (err instanceof Error ? err.message : String(err)),
     );
-    process.exit(2);
+    process.exit(announce(GATE, VERDICT.TOOL_MISSING, { tool: FORGE }));
   }
 
   const contracts = new Map(); // contract name -> test count
@@ -442,7 +937,13 @@ function forgeCounts() {
  */
 function halmosSpecCount() {
   const dir = join(ROOT, "contracts", "test");
-  if (!existsSync(dir)) return { total: 0, perFile: {} };
+  // P0-ZERO: an absent `contracts/test/` used to return `{ total: 0 }`, and `checkSecurityDocCounts`
+  // compares the document's `(N specs)` claim against that 0. So deleting the whole directory made
+  // the document's claim vacuously true — a doc saying "(0 specs)" would have passed, and the
+  // per-area breakdown check is skipped entirely when no breakdown text is present. This function
+  // exists to catch "an injection run rewrote the claim to 99 specs and all five gates exited 0";
+  // a zero that means "could not look" must not be able to satisfy it. `null` is not a count.
+  if (!existsSync(dir)) return { total: null, perFile: {}, unavailable: true };
   const perFile = {};
   let total = 0;
   for (const f of readdirSync(dir)) {
@@ -463,7 +964,12 @@ function halmosSpecCount() {
  */
 function echidnaPropertyCount() {
   const file = join(ROOT, "contracts", "test", "EchidnaProperties.t.sol");
-  if (!existsSync(file)) return 0;
+  // P0-ZERO: same shape as `halmosSpecCount` and `invariantStats`, and for the same reason.
+  // A missing file used to return 0, which made "the properties are gone" and "the file
+  // declares zero properties" the same observation — so `checkReadmeCounts`'s
+  // `actual === null` guard never fired for Echidna and the README's claim went unchecked.
+  // `null` is not a count.
+  if (!existsSync(file)) return null;
   const text = readFileSync(file, "utf8");
   return (text.match(/^\s*function echidna_\w+\([^)]*\)[^{;]*\breturns\s*\(\s*bool\s*\)/gm) ?? []).length;
 }
@@ -491,7 +997,12 @@ export function countInvariantStats(files) {
 /** Reads the invariant test files and delegates to `countInvariantStats`. */
 function invariantStats() {
   const dir = join(ROOT, "contracts", "test");
-  if (!existsSync(dir)) return { invariants: 0, suites: 0 };
+  // P0-ZERO: same shape as `halmosSpecCount` and for the same reason. `{ invariants: 0, suites: 0 }`
+  // is a *legitimate* reading of a directory that exists and contains no invariant file — so
+  // returning it for a directory that does not exist made "the invariant suite is gone" and
+  // "the invariant suite is empty" the same observation, and a whitepaper claiming "0 invariants"
+  // satisfied the guard. `unavailable` is what a caller must check, not the zero.
+  if (!existsSync(dir)) return { invariants: null, suites: null, unavailable: true };
   const files = readdirSync(dir)
     .filter((f) => /\.invariant\.t\.sol$/.test(f))
     .map((f) => ({ name: f, text: readFileSync(join(dir, f), "utf8") }));
@@ -545,22 +1056,54 @@ function ciJobCount() {
   return { jobs, names, perFile };
 }
 
-function main() {
-  const WRITE = process.argv.includes("--write");
+function main(argv = process.argv.slice(2)) {
+  // A misspelled flag used to be dropped silently: `--writ` and `--with-tss` both ran the
+  // plain verification and exited 0, so a caller who believed `--write` was on got a gate
+  // that checked less than they thought. An unrecognised argument is exit 2 — the check
+  // could not run as asked, which is never a pass.
+  let flags;
+  try {
+    flags = parseArgs(argv, FLAGS);
+  } catch (err) {
+    process.exit(reportUsage(GATE, messageOf(err), USAGE));
+  }
+  if (flags.help) {
+    process.stdout.write(`${USAGE}\n`);
+    process.exit(announce(GATE, VERDICT.PASS));
+  }
+
+  const WRITE = flags.write;
   /**
    * Also verify the TypeScript test counts in the whitepaper. Off by default because it means
    * running every suite (~1 min); worth turning on before a release, since these are the
    * numbers an auditor or grant reviewer is most likely to check.
    */
-  const WITH_TS = process.argv.includes("--with-ts");
+  const WITH_TS = flags["with-ts"];
+
+  // The README is the one document the gate cannot report without, so its presence is
+  // settled before any measurement runs. Same shape as checkDocument() (:688) and
+  // checkWhitepaper() (:704); without it a checkout with no README died with an ENOENT stack
+  // trace, and a crash is not a verdict — the caller cannot tell "this repository is broken"
+  // from "this gate is broken". Deliberately not a try/catch: that would collapse "absent"
+  // and "unreadable" into one indistinguishable error code. It also goes first so a missing
+  // file is reported in milliseconds rather than after `forge test --list` has run, which
+  // matters because that call exits 2 first and would otherwise mask the real finding.
+  const readmePath = join(ROOT, "README.md");
+  if (!existsSync(readmePath)) {
+    console.error("README: is missing (the document every other count is restated in)");
+    process.exit(announce(GATE, VERDICT.UNREADABLE_INPUT, { missing: "README.md" }));
+  }
+  let readme = readFileSync(readmePath, "utf8");
 
   const counts = forgeCounts();
   const ci = ciJobCount();
   const halmos = halmosSpecCount();
   const echidna = echidnaPropertyCount();
   const invariant = invariantStats();
-  const readmePath = join(ROOT, "README.md");
-  let readme = readFileSync(readmePath, "utf8");
+  const vault = vaultNoteCount();
+  const annotations = forgeLintAnnotationCount();
+  const metamask = ciMetamaskPin();
+  const coverage = coverageFloors();
 
   console.log(`forge (PR scope): ${counts.total} tests across ${counts.suites} suites`);
   console.log(`forge (excluded: invariant + fork): ${counts.excludedTotal} tests across ${counts.excludedSuites} suites`);
@@ -568,6 +1111,9 @@ function main() {
   console.log(`Halmos specs: ${halmos.total} (${Object.entries(halmos.perFile).map(([f, n]) => `${f} ${n}`).join(", ")})`);
   console.log(`Echidna properties: ${echidna}`);
   console.log(`Invariant suite: ${invariant.invariants} invariants across ${invariant.suites} suite(s)`);
+  console.log(`Vault notes: ${vault}`);
+  console.log(`forge-lint annotations: ${annotations}`);
+  console.log(`MetaMask pin (ci.yml): ${metamask ?? "not found"}`);
 
   const problems = [...checkSecurityTxt()];
   problems.push(...checkReadmeCounts(readme, { counts, ci, halmos, echidna, invariant }));
@@ -583,19 +1129,59 @@ function main() {
   if (ts) problems.push(...ts.problems);
   problems.push(...checkWhitepaper({ counts, ci, ts: ts?.counts ?? null, halmos, invariant }));
 
+  // DEBT-07: the CHANGELOG's current entry, plus the two other documents that restate a
+  // derivable number. The changelog's own entry is history and is never auto-rewritten.
+  problems.push(...checkDocument(
+    "CHANGELOG.md",
+    (text) => checkChangelogCounts(text, { counts, invariant, ts: ts?.counts ?? null, metamask, coverage }),
+    `CHANGELOG counts OK (current entry${ts ? ", including TypeScript totals" : "; use --with-ts for the TS totals"}).`,
+  ));
+  problems.push(...checkDocument(
+    "docs/STATUS.md",
+    (text) => checkStatusCounts(text, { vault }),
+    `STATUS counts OK (${vault} vault notes).`,
+  ));
+  problems.push(...checkDocument(
+    "docs/TROUBLESHOOTING.md",
+    (text) => checkTroubleshootingCounts(text, { annotations }),
+    `TROUBLESHOOTING counts OK (${annotations} forge-lint annotations).`,
+  ));
+  problems.push(...checkDocument(
+    "SECURITY.md",
+    (text) => checkSecurityDocCounts(text, { halmos }),
+    `SECURITY counts OK (${halmos.total} Halmos specs).`,
+  ));
+
   if (problems.length === 0) {
-    console.log("\ndoc counts OK — README and whitepaper match the toolchain.");
-    process.exit(0);
+    console.log("\ndoc counts OK — README, whitepaper, CHANGELOG, STATUS, TROUBLESHOOTING and SECURITY match the toolchain.");
+    process.exit(announce(GATE, VERDICT.PASS));
   }
 
   if (WRITE) {
     readme = rewriteReadme(readme, { counts, ci, invariant });
     writeFileSync(readmePath, readme);
+    // Only the numbers the toolchain derives are rewritten. The CHANGELOG is excluded by
+    // design: an older entry's counts are a true record of that release, and a `--write`
+    // that "corrected" them would falsify it.
+    const derived = [
+      ["docs/STATUS.md", rewriteStatus],
+      ["docs/TROUBLESHOOTING.md", rewriteTroubleshooting],
+    ];
+    for (const [rel, rewrite] of derived) {
+      const path = join(ROOT, ...rel.split("/"));
+      if (!existsSync(path)) continue;
+      const before = readFileSync(path, "utf8");
+      const after = rel === "docs/STATUS.md" ? rewrite(before, { vault }) : rewrite(before, { annotations });
+      if (after !== before) {
+        writeFileSync(path, after);
+        console.log(`rewrote the derivable counts in ${rel}`);
+      }
+    }
     console.log("\ndoc counts rewritten in README.md — re-verifying without --write...");
 
-    // Fail closed: a rewrite is only a success if the re-verification passes. The whitepaper
-    // and the README suite breakdown are not auto-rewritten, so any drift they still carry
-    // must propagate as a non-zero exit rather than being reported as a clean rewrite.
+    // Fail closed: a rewrite is only a success if the re-verification passes. The whitepaper,
+    // the README suite breakdown and the CHANGELOG are not auto-rewritten, so any drift they
+    // still carry must propagate as a non-zero exit rather than being reported as a clean rewrite.
     let status = 1;
     try {
       execFileSync(process.execPath, rerunArgs(fileURLToPath(import.meta.url), { withTs: WITH_TS }), {
@@ -608,16 +1194,18 @@ function main() {
       status = exitStatusFromError(err);
     }
     if (status !== 0) {
-      console.error("README was rewritten but drift remains — fix the remaining claims by hand.");
+      console.error("Documents were rewritten but drift remains — fix the remaining claims by hand.");
     }
-    process.exit(status);
+    // The child already announced its own verdict on stdout; this line reports the
+    // `--write` run's outcome so a caller sees a verdict for THIS invocation too.
+    process.exit(announce(GATE, status === 0 ? VERDICT.PASS : VERDICT.DRIFT, { wrote: true, reverifyExit: status }));
   }
 
   console.error(`\ndoc count drift (${problems.length}):`);
   for (const p of problems) console.error(`  ${p}`);
-  console.error("\nRun with --write to update README.md, then update the suite breakdown by hand.");
-  console.error("Whitepaper counts are prose — fix them manually (--with-ts also checks the TS totals).");
-  process.exit(1);
+  console.error("\nRun with --write to update README.md, docs/STATUS.md and docs/TROUBLESHOOTING.md, then update the suite breakdown by hand.");
+  console.error("Whitepaper and CHANGELOG counts are prose/history — fix them manually (--with-ts also checks the TS totals).");
+  process.exit(announce(GATE, VERDICT.DRIFT, { problems: problems.length }));
 }
 
 /** True when this module is the process entry point (not imported by the test file). */

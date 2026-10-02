@@ -377,12 +377,36 @@ export function measurementValidity(config, dataset, environment, results) {
     valid: runtimeEligible && completed && correctness && timingValid };
 }
 
+/**
+ * Throws when a report is not admissible as performance evidence.
+ *
+ * OBS-01: the message used to be a fixed "benchmark validation failed" string with the real
+ * cause parked on `error.report.errors[]`. Every consumer then printed `error.message` and saw
+ * nothing useful — this exact file cost two debugging rounds, because `assert.equal(status, 0,
+ * child.stderr)` put a Node `ExperimentalWarning` and the real `Cannot find package
+ * '@sigilkit/core'` in one stream, and the generalized message named neither. The report is
+ * still attached for programmatic use, but the *message* now carries the cause, so anything
+ * that logs the message alone is still actionable.
+ *
+ * Reports can be invalid with no `errors` entry at all (an unmet validity flag with nothing
+ * thrown), so the validity flags are appended as the fallback — otherwise the worst case is
+ * the one case that still says nothing.
+ */
 export function assertValidReport(report) {
-  if (report.validity?.valid !== true) {
-    const error = new Error("benchmark validation failed; diagnostic report is not performance evidence");
-    error.report = report;
-    throw error;
-  }
+  if (report.validity?.valid === true) return;
+  const errors = Array.isArray(report.errors) ? report.errors : [];
+  const cause = errors.length
+    ? errors.map((e) => `${e.stage ?? "<no stage>"}: ${e.message ?? String(e)}`).join("; ")
+    : "no error was recorded";
+  const flags = Object.entries(report.validity ?? {})
+    .filter(([key, value]) => key !== "valid" && value !== true)
+    .map(([key]) => key);
+  const detail = flags.length ? ` (failed validity checks: ${flags.join(", ")})` : "";
+  const error = new Error(
+    `benchmark validation failed; diagnostic report is not performance evidence — ${cause}${detail}`,
+  );
+  error.report = report;
+  throw error;
 }
 
 /** Assembles a diagnostic report; invalid runs retain raw records but no summaries. */
@@ -644,6 +668,11 @@ export async function runBenchmark({ rows, reps, seed, now = () => new Date(), l
     build = (dependencies.collectIdentity ?? collectBuildIdentity)();
     const { SigilIndexer, silentLogger } = dependencies.load ? await dependencies.load() : {
       ...(await import(pathToFileURL(INDEXER_ENTRY).href)), ...(await import("@sigilkit/core")),
+      // P0-3: logger symbols left the core barrel; `silentLogger` now lives on the
+      // `/logger` subpath only. The bare barrel import above would silently yield
+      // `undefined` here and every rep would fail at construct with
+      // "silentLogger is not a function" — a run that LOOKS executed.
+      ...(await import("@sigilkit/core/logger")),
     };
     for (const mode of MODES) {
       const repRecords = results[mode].reps;

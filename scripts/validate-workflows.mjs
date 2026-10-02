@@ -23,6 +23,22 @@ import { parseDocument } from "yaml";
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const DIR = join(ROOT, ".github", "workflows");
 
+// This gate inspects the repository it is *installed in*, and takes no options. A `--root`
+// would read as "check that other tree" and be silently dropped, so a caller would get a
+// clean verdict about a repository it never looked at. Rejecting is the honest answer: a
+// caller that meant another checkout can `cd` there, and one that mistyped a flag learns so.
+// Exit 2 = "could not run as asked", which is what this is — never a finding, never a pass.
+// Written inline instead of via `reportUsage` from `scripts/lib/exit.mjs` on purpose: this
+// script is copied *alone* into fixture repositories by its own test suite
+// (`validate-workflows.test.mjs:50-60`), so importing a sibling module would make every one
+// of those fixtures fail to load with ERR_MODULE_NOT_FOUND. Two duplicated lines beat a
+// broken suite — and the contract is already spelled out once, in `scripts/lib/exit.mjs:4-13`.
+if (process.argv.length > 2) {
+  console.error(`validate-workflows: takes no arguments, got ${process.argv.slice(2).join(" ")}`);
+  console.error(`it validates the workflows in the repository this script lives in (${DIR}).`);
+  process.exit(2);
+}
+
 if (!existsSync(DIR)) {
   console.error(`no workflow directory at ${DIR}`);
   process.exit(1);
