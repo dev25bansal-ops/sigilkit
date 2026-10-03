@@ -15,10 +15,10 @@
  *
  * PROVENANCE OF THE CASE COUNT
  * -----------------------------
- *   DECLARATIONS = RUNTIME CASES = 20. No parameterized blocks.
+ *   DECLARATIONS = RUNTIME CASES = 23. No parameterized blocks.
  *
  * Runtime confirmation (read from the run log, not recomputed):
- *   `Tests  20 passed (20)` / `Test Files  1 passed (1)` — a clean single-file run.
+ *   `Tests  23 passed (23)` / `Test Files  1 passed (1)` — a clean single-file run.
  *
  * Caveat on that run: collected under an alias harness substituting the `@sigilkit/*`
  * workspace specifiers, because the dependency tree was empty at the time. It evidences what
@@ -40,7 +40,7 @@ import {
   type Hash,
   type Hex,
 } from "viem";
-import { SESSION_KEY_MANAGER_ABI, type Scope } from "@sigilkit/core";
+import { SESSION_KEY_MANAGER_ABI, merkleRoot, targetLeaf, type Scope } from "@sigilkit/core";
 import { TreasuryAgent, sessionSignerFromKey } from "../src/agent.js";
 
 const MANAGER = "0x00000000000000000000000000000000000000aa" as Address;
@@ -310,7 +310,12 @@ afterEach(() => {
   sentCalldata = null;
 });
 
-function agentWith(strategy: (tick: number) => ReturnType<typeof action> | null, relayer?: Hex, scope: Scope = SCOPE) {
+function agentWith(
+  strategy: (tick: number) => ReturnType<typeof action> | null,
+  relayer?: Hex,
+  scope: Scope = SCOPE,
+  whitelistLeaves?: Hash[],
+) {
   return new TreasuryAgent({
     chain: foundry,
     rpcUrl,
@@ -318,6 +323,7 @@ function agentWith(strategy: (tick: number) => ReturnType<typeof action> | null,
     sessionSigner: sessionSignerFromKey(AGENT_KEY),
     ...(relayer ? { relayer } : {}),
     scope,
+    ...(whitelistLeaves ? { whitelistLeaves } : {}),
     strategy,
   });
 }
@@ -407,6 +413,40 @@ describe("tick() — sign-only mode (no relayer)", () => {
     await expect(agent.tick()).rejects.toThrow(/policy rejection/i);
     expect(agent.state.actionsExecuted).toBe(0);
     expect(calls).toContain("eth_call");
+  });
+
+  it("proves a wildcard leaf when only the no-data leaf is whitelisted", async () => {
+    // The contract tries the pinned (target+selector+data) leaf first, then the wildcard
+    // (target+selector only). The demo mirrors that order, so a wildcard grant must admit an
+    // action carrying data — a fallback that only tried the pinned leaf would refuse locally
+    // what the manager would accept on-chain. The tick resolving (no "outside the granted
+    // whitelist" throw) is the behavioural proof the fallback ran.
+    const wildcard = targetLeaf(COUNTER, "0x32145f90");
+    const agent = agentWith(
+      () => action(),
+      undefined,
+      { ...SCOPE, merkleRoot: merkleRoot([wildcard]) },
+      [wildcard],
+    );
+    const res = await agent.tick();
+    expect(res).toMatchObject({ executed: true, broadcast: false });
+    expect(agent.state.actionsExecuted).toBe(1);
+  });
+
+  it("refuses to sign an action outside the granted whitelist, and spends no signature", async () => {
+    // A pinned, non-zero merkleRoot means every fire must be provable against the granted
+    // leaves. An unlisted action is a strategy bug, and the failure must land HERE — before a
+    // signature exists — not as a silent allowance or an on-chain revert.
+    const other = targetLeaf(COUNTER, "0xdeadbeef");
+    const agent = agentWith(
+      () => action(),
+      undefined,
+      { ...SCOPE, merkleRoot: merkleRoot([other]) },
+      [other],
+    );
+    await expect(agent.tick()).rejects.toThrow(/outside the granted whitelist/);
+    expect(agent.state.actionsExecuted).toBe(0);
+    expect(agent.state.lastPrepared).toBeUndefined();
   });
 });
 
@@ -541,6 +581,19 @@ describe("run() — the loop the CLI drives", () => {
 
     expect(state.tick).toBe(3);
     expect(state.actionsExecuted).toBe(2);
+  });
+
+  it("aborts after five consecutive failing ticks instead of retrying forever", async () => {
+    // Resilience has a bound: a permanently broken grant must not turn a long-running agent
+    // into an infinite retry loop. Once the failure streak reaches the cap the run throws,
+    // naming the cap, so the operator gets an end — and an error line — rather than a silent
+    // spin. (Six ticks requested, five failures: the throw lands on the fifth.)
+    const agent = agentWith(() => action({ value: 10n ** 30n }), undefined, {
+      ...SCOPE,
+      perActionCap: 1n,
+    });
+    await expect(agent.run(6, 1)).rejects.toThrow(/aborting the run after 5 consecutive failed ticks/);
+    expect(agent.state.actionsExecuted).toBe(0);
   });
 
   it("runs zero ticks and returns the initial state", async () => {
