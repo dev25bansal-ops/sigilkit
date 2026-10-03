@@ -1,19 +1,14 @@
 # Security Notes — Slither Triage (2026-08-24)
 
-`slither contracts/src` reports **24 findings across 7 contracts, zero high-severity bugs**
-(re-run 2026-09-14 after the E14-E20 components (executor, delegator, lease adapters)
-landed; two new-surface findings FIXED in code: zero-address withdraw burn
-(SessionKeyManager) and zero-target value burn (ActionLog7579Executor)). Every remaining finding is a known, deliberate
-design pattern of an agent-action executor. This file is the reference the CI Slither gate and
-future auditors should check against.
-
-> **UNVERIFIED 2026-10-27 — the headline count does not reconcile with the table below.** This
-> paragraph claims 24 findings across 7 contracts; the triage table that follows enumerates 13
-> numbered rows (1, 2–8, 9–10, 11, 12–13) and accounts for none of the remaining 11. Either 11
-> findings are untriaged, or the header over-counts. The number was deliberately NOT changed
-> here: `slither` could not be re-run in this environment, and inventing a replacement would be
-> worse than leaving the contradiction visible. Re-run `slither contracts/src`, then reconcile
-> this paragraph and the table in one edit.
+The most recent `slither` re-run (0.11.6, 2026-09-23, recorded in `docs/CI-WAIVERS.md`
+"Static-analysis triage") found **zero High/Medium findings on `contracts/src/`**, with
+**53 unique source findings across 9 detectors**, all Low/Informational and deliberate. An
+earlier 2026-08 baseline of `slither contracts/src` found zero high-severity bugs; the E14-E20
+components (executor, delegator, lease adapters) landed after that and introduced two
+new-surface findings, both FIXED in code (zero-address withdraw burn in `SessionKeyManager`,
+zero-target value burn in `ActionLog7579Executor`). This file is the reference the CI Slither
+gate and future auditors should check against; the authoritative numeric reconciliation lives
+in `docs/CI-WAIVERS.md` ("Static-analysis triage") and `docs/NUMBERS-2026-09-26.md`.
 
 | # | Detector | Location | Triage |
 |---|----------|----------|--------|
@@ -42,21 +37,13 @@ future auditors should check against.
 ## Invariants under formal verification
 
 - **INV-1**: window spend ≤ per-window cap **within any single fixed (tumbling) window** — covered by
-  stateful invariant fuzz suite **and 4 Halmos symbolic specs** over the `SpendPolicy.enforce` core
-  (exact-spend recording, over-cap reversion, rollover isolation, per-action cap) **plus 1
-  auth-path spec** (`check_execute_WindowSpendNeverExceedsCap`). Window
+  the stateful invariant fuzz suite **and 6 Halmos symbolic specs over the `SpendPolicy.enforce` /
+  Merkle core** (exact-spend recording, over-cap reversion, rollover isolation, per-action cap)
+  **plus 5 auth-path specs** (including `check_execute_WindowSpendNeverExceedsCap`). Window
   semantics: the window RESETS to zero when fully elapsed (tumbling, not sliding), so up to ~2×
   `perWindowCap` can legitimately cross a window boundary; a boundary-burst unit test pins this.
   Run: `halmos --match-contract Halmos` (11 specs: 6 spend-cap/Merkle core + 5 auth-path over a
-  recover-seam harness).
-  > **UNVERIFIED 2026-10-27 — the two spec counts in this bullet contradict each other.** The
-  > opening says 4 Halmos specs over the `SpendPolicy.enforce` core plus 1 auth-path spec; the
-  > `Run:` line says 11 specs = 6 core + 5 auth-path. They cannot both be right. Neither figure
-  > was changed here — `halmos` could not be run in this environment, and guessing which number is
-  > correct would be worse than leaving both visible. Cross-reference only (not a correction):
-  > `PROJECT-MAP.md` (2026-09-25) records "6 Halmos(spec)" for INV-1, which agrees with the second
-  > figure and not the first. Resolve by running `halmos --match-contract Halmos`, counting, and
-  > then fixing both figures in one edit.
+  recover-seam harness). The 11-count (6 + 5) is machine-verified by `scripts/check-doc-counts.mjs`.
 - **INV-2**: expired or revoked keys cannot execute (covered by invariant fuzz suite).
 - **INV-3**: `ActionLogged` emitted iff inner call succeeded (asserted in unit + TS E2E tests; on
   the 7579 path, `ActionLog7579Executor` emits it at execution time with the same negative
@@ -216,8 +203,9 @@ root-cause note in the catalog. A paid bounty (scope table + severity ladder) is
 - **Delegation is persistent code on your EOA.** Revoke it with `signRevocation` (an
   authorization naming address 0) or via MetaMask's in-UI revoke. Submitting a raw
   zero-address revocation through `eth_sendTransaction` is REJECTED by MetaMask
-  (allowlist `metamask:revoke-raw-rejected`, canary-verified on 13.49.0) — do not build a
-  product flow on that path.
+  (allowlist `metamask:revoke-raw-rejected`; last harness-verified on extension 12.5.0,
+  2026-08 — CI pins 13.49.0 but no 13.x harness verification of this behaviour is recorded)
+  — do not build a product flow on that path.
 - **Never sign a delegation to an address you don't own the code of.** Within four weeks of
   Pectra, >97% of mainnet 7702 delegations pointed at copy-pasted sweeper contracts with
   $1.54M+ documented single losses. SigilKit's canonical `SigilKitDelegator` address is the
