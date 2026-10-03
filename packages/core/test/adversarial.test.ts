@@ -1,5 +1,8 @@
 /**
- * Adversarial one-off fuzz pass over SDK public functions (temp file, deleted after run).
+ * Adversarial fuzz pass over SDK public functions.
+ *
+ * (The header once said "temp file, deleted after run"; it was kept and folded into the
+ * 573-test core suite instead, so it is pinned now like every other suite.)
  */
 import { describe, expect, it } from "vitest";
 import { actionRequestDigest, parseActionRequest, validateAgainstScope, targetLeaf, merkleRoot, merkleProof } from "../src/index.js";
@@ -71,5 +74,9 @@ describe("adversarial fuzz: SDK public functions", () => {
         expect(acc).toBe(root);
       }
     }
-  }, 30_000);
+  // Budget note: this loops ~2s in isolation, but was once observed at 37.8s while the
+  // full gate's four workspace suites executed on a contended machine — a 30s cap then
+  // fired on nothing being wrong. The ceiling exists to catch a hung keccak loop, and one
+  // still trips it; 120s leaves the measured worst case 3x headroom.
+  }, 120_000);
 });
