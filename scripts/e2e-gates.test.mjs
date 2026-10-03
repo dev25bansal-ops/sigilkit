@@ -300,6 +300,12 @@ test("T1 · four gates in sequence each report a verdict, and none of them crash
   copy(join(REPO, "packages"), join(root, "packages"));
   copy(join(REPO, "README.md"), join(root, "README.md"));
   copy(join(REPO, "CHANGELOG.md"), join(root, "CHANGELOG.md"));
+  // SECURITY.md is read from the repo ROOT by check-doc-counts (not from docs/). With forge
+  // present the chain includes check-doc-counts, and a fixture without this file failed it as
+  // "SECURITY.md: is missing" — a fixture defect disguised as a doc-count drift. CI's
+  // workflow-lint job has no forge, so the no-forge chain never exercised this path and the
+  // gap stayed invisible.
+  copy(join(REPO, "SECURITY.md"), join(root, "SECURITY.md"));
   copy(join(REPO, "docs", "WHITEPAPER-v2.1.md"), join(root, "docs", "WHITEPAPER-v2.1.md"));
   copy(join(REPO, ".well-known"), join(root, ".well-known"));
   copy(join(REPO, "foundry.toml"), join(root, "foundry.toml"));

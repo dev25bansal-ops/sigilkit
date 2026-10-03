@@ -839,26 +839,6 @@ function costOf(key) {
 }
 
 /**
- * One unit of scheduled work: a step key (which {@link costOf} prices) and the thunk that
- * runs it. Built by a function rather than written as a bare `[key, thunk]` tuple at each call
- * site for two reasons.
- *
- * The key cannot be forgotten: a wave entry with no key would cost 1 and silently reintroduce
- * the unweighted behaviour. `KEY_BY_LABEL` is deliberately not used to recover it, so a step
- * whose label is renamed does not quietly change how much concurrency it consumes.
- *
- * And it keeps `check-helper-suites.mjs` working. That guard parses this file for the
- * `helpers` step's literal argv list, anchored on a line containing `]),` — the shape
- * `"--test", … ])` had when the wave entries were bare thunks. A tuple wrapper changes that
- * text to `])],` and the guard cannot see its subject any more, so it exits 2 and refuses to
- * report "no drift". `step("helpers", () => run(…, [ … ]),` still ends in `]),`, so the anchor
- * survives and the meta-guard keeps policing the list.
- */
-function step(key, thunk) {
-  return { key, thunk };
-}
-
-/**
  * Runs `tasks` ({@link step} entries) with at most `limit` cost units in flight.
  *
  * Work is claimed in DECLARATION order, not completion order. That is a deliberate change from
