@@ -120,26 +120,17 @@ jobs:
       # SHA256 before extracting, and writes the binary to $RUNNER_TEMP instead of the repo
       # root. `bin` is captured from stdout so the path is resolved once and reused.
       #
-      # ================= ACTIONLINT DIGEST — MAINTAINER ACTION REQUIRED =================
-      # OPEN (UNVERIFIED) — recorded by the 2026-09 CI-security audit round.
-      #
-      # scripts/install-actionlint.sh pins ACTIONLINT_VERSION and an ACTIONLINT_SHA256
-      # constant. The DIGEST WAS NOT VERIFIED. It was supplied out-of-band, and the sandbox
-      # that produced this fix had no network access, so it could neither compute the real
-      # SHA256 of actionlint_1.7.9_linux_amd64.tar.gz nor fetch the published digest list.
-      # Nobody has confirmed it equals upstream's actionlint_1.7.9_checksums.txt entry.
-      #
-      # IMPACT IF WRONG: fail-CLOSED, not a security hole. `sha256sum -c` runs BEFORE `tar`
-      # and aborts the step on mismatch, so a bad digest cannot be turned into RCE — but it
-      # WILL red the workflow-lint job, i.e. every push and PR, until it is corrected.
-      #
-      # BEFORE MERGE, A MAINTAINER MUST:
-      #   1. curl -sSfL https://github.com/rhysd/actionlint/releases/download/v1.7.9/actionlint_1.7.9_checksums.txt
-      #   2. compare the linux_amd64 entry against ACTIONLINT_SHA256 in
-      #      scripts/install-actionlint.sh, and correct the constant if it differs.
-      # Do NOT resolve a mismatch by deleting or relaxing the digest check — that is the
-      # exact vulnerability this step replaced.
-      # ============================================================================
+      # DIGEST VERIFICATION (closed 2026-10-03; re-verify on any version bump):
+      #  - actionlint: ACTIONLINT_SHA256 in scripts/install-actionlint.sh equals the
+      #    linux_amd64 entry of the release's own actionlint_1.7.9_checksums.txt
+      #    (233b280d05e100837f4af1433c7b40a5dcb306e3aa68fb4f17f8a7f45a7df7b4).
+      #  - gitleaks: GITLEAKS_SHA256 in scripts/install-gitleaks.sh equals the GitHub API
+      #    asset digest for gitleaks_8.30.1_linux_x64.tar.gz
+      #    (551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb).
+      #  Both came from upstream-published records, not from the built tarball; a
+      #  substitution between publication and download is the remaining, separately
+      #  mitigated risk. Do NOT resolve a future mismatch by deleting or relaxing the
+      #  digest check — that is the exact vulnerability this step replaced.
       - id: actionlint-install
         name: Install actionlint (pinned + checksum-verified)
         run: echo "bin=$(bash scripts/install-actionlint.sh)" >> "$GITHUB_OUTPUT"
@@ -279,7 +270,10 @@ jobs:
         with:
           name: vitest-coverage
           path: packages/*/coverage/
-          if-no-files-found: ignore
+          # Fail closed: every one of the four runs above produces packages/<pkg>/coverage/,
+          # so a green threshold run that leaves no coverage dirs is a run that did not do
+          # the work it looks like it did. `error` turns that zero-evidence case loud.
+          if-no-files-found: error
       # ARCH-5: every publishable package must pack cleanly on every PR. `files[]` gaps,
       # a missing dist/ or a stray test file otherwise only surface at release time.
       - name: Pack preview (all publishable packages)
@@ -522,6 +516,18 @@ jobs:
         with: { submodules: recursive }
       - uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1.9.1
         with: { version: nightly }
-      - run: forge build
-      - run: forge test --match-contract '.*Invariant'
-      - run: forge test --no-match-contract '.*Invariant|.*Fork'
+      - run: forge build 2>&1 | tee canary-build.log
+      - run: forge test --match-contract '.*Invariant' 2>&1 | tee canary-invariant.log
+      - run: forge test --no-match-contract '.*Invariant|.*Fork' 2>&1 | tee canary-regular.log
+      # Fail closed: a canary run that produced no forge output must not read as a healthy
+      # one. The job is non-gating, so its only residue is this artifact — without it, a
+      # zero-output run (a silent skip, a broken checkout) is invisible. `if: always()` +
+      # `if-no-files-found: error` make that indistinguishable-from-green case a loud red.
+      # (`-o pipefail` is the runner default shell setting, so `forge ... | tee` still
+      # propagates a forge failure.)
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: foundry-canary-log
+          path: canary-*.log
+          if-no-files-found: error
