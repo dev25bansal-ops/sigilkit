@@ -5,6 +5,8 @@ session-key management with on-chain spend caps, and a mandatory audit trail per
 (unconditional on the manager path; on the ERC-7579 path the trail is conditional — it
 requires `ActionLog7579Executor` installed with an `agentId` bound, else `execute` reverts).
 
+> **Current status (2026-10-03):** ✅ **test-ready** — all functional tests pass on the CI toolchain; ❌ **not publicly reachable yet**; ❌ **npm scope unavailable** (`@sigilkit/core` collides with another project); ❌ **pre-audit** (no external security review has completed). See [`docs/VERIFIED-E2E-2026-10-03.md`](docs/VERIFIED-E2E-2026-10-03.md) for the machine-verified snapshot and [`docs/STATUS.md`](docs/STATUS.md) for the document authority model.
+
 > This is the implementation repo. The research + strategy behind it lives in
 > [`vault/`](vault/) (an Obsidian knowledge base built from an Aug-2026 worldwide
 > research sweep of the original whitepaper). That sweep found several v2.0 claims to be
@@ -39,6 +41,51 @@ requires `ActionLog7579Executor` installed with an `agentId` bound, else `execut
 > for the layer-by-layer strategy.
 
 **Component 4 is the moat and is built first** — see [`vault/Risk & De-risk Plan.md`](vault/Risk%20%26%20De-risk%20Plan.md).
+
+---
+
+### Verify in one command (local, with CI toolchain)
+
+This reproduces the test run from [`docs/VERIFIED-E2E-2026-10-03.md`](docs/VERIFIED-E2E-2026-10-03.md):
+
+```bash
+# Install Foundry 1.7.1 (CI pin per SECURITY.md)
+curl -L https://foundry.paradigm.xyz | bash
+foundryup --install v1.7.1
+
+# Run on-chain tests with pinned toolchain
+export PATH="$PATH:~/.foundry/bin"
+forge test --no-match-contract ".*Invariant|.*Fork"
+# Expected output: "225 tests passed, 0 failed"
+
+# Run TS tests (requires Node >=24; Windows native recommended due to node:sqlite requirement)
+npm run build --workspaces --if-present && npm run test --workspaces --if-present
+# Expected output: core 573 tests, demo-agent 85, indexer 162, mcp 131 → all pass
+```
+
+---
+
+### What you can do today (with no blockers bypassed)
+
+1. **Read the specs:** `contracts/src/` (Solidity implementation) + [`packages/core/src/`](packages/core/src/) (SDK). The code *is* the spec (L1 layer per [`docs/STATUS.md`](docs/STATUS.md)).
+2. **Run local Anvil:** deploy the manager, grant a session key, sign an action request, execute it. Observe the `ActionLogged` event emitted. The [`packages/demo-agent/`](packages/demo-agent/) directory provides examples.
+3. **Inspect the conformance harnesses:** MetaMask 13.49.0 / Coinbase Smart Wallet Playwright fixtures live in [`packages/core/test/wallet-e2e/`](packages/core/test/wallet-e2e/README.md). They require a real extension profile and persistent Chromium.
+4. **Audit the docs:** `docs/SECURITY.md` (threat map + triage), `docs/WALLET_BEHAVIOR_ALLOWLIST.json` (wallet-conformance record), `docs/WHITEPAPER-v2.1.md` (corrected whitepaper, no fabricated claims).
+
+---
+
+### Known blockers (what prevents launch)
+
+| ID | Blocker | Status | Notes |
+|---|---|---|---|
+| **OD-2** | `@sigilkit/core` npm scope collides with unrelated MIT project | ❌ blocking | Can't publish under `@sigilkit` scope without acquiring it or renaming packages |
+| **OD-3** | `.well-known/security.txt` lacks `Encryption:` field | ❌ minor | Needs OpenPGP key generation and resolution before public launch |
+| **TD-6** | `wallet-e2e-weekly` runs `continue-on-error: true`, has no green history | ⚠️ monitored | Expiry 2026-10-12; needs written postmortem if a red run occurs |
+| **None** | External security audit completed | ❌ blocking (by design) | Pre-audit banner still active; no third-party review finished yet |
+| **N/A** | GitHub repo publicly reachable | ❌ current state | Clone URL 404s; visibility decision pending |
+
+After these are resolved, the next step is commissioning an external audit via the Arbitrum Audit Program bounty pool (per `vault/Funding Audit Bounty.md`). That's the longest lead-time dependency — everything else can be addressed independently.
+
 
 ## Verification status
 
