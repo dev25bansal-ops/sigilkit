@@ -151,8 +151,15 @@ jobs:
               continue
             fi
             owners="$(npm view "$pkg" maintainers --json 2>/dev/null | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{try{console.log(JSON.parse(s).map(m=>m.name).join(' '))}catch{console.log('')}})")"
+            # An existing package whose maintainers cannot be read is UNRESOLVED ownership,
+            # not resolved ownership. Continuing here published under a scope we had not proven
+            # we own, on the strength of a JSON parse failure — the guard passing on exactly
+            # the condition it exists to catch. npm failing mid-publish is a loud, recoverable
+            # E403; shipping someone else's name is not.
             if [ -z "$owners" ]; then
-              echo "warn     $pkg exists but its maintainers could not be read"
+              echo "::error title=Unresolved ownership::$pkg exists on npm but its maintainers could not be read"
+              echo "::error::Publishing as '$me' would be an unverified claim on the scope. Re-run with a token that can read $pkg, or confirm ownership manually, then publish."
+              status=1
               continue
             fi
             case " $owners " in
