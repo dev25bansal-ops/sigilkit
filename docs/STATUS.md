@@ -105,9 +105,10 @@ makes the resolution unverifiable. See the closure note in `docs/CI-WAIVERS.md`.
 
 | `docs/DOC-AUDIT-CORE-2026-09-26.md` | ACTIVE | L3 | `packages/core` docs/examples/error-message audit (cr-doc) — README, JSDoc and thrown-error text. **Moved here from `packages/core/DOC-AUDIT-2026-09-26.md`; distinct from `docs/DOC-AUDIT-CONTRACTS-`, which audits `docs/`** |
 | `docs/RELEASE-READINESS-CORE-2026-09-26.md` | ACTIVE | L3 | `packages/core` release-readiness review (cr-ship) — publish blockers, npm scope ownership, packaging. Moved here from `packages/core/RELEASE-READINESS-2026-09-26.md` |
-| `docs/ARCH-SCRIPTS-2026-09-26.md` | ACTIVE — **⚠ duplicate, see note** | L3 | `scripts/` architecture review (sc-arch) — duplication, dependency direction, process contracts. Moved here from `scripts/ARCH-2026-09-26.md`. **A second, divergent copy exists at the old path (623 lines vs 643, different §3 heading); sc-arch was still writing when the move happened. Do not read or delete either until the owner reconciles them — see "An unresolved duplicate" below** |
+| `docs/ARCH-SCRIPTS-2026-09-26.md` | ACTIVE | L3 | `scripts/` architecture review (sc-arch) — duplication, dependency direction, process contracts. Reconciled 2026-10-03: the divergent untracked copy at `scripts/ARCH-2026-09-26.md` was merged into this file (post-errata §1.2/§1.10/§6.0/6.1/6.5 base + the fully-measured §3.4/§3.5) and the old-path copy deleted — see "Reconciled duplicate" below |
 | `docs/PERF-SCRIPTS-2026-09-26.md` | ACTIVE | L3 | `scripts/` performance and resource report (sc-perf) — measured runtime/memory of the executable `.mjs`; read-only measurement, no script was modified. Moved here from `scripts/PERF-2026-09-26.md` |
 | `docs/INDEX-2026-09-26.md` | CURRENT | L3 | **The full document index** (every file, one line each). Navigation aid, not authority: `STATUS.md` decides authority, and where the two disagree about *what a document is*, `STATUS.md` wins. If this file and the tables here ever list different sets, this file is the stale one |
+| `docs/VERIFIED-E2E-2026-10-03.md` | ACTIVE | L2 | **Machine-verified end-to-end snapshot** (Ralph-loop iteration 1). Reports 225/225 Foundry tests on pinned 1.7.1 + 951/951 TS tests across all packages + all 14 gate scripts green. Does not re-run Halmos/Echidna/slither/wallet-e2e/invariants/fork smoke; counts reconciled via `check-doc-counts.mjs`. Includes the "toolchain version sensitivity" finding (12 gas-budget failures on 1.8.4 vs 0 on 1.7.1). |
 | `docs/README.md` | CURRENT | L5 | `docs/` entry point — "I want to…" shortest-path routing. **Explicitly not an authority**: it defers to `STATUS.md` for the layer model and to `INDEX-` for the full list. Safe to read first; never cite it for what is true |
 | `docs/QUALITY-2026-09-26.md` | ACTIVE | L3 | Documentation quality & readability assessment (dc-voice). Findings about prose, not behaviour; L1 unaffected |
 | `docs/STYLE-2026-09-26.md` | CURRENT | L4 | Writing-style guide for contributors (audience: contributor). Context, not normative — it governs how to write, never what is true |
@@ -219,32 +220,26 @@ with different authors. They were given subject-qualified names (`ARCH-CORE-`,
 `ARCH-2026-09-26.md` inside `docs/`, and a basename collision is what made this look like a
 copying mistake in the first place.
 
-### An unresolved duplicate — `ARCH-SCRIPTS-2026-09-26.md`
+### Reconciled duplicate — `ARCH-SCRIPTS-2026-09-26.md` (closed 2026-10-03)
 
-**Do not delete either copy. The owner (sc-arch) must reconcile them.**
+The duplicate once recorded here as "unresolved" was reconciled on 2026-10-03. Original record,
+preserved verbatim below for traceability (L2 append-only), then the resolution.
 
-The move of `scripts/ARCH-2026-09-26.md` → `docs/ARCH-SCRIPTS-2026-09-26.md` happened at
-18:44:57 while sc-arch was still writing. A file reappeared at the old path at 18:48:00, and the
-two are **not identical**:
+**What happened (2026-09-26):** the move of `scripts/ARCH-2026-09-26.md` →
+`docs/ARCH-SCRIPTS-2026-09-26.md` landed at 18:44:57 while sc-arch was still writing; a divergent
+copy reappeared at the old path at 18:48:00. The two diverged materially in opposite directions:
+the `scripts/` copy carried the §1.2 **errata** (retracting a false "no `resolve()` ⇒ permanent
+silent failure" assertion, refuted empirically on Node 24) plus new §1.10/§6.0/§6.1/§6.5, while
+the `docs/` copy held the fully-**measured** §3.4 (11-gate exit-code table + mutation-test
+evidence) and §3.5 (`--root` silent-swallow) that the `scripts/` copy only had as a "待并入"
+placeholder.
 
-| Path | Size | Lines | SHA-256 (first 12) | §3 heading |
-|---|---|---|---|---|
-| `docs/ARCH-SCRIPTS-2026-09-26.md` | 40,575 B | 643 | `9AD3EB617CE7` | "3. Exit code 对照表" |
-| `scripts/ARCH-2026-09-26.md` | 37,301 B | 623 | `86C5C1B36E48` | "3. Exit code 契约" |
-
-Neither is a stray left by the tooling — `scripts/ARCH-2026-09-26.md` is git-untracked and its
-content is a full document with the same §0–§6 structure, so it is a genuine concurrent edit, not
-a leftover. The likely cause is an agent writing to the path it had before the move landed.
-
-**Why this is recorded rather than resolved:** choosing between two live divergent copies of one
-document is the author's decision, not the indexer's. Deleting the "older" one would destroy 643
-lines of work on a coin-flip; keeping both leaves the gate red (correctly — a document still exists
-outside `docs/`). **The gate failing here is the system working**, and this entry is what a reader
-needs in order to act on it.
-
-**When reconciling:** diff the two, keep the newer content at the `docs/` path, delete the old-path
-copy, and re-run `node scripts/check-doc-location.mjs` (expect exit 0) plus
-`node scripts/check-doc-location.test.mjs` (expect 20/20).
+**Resolution (2026-10-03):** the post-errata `scripts/` copy was taken as the base; its §3.4
+placeholder was replaced with the measured §3.4 + §3.5 from the `docs/` copy; the merged result
+was written to `docs/ARCH-SCRIPTS-2026-09-26.md`; the untracked `scripts/ARCH-2026-09-26.md` was
+deleted. Nothing was dropped — the errata superseded the old §1.2 claim, and the only content
+unique to the `docs/` copy (§3.4/§3.5) is now part of the canonical file. Verified with
+`node scripts/check-doc-location.mjs` (exit 0).
 
 **Enforcement — this must be checkable, not a convention.** A convention that only lives in this
 file decays, and a check that does not reliably measure what it claims is worse than no check. So
@@ -267,14 +262,11 @@ removing a real file's row exits 1 and names the unindexed file**. **A guard tha
 been seen to pass is not a guard** — that is why the suite exists rather than a one-off manual
 check.
 
-> **Unverified as of 2026-10-01:** the case count for `scripts/check-doc-location.test.mjs` was **not
-> re-measured in this pass** — the script is outside this file set and this pass could not execute
-> it. This document states **two different figures for the same command**: `"expect 20/20"` at `:245`
-> (inside the 2026-09-26 reconciliation step) and `"25 cases, all passing"` at `:260`. Both are
-> preserved unaltered above, and neither is declared the winner here, because resolving it requires a
-> run this pass cannot perform. Do not cite either figure — and do not describe the suite as green on
-> a specific count — until `node scripts/check-doc-location.test.mjs` has been re-run and its output
-> recorded with its date.
+> **Reconciled 2026-10-03:** this file previously stated two figures for the same suite
+> (`"expect 20/20"` in an old reconciliation step, and `"25 cases, all passing"` here). They refer
+> to the same suite at two points in time: it was **20 cases** before the five index cases were
+> added on 2026-09-26 (documented in `docs/COMPLIANCE-2026-09-26.md` as "grew from 20 to 25
+> cases"), and is **25 cases** today. The stale `"expect 20/20"` wording was corrected to 25.
 
 The index cases perturb `docs/STATUS.md` and restore it in a `finally`, and the suite asserts the
 restore. The location cases use a throwaway `GIT_INDEX_FILE`, so together the suite touches no
@@ -309,7 +301,7 @@ failure exposed it. The allowlist is now per-file.
 
 | # | Item | Status | Evidence required before it can be closed |
 |---|---|---|---|
-| **OD-1** | `packages/core/test/WALLET_BEHAVIOR_ALLOWLIST.json` records the MetaMask revoke-rejection canary as verified on extension **12.5.0**, while `docs/SECURITY-7702-THREAT-MAP.md:14,19` and `packages/core/test/wallet-e2e/README.md:4-6` claim **13.49.0**, and the CI canary step asserts the 13.49.0 bundle. Owner: sc-chain (proposal), repo maintainer (decision). | **OPEN — do not "fix" by editing the JSON.** The allowlist is a record of *what was actually verified*; editing it to match the docs would falsify the record. | (1) Run the canary against the 13.49.0 bundle and confirm the behaviour still holds; (2) show the CI job that does this on every relevant run, and its result; (3) only then update `verifiedOn` **and** the three prose sites together. If the canary is *not* being exercised against 13.49.0, the prose is wrong and must be corrected downward, not the JSON upward. |
+| **OD-1** | MetaMask revoke-rejection canary: allowlist records verification on extension **12.5.0**, but prose in `docs/SECURITY-7702-THREAT-MAP.md` and `SECURITY.md` claimed **13.49.0** as a *verification*. | **CLOSED 2026-10-03 — prose corrected downward, JSON untouched.** The error was always in prose, never the record: the canary was never exercised against 13.x (last harness verification is 12.5.0; 13.49.0 is only the version CI pins/downloads). Threat-map rows 4/9 were corrected 2026-09-28; `SECURITY.md`'s "canary-verified on 13.49.0" was corrected to 12.5.0 on 2026-10-03. `wallet-e2e/README.md`'s "13.49.0" is the pin, not a verification claim — no change needed. | Closed via the evidence cell's own fallback branch: "the prose is wrong and must be corrected downward, not the JSON upward." |
 | **OD-2** | Naming collision: `github.com/sigilkit` and the `@sigilkit` npm scope belong to an unrelated MIT project (`JonathanSantos/sigilkit`, `@sigilkit/core@0.11.1`), so `npm install @sigilkit/core` resolves to someone else's code and the README's clone URL 404s. URLs were repointed to `dev25bansal-ops/sigilkit` on 2026-09-26; the **package name and npm scope are still undecided.** | **OPEN — blocks first publish** (also tracked in `docs/DEPLOYMENT.md` §4 and `docs/COMPLIANCE-2026-09-26.md` §9) | A decision on the publish namespace (rename the packages vs acquire the scope vs publish under a scope already owned) — a [D] decision, not a doc change. |
 | **OD-3** | `.well-known/security.txt` has no `Encryption:` field. Deliberate: an `Encryption:` value must resolve to a real OpenPGP key, and a fingerprint that resolves to nothing makes a reporter who encrypts to it **silently lose the report.** The file carries a copy-pasteable procedure. | **OPEN — ~5 min, owner = maintainer** | Generate a dedicated key, publish to a keyserver, **verify it resolves**, then add the field and re-run `npm run check:docs`. Until then the `mailto:` is primary and covered by the `SECURITY.md` safe harbour. |
 | **OD-4** | No CLA, no DCO, no express patent grant, no contributor warranty disclaimer. `CONTRIBUTING.md`'s licence section is one sentence. MIT carries no patent clause, so contributor patents are not licensed to the project or its users. | **OPEN — needs counsel** (see `docs/COMPLIANCE-2026-09-26.md` §5) | A [D] decision on DCO vs CLA, and a counsel review of the patent grant. |
