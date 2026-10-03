@@ -966,8 +966,9 @@ const read = (rel) => readFileSync(join(REPO_ROOT, ...rel.split("/")), "utf8");
 
 test("real CHANGELOG.md: the current entry's verdicts match what the guard reports", () => {
   // Read-only against the real file. The baseline below is the *live* one — the same numbers
-  // `--with-ts` measures (TS 573/162/131/82 with 0 skipped; re-measured 2026-10-02) — so the
-  // verdict asserted here is the one the CLI prints, and the two cannot silently disagree.
+  // `--with-ts` measures (TS 573/162/131/85 with 0 skipped; re-measured 2026-10-03 after the
+  // three whitelist-proof coverage tests landed in demo-agent) — so the verdict asserted
+  // here is the one the CLI prints, and the two cannot silently disagree.
   // `ts` uses tsTestCounts' real `{ passed, skipped }` shape: a flat number here would
   // reproduce the `[object Object]` bug's blind spot inside the test suite itself.
   const problems = checkChangelogCounts(read("CHANGELOG.md"), {
@@ -977,7 +978,7 @@ test("real CHANGELOG.md: the current entry's verdicts match what the guard repor
       core: { passed: 573, skipped: 0 },
       indexer: { passed: 162, skipped: 0 },
       mcp: { passed: 131, skipped: 0 },
-      "demo-agent": { passed: 82, skipped: 0 },
+      "demo-agent": { passed: 85, skipped: 0 },
     },
     metamask: metamaskPinFromCi(read(".github/workflows/ci.yml")),
     coverage: COVERAGE,
