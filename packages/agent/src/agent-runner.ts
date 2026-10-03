@@ -1,0 +1,216 @@
+/**
+ * McpAgentRunner: orchestrates the real agent loop — observe state, ask a decision provider
+ * for proposals, validate against on-chain scope with zero-gas checks, sign if valid, relay
+ * to chain, verify audit event landed.
+ *
+ * SEC-06 role separation enforced throughout: the runner never holds owner keys. All scope
+ * validation uses the same zero-gas pre-flight logic as @sigilkit/core to ensure identical
+ * acceptance/rejection. The model is advisory only; hard guardrails always veto.
+ */
+
+import { createPublicClient, http, type PublicClient, type Address, type Hash, type Hex } from "viem";
+import { foundry, type Chain } from "viem/chains";
+import type { ActionRequest, Scope } from "@sigilkit/core";
+import { SigilKitClient, targetLeaf, merkleProof } from "@sigilkit/core";
+import { createWalletClient } from "viem";
+import { privateKeyToAccount } from "viem/accounts";
+import { keccak256, toHex } from "viem";
+import type { DecisionProvider, AgentContext } from "./types.js";
+import { createLogger } from "@sigilkit/core/logger";
+
+/** Local agent runner state machine. */
+interface RunnerState {
+  tick: number;
+  actionsExecuted: number;
+  lastTxHash?: Hash;
+  lastPrepared?: { to: Address; data: Hex };
+}
+
+const log = createLogger({ scope: "mcp-agent", level: "info" });
+
+export interface RunnerConfig {
+  managerAddress: Address;
+  sessionSigner: Hex | { address: Address; sign: (args: { hash: Hash }) => Promise<Hex> };
+  relayer?: Hex;
+  scope: Scope;
+  whitelistLeaves?: Hash[];
+  brain: DecisionProvider;
+  /** A real viem Chain object (e.g., foundry). Defaults to foundry for local test. */
+  chain?: Chain;
+  rpcUrl: string;
+}
+
+export type TickResult =
+  | { executed: false; reason: "idle" | "guardrail-rejected" }
+  | { executed: true; broadcast: true; txHash: Hash; audited: boolean }
+  | { executed: true; broadcast: false; prepared: { to: Address; data: Hex } };
+
+function padAddress(address: Address): string {
+  return `0x${address.slice(2).toLowerCase().padStart(64, "0")}`;
+}
+
+export class McpAgentRunner {
+  private config: Required<Pick<RunnerConfig, "managerAddress" | "scope" | "brain" | "chain" | "rpcUrl">> & Pick<RunnerConfig, "sessionSigner" | "relayer" | "whitelistLeaves">;
+  private client: SigilKitClient;
+  private sessionSigner: { address: Address; sign: (args: { hash: Hash }) => Promise<Hex> };
+  private relayer?: ReturnType<typeof privateKeyToAccount>;
+  private grantTxHash?: Hash;
+  private publicClient: PublicClient;
+  state: RunnerState = { tick: 0, actionsExecuted: 0 };
+
+  constructor(config: RunnerConfig) {
+    this.config = { ...config, chain: config.chain ?? foundry };
+    this.client = new SigilKitClient({
+      managerAddress: this.config.managerAddress,
+      chain: this.config.chain,
+      rpcUrl: this.config.rpcUrl,
+    });
+    this.publicClient = createPublicClient({
+      chain: this.config.chain,
+      transport: http(this.config.rpcUrl),
+    });
+
+    if (typeof config.sessionSigner === "string") {
+      const account = privateKeyToAccount(config.sessionSigner);
+      this.sessionSigner = { address: account.address, sign: async ({ hash }) => account.sign({ hash }) };
+    } else {
+      this.sessionSigner = config.sessionSigner;
+    }
+
+    if (config.relayer) {
+      this.relayer = privateKeyToAccount(config.relayer);
+    }
+  }
+
+  get sessionKeyAddress(): Address {
+    return this.sessionSigner.address;
+  }
+
+  get isGranted(): boolean {
+    return !!this.grantTxHash;
+  }
+
+  async adoptGrant(grantTxHash: Hash): Promise<void> {
+    const receipt = await this.publicClient.waitForTransactionReceipt({ hash: grantTxHash });
+    if (receipt.status !== "success") {
+      throw new Error(`grant transaction ${grantTxHash} reverted`);
+    }
+    if (receipt.to?.toLowerCase() !== this.config.managerAddress.toLowerCase()) {
+      throw new Error(`grant did not target manager ${this.config.managerAddress}`);
+    }
+
+    const topic = keccak256(toHex("SessionKeyGranted(address,uint48)")) as Hash;
+    const paddedKey = padAddress(this.sessionKeyAddress);
+    const found = receipt.logs.some((log) => {
+      if ((log.topics[0] as Hash | undefined)?.toLowerCase() !== topic.toLowerCase()) return false;
+      if ((log.topics[1] as string | undefined)?.toLowerCase() !== paddedKey) return false;
+      return true;
+    });
+
+    if (!found) {
+      throw new Error(`grant did not emit SessionKeyGranted for this session key`);
+    }
+
+    this.grantTxHash = grantTxHash;
+  }
+
+  async buildContext(): Promise<AgentContext> {
+    const balance = await this.publicClient.getBalance({ address: this.config.managerAddress });
+    const nonce = await this.publicClient.getTransactionCount({ address: this.sessionKeyAddress });
+    return {
+      tick: this.state.tick,
+      managerAddress: this.config.managerAddress,
+      balance,
+      windowSpendRemaining: 0n,
+      perActionCap: this.config.scope.perActionCap || 0n,
+      nonce: BigInt(nonce),
+      expiresAt: this.config.scope.expiresAt || Infinity,
+      lastTxHash: this.state.lastTxHash,
+      actionsExecuted: this.state.actionsExecuted,
+    };
+  }
+
+  private validateAgainstGuardrails(proposal: ActionRequest): { ok: boolean; reason?: string } {
+    const nowSec = Math.floor(Date.now() / 1000);
+    if (proposal.expiry <= nowSec) {
+      return { ok: false, reason: "proposal expired" };
+    }
+    if (proposal.value > this.config.scope.perActionCap) {
+      return { ok: false, reason: "exceeds per-action cap" };
+    }
+    if (this.config.scope.merkleRoot !== "0x" + "0".repeat(64)) {
+      if (!this.config.whitelistLeaves || this.config.whitelistLeaves.length === 0) {
+        return { ok: false, reason: "merkleRoot non-zero but no whitelistLeaves provided" };
+      }
+    }
+    return { ok: true };
+  }
+
+  private proofFor(request: ActionRequest): Hex[] | undefined {
+    if (!this.config.whitelistLeaves || this.config.whitelistLeaves.length === 0) return undefined;
+    const pinnedLeaf = targetLeaf(request.target, request.selector, request.data);
+    const wildcardLeaf = targetLeaf(request.target, request.selector);
+    const pinned = pinnedLeaf && this.config.whitelistLeaves.find((l) => l.toLowerCase() === pinnedLeaf.toLowerCase());
+    const leaf = pinned ?? (wildcardLeaf && this.config.whitelistLeaves.find((l) => l.toLowerCase() === wildcardLeaf.toLowerCase()));
+    if (!leaf) {
+      throw new Error(`strategy produced an action outside whitelist (target=${request.target}, selector=${request.selector})`);
+    }
+    return merkleProof(this.config.whitelistLeaves, leaf);
+  }
+
+  async tick(): Promise<TickResult> {
+    const context = await this.buildContext();
+    const proposal = await this.config.brain.propose(context);
+    if (!proposal) {
+      return { executed: false, reason: "idle" };
+    }
+
+    const guarded = this.validateAgainstGuardrails(proposal);
+    if (!guarded.ok) {
+      console.warn(`brain proposal rejected by guardrail: ${guarded.reason}`);
+      return { executed: false, reason: "guardrail-rejected" };
+    }
+
+    let prepared;
+    try {
+      prepared = await this.client.prepareExecution({
+        account: this.sessionSigner,
+        request: proposal,
+        scope: this.config.scope,
+        merkleProof: this.proofFor(proposal),
+      });
+    } catch (err) {
+      console.error(`prepareExecution failed:`, err instanceof Error ? err.message : err);
+      throw err;
+    }
+
+    if (!this.relayer) {
+      const payload = { to: prepared.to, data: prepared.data };
+      this.state.lastPrepared = payload;
+      this.state.actionsExecuted += 1;
+      return { executed: true, broadcast: false, prepared: payload };
+    }
+
+    const relayerWallet = createWalletClient({ account: this.relayer, chain: this.config.chain, transport: http(this.config.rpcUrl) });
+    const txHash = await relayerWallet.sendTransaction({ account: this.relayer, chain: this.config.chain, to: prepared.to, data: prepared.data });
+    const receipt = await this.publicClient.waitForTransactionReceipt({ hash: txHash });
+    if (receipt.status !== "success") {
+      throw new Error(`execution reverted: ${txHash}`);
+    }
+
+    const audited = await this.client.assertAuditEmitted(txHash, {
+      agentId: proposal.agentId,
+      target: proposal.target,
+      selector: proposal.selector,
+      value: proposal.value,
+      rationaleHash: proposal.rationaleHash,
+    });
+    if (!audited) {
+      throw new Error("INV-3 violated: ActionLogged missing after successful execution");
+    }
+
+    this.state.actionsExecuted += 1;
+    this.state.lastTxHash = txHash;
+    return { executed: true, broadcast: true, txHash, audited: true };
+  }
+}
