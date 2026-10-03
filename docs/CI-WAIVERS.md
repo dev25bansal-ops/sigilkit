@@ -62,6 +62,11 @@ redness is the evidence. Do not "fix" the test, and do not delete the row while 
 still red — the row and the redness are the same artifact, and removing either one alone
 destroys the signal.
 
+This table is enforced by `scripts/check-test-waivers.mjs` (run in the `workflow-lint` job):
+a row whose test has gone green fails the build, and a row still red **after its Expiry hard
+stop** fails the build too — rule #2 applies to this table exactly as it does to the job
+table, with the same remedy (a written justification plus a new dated criterion, or closure).
+
 > **⚠️ The table below is currently EMPTY — there are no deliberate standing test failures.**
 > It has held exactly one row in its history, closed on 2026-09-28; that row is preserved
 > immediately below as a record. An empty table is the healthy state, not a gap to fill.

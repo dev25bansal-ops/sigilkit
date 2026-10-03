@@ -23,6 +23,12 @@
  * the underlying defect is fixed — that is the row's stated criterion, and a human removes
  * the row in the same change that satisfies it.
  *
+ * The row's Expiry hard stop is enforced too, with the same semantics as rule #2 in the job
+ * table: a test that is still red *after* its expiry is not a waiver being honoured but a
+ * deadline being missed, so it fails here (add a written justification and a new dated
+ * criterion, or close the row). `check-waivers.mjs` deliberately does not read this table,
+ * so without this the Item table's Expiry column would be decorative.
+ *
  * SCOPE — it covers only rows it can parse a Foundry test name from, and only tests that
  * exist on disk. A row naming a file that is gone, or a test that no longer exists, is
  * reported as unverifiable rather than silently passed: an unresolvable row is not the
@@ -40,6 +46,8 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { isoToDay, todayIso } from "./check-waivers.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const REGISTER = join(ROOT, "docs", "CI-WAIVERS.md");
@@ -143,6 +151,7 @@ export function runGate({
   spawn = spawnSync,
   exists = existsSync,
   read = readFileSync,
+  today = todayIso(),
 } = {}) {
   if (!exists(register)) {
     return { code: 1, failures: ["docs/CI-WAIVERS.md is missing — the waiver register is gone."], stillRed: [] };
@@ -212,8 +221,23 @@ export function runGate({
       }
     }
     const outcome = evaluateRow(row, verdict, fileExists);
-    if (outcome.ok) stillRed.push(outcome.note);
-    else failures.push(outcome.finding);
+    if (!outcome.ok) {
+      failures.push(outcome.finding);
+      continue;
+    }
+    // Rule #2 for the Item table: still-red is only a valid state until the hard stop. A row
+    // with no readable date skips this comparison (the closed-entry record carries none), so
+    // `expiryDay === null` is "not dated", never "already expired".
+    const expiryDay = row.expiry === null ? null : isoToDay(row.expiry);
+    const day = isoToDay(today);
+    if (expiryDay !== null && day !== null && day >= expiryDay) {
+      failures.push(
+        `docs/CI-WAIVERS.md:${row.line}  ${row.test}: is still red but its Expiry hard stop ${row.expiry} has passed (evaluated ${today}) — ` +
+          "rule #2: expiry is a deadline, not a suggestion. Add a written justification with a new dated criterion, or close the row in the change that fixes the test.",
+      );
+      continue;
+    }
+    stillRed.push(outcome.note);
   }
   return { code: failures.length > 0 ? 1 : 0, failures, stillRed };
 }

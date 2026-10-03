@@ -237,3 +237,23 @@ test("a mixed register reports every bad row and does not stop at the first", ()
   assert.ok(r.failures.some((f) => /test_Waived/.test(f) && /GREEN/.test(f)));
   assert.ok(r.failures.some((f) => /test_Second/.test(f) && /could not be verified/.test(f)));
 });
+
+// ── rule #2 for the Item table: the Expiry column has teeth ───────────────────────────────
+
+test("a still-red row past its Expiry hard stop exits 1 — expiry is a deadline, not a suggestion", () => {
+  // `check-waivers.mjs` deliberately skips the Item table, so this is the only place the
+  // table's Expiry column is enforced. A red waiver whose deadline has passed is not a
+  // waiver being honoured but a removal criterion being missed — the row must gain a
+  // written justification and a new date, or close with the fixing change.
+  const r = runGate(world({ today: "2026-12-02" }));
+  assert.equal(r.code, 1);
+  assert.match(r.failures[0], /hard stop 2026-12-01 has passed/);
+  assert.match(r.failures[0], /test_Waived/);
+});
+
+test("a still-red row before its hard stop still passes — the deadline comparison is dated, not alarmist", () => {
+  const r = runGate(world({ today: "2026-11-30" }));
+  assert.equal(r.code, 0);
+  assert.equal(r.failures.length, 0);
+  assert.equal(r.stillRed.length, 1);
+});
