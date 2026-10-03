@@ -472,9 +472,14 @@ const MATCH_CONTRACT =
 /**
  * Tools with their own `--match-contract` that this guard must not read as forge scope.
  * `halmos --match-contract Halmos` is a different runner filtering its own spec set, and
- * treating it as forge drift flagged an unrelated job on every run.
+ * treating it as forge drift flagged an unrelated job on every run. `forge coverage` is
+ * forge, but its filters select which tests execute under instrumentation — the nightly
+ * job excludes the gas-budget suites there because instrumentation inflates gas past
+ * their absolute ceilings, and that exclusion is not a restatement of the forge scope
+ * (which the coverage run inherits untouched). The runner and the flag must share a
+ * line for this to fire, which is why the workflow spells that step on one line.
  */
-const NON_FORGE_RUNNER = /\b(?:halmos|echidna|slither|mythril|aderyn)\b/i;
+const NON_FORGE_RUNNER = /\b(?:halmos|echidna|slither|mythril|aderyn)\b|forge\s+coverage/i;
 /** The `EXCLUDED = /…/` declaration in check-doc-counts.mjs. */
 const JS_EXCLUDE_DECL = /EXCLUDED\s*=\s*\/([^/\n]*)\/([gimsuy]*)/g;
 
@@ -547,7 +552,7 @@ const SCOPE_CONSUMERS = [
  * Matching is done on the comment-blanked copy, which is what keeps a JSDoc paragraph
  * *mentioning* a pattern out of the results while leaving the line numbers true.
  */
-function contractArgs(text) {
+export function contractArgs(text) {
   const source = blankComments(text);
   const lines = source.split("\n");
   const out = [];

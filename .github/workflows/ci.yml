@@ -309,7 +309,16 @@ jobs:
       - uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1.9.1
         with: { version: "${{ env.FOUNDRY_VERSION }}" }
       - run: forge test --match-contract '.*Invariant'
-      - run: forge coverage --report lcov --report summary
+      # The gas-budget suites are excluded from the coverage RUN: their assertions pin
+      # absolute ceilings measured on UNinstrumented bytecode, and coverage instrumentation
+      # inflates gas well past every ceiling (measured: proof-element 172699 vs a 160000
+      # ceiling, whitelist delta 5029 vs 5000). They are not a coverage property — they run
+      # green in the forge-unit job on every PR, which is where real-gas ceilings belong.
+      # Without this exclusion the nightly job is red by construction, which masks the ONE
+      # signal it exists for (a real invariant failure) behind four instrumentation ghosts.
+      # (Single line on purpose: sync-facts.mjs recognises a coverage runner only when the
+      # runner word and the flag share a line.)
+      - run: forge coverage --report lcov --report summary --no-match-contract 'GasBudgetTest|Gas7579ScalingTest'
       # PERF-4: the budget assertions in GasBudget.t.sol / the 7579 batch test are the
       # hard PR gate. This nightly step reports *drift* on every other test's gas, so a
       # creeping regression is visible without making unrelated PRs fail.

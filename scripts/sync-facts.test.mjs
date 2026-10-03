@@ -12,6 +12,7 @@ import {
   blankComments,
   buildFindings,
   compareFloors,
+  contractArgs,
   deriveJsExclude,
   extractScopePair,
   findOccurrences,
@@ -377,6 +378,24 @@ test("forgeScopeArgs: a missing, empty or non-string scope field throws", () => 
   }
   assert.throws(() => forgeScopeArgs(undefined, "unit"), /missing a usable/);
   assert.throws(() => forgeScopeArgs(null, "unit"), /missing a usable/);
+});
+
+test("contractArgs: a forge coverage filter is instrumentation hygiene, not forge scope", () => {
+  // The nightly job excludes the gas-budget suites from the coverage RUN because
+  // instrumentation inflates gas past their absolute ceilings. That filter is not a
+  // restatement of the forge scope (the coverage run inherits it untouched), so reading
+  // it as drift would flag the workflow for a pattern that belongs to no field — which
+  // is exactly what happened when the exclusion was first added. Runner words from other
+  // tools (halmos) stay skipped by the same rule, and a real forge test line is still seen.
+  const yaml = [
+    "      - run: halmos --match-contract Halmos",
+    "      - run: forge coverage --report lcov --report summary --no-match-contract 'GasBudgetTest|Gas7579ScalingTest'",
+    "      - run: forge test --no-match-contract '.*Invariant|.*Fork'",
+  ].join("\n");
+  const hits = contractArgs(yaml);
+  assert.equal(hits.length, 1, `only the forge test line is scope; got ${JSON.stringify(hits)}`);
+  assert.equal(hits[0].mode, "--no-match-contract");
+  assert.equal(hits[0].pattern, ".*Invariant|.*Fork");
 });
 
 test("jsExcludeToRegExp: compiles the mirror, and refuses an unusable one", () => {
