@@ -50,23 +50,29 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const DIR = join(ROOT, ".github", "workflows");
 const JSON_OUT = process.argv.slice(2).includes("--json");
 
-/** Paths this gate is meant to protect, not to demand. */
-const IGNORED = new Set(["node_modules", "packages", "contracts", "docs", "vault", "vectors"]);
-
 /**
  * Every `scripts/…` token in `text`, with comments removed.
  *
  * A line whose first non-space character is `#` is dropped before extraction, which is what
  * keeps the "this used to …" comments out. `run:` bodies are additionally scanned with the same
  * rule applied per line, so a trailing comment on a command line is dropped too.
+ *
+ * The match is anchored to a path start, not just to the substring `scripts/`: a path under
+ * another directory (`vault/data/scripts/x.sh`) is a different directory, not this gate's
+ * subject, and reading it as `scripts/x.sh` would flag a file that lives nowhere near
+ * repo-root scripts/. This gate used to extract those anyway — an `IGNORED` set keyed on the
+ * token's first segment carried the name of the concept but could never fire, because every
+ * extracted token started with `scripts/`. The anchor makes the rule real instead of
+ * aspirational, AND `./scripts/x.mjs` (same directory, shell-relative spelling) still
+ * normalises to `scripts/x.mjs` because a `./` prefix is part of the name, not a sibling.
  */
 export function scriptReferences(text) {
   const found = new Set();
   for (const raw of String(text).split(/\r?\n/)) {
     const line = raw.replace(/\s+#.*$/, "");
     if (line.trim().startsWith("#")) continue;
-    for (const match of line.matchAll(/scripts\/[A-Za-z0-9._*/-]+/g)) {
-      const token = match[0].replace(/[.,;:)]+$/, "");
+    for (const match of line.matchAll(/(?:^|[^\w.*/-])(\.\/)?(scripts\/[A-Za-z0-9._*/-]+)/g)) {
+      const token = match[2].replace(/[.,;:)]+$/, "");
       // A glob (`scripts/*.test.mjs`) is a legitimate reference. Resolving it is not this
       // gate's job — it asks "is what CI invokes committed", and a glob answers that only by
       // expansion. So the glob is recorded and simply never matches a single tracked path,
@@ -218,7 +224,6 @@ function main() {
     const text = readFileSync(join(DIR, name), "utf8");
     for (const ref of scriptReferences(runBlocks(text))) {
       if (ref.includes("*")) continue; // a glob is a pattern, not a path; see scriptReferences
-      if (IGNORED.has(ref.split("/")[0])) continue;
       // A reference that is not on disk is not "not our business": on a clean clone it is
       // missing there too, so the job that invokes it fails there for exactly the reason an
       // untracked file does — which is the failure this gate exists to catch. Skipping it let

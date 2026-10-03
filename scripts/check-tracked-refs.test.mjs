@@ -90,6 +90,17 @@ test("scriptReferences: a comment naming a deliberately absent file is not a ref
   assert.deepEqual(scriptReferences(text), []);
 });
 
+test("scriptReferences: a scripts/ path under another directory is not repo-root scripts/", () => {
+  // The IGNORED set this gate used to carry could never fire (tokens were always
+  // scripts/-prefixed), so a reference to a sibling tree's scripts dir was misread as a
+  // repo-root one and flagged. The anchor refuses mid-path matches outright now.
+  assert.deepEqual(scriptReferences("bash vault/data/scripts/setup.sh"), []);
+});
+
+test("scriptReferences: a shell-relative ./scripts/ path is still the gate's subject", () => {
+  assert.deepEqual(scriptReferences("node ./scripts/check-vectors.mjs"), ["scripts/check-vectors.mjs"]);
+});
+
 // ── the gate end to end, against the real repository ─────────────────────────────────────────
 
 test("the real repository passes: every workflow-invoked path is committed", () => {
