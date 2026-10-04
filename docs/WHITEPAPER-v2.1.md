@@ -89,7 +89,7 @@ on-chain audit-per-call + formal verification of the spend-policy core, under MI
 Locally-buildable scope is **implemented** (see `CHANGELOG.md`): contracts + ERC-7579
 module, TS SDK with three-way digest conformance, live demo agent, **228 Foundry unit/fuzz tests
 across 18 suites** (7579 module 39 · manager 34 · gas uncovered paths 33 · native transfer authorization 14 · executor 12 · gas budget 11 · graduated authority 11 · ERC-1271 keys 10 · delegator 10 · denylist coverage 10 · E11 watchlist read 9 · account-execute E2E 7 · SEC-10 window rotation 6 · 7579 gas scaling 5 · governance recovery 5 · golden vectors 4 · scope watchlist multi-token 4 · Halmos auth 1)
-(plus an invariant suite of 4 invariants and a Base fork smoke test), **TypeScript: `@sigilkit/core` 576,
+(plus an invariant suite of 4 invariants and a Base fork smoke test), **TypeScript: `@sigilkit/core` 581,
 `@sigilkit/indexer` 165, `@sigilkit/mcp` 132, `@sigilkit/demo-agent` 85, `@sigilkit/agent` 36** (incl.
 account-execute 7579 E2E, pinned-leaf, nonce-gate, token-path spender-semantics, simulate-once,
 boundary-validation, CLI, stdio-transport, agent-runner guardrail and tool-input validation suites) with v8 coverage

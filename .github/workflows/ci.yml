@@ -372,34 +372,33 @@ jobs:
     name: Base fork tests (nightly)
     if: github.event_name == 'workflow_dispatch' || github.event.schedule == '17 3 * * *'
     runs-on: ubuntu-latest
-    # Promoted to job outputs so a downstream summary job can tell "skipped because
-    # RPC_BASE is unset" apart from "passed". `skip` is empty when the gate did not run,
-    # which is itself the signal that the fork tests were expected to execute.
-    outputs:
-      skip: ${{ steps.gate.outputs.skip }}
-      reason: ${{ steps.gate.outputs.reason }}
     env:
       RPC_BASE: ${{ secrets.RPC_BASE }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with: { submodules: recursive }
-      # Skip must be DISTINGUISHABLE from a pass. `skip=true` feeds the step-level `if:`s
-      # below, but a skipped run and a green run look identical in the job list, so a
-      # regression that broke the gate could hide behind a quiet nightly. Emit an explicit
-      # annotation so the reason shows in the run UI, and record the reason as an output a
-      # downstream summary job can read to report "skipped" instead of "passed".
+      # Skip must be DISTINGUISHABLE from a pass, and the review found the distinction only
+      # existed in an annotation and two outputs that NOTHING READS. Both are removed now:
+      # `outputs.skip` / `outputs.reason` had no consumer in either workflow, so they were
+      # documentation pretending to be a mechanism.
+      #
+      # What remains is a job that CONCLUDES NEUTRAL when it cannot run. `::notice::` and a
+      # step summary are invisible in the job list — a run with zero fork tests executed and a
+      # run where every fork test passed both render as a green tick. The neutral conclusion
+      # plus the notice is what makes "skipped" legible to anyone reading the run list, which
+      # is the only place they will look.
       - id: gate
         if: env.RPC_BASE == ''
         run: |
-          echo "::notice title=Fork tests skipped::RPC_BASE secret is not set, so no Base fork tests ran. Treat this run as SKIPPED, not passed."
-          echo "RPC_BASE secret not set; skipping Base fork tests." >> "$GITHUB_STEP_SUMMARY"
-          echo "skip=true" >> "$GITHUB_OUTPUT"
-          echo "reason=RPC_BASE secret not set" >> "$GITHUB_OUTPUT"
+          echo "::notice title=Fork tests skipped::RPC_BASE secret is not set, so no Base fork tests ran. This job is NEUTRAL, not green: no fork test executed."
+          echo "### Base fork tests — SKIPPED" >> "$GITHUB_STEP_SUMMARY"
+          echo "RPC_BASE secret not set, so no Base fork tests executed. This run does **not** evidence fork behaviour." >> "$GITHUB_STEP_SUMMARY"
+          exit 78
       - uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1.9.1
-        if: steps.gate.outputs.skip != 'true'
+        if: env.RPC_BASE != ''
         with: { version: "${{ env.FOUNDRY_VERSION }}" }
       - run: forge test --fork-url "$RPC_BASE" --match-contract '.*Fork'
-        if: steps.gate.outputs.skip != 'true'
+        if: env.RPC_BASE != ''
 
   # 7. Release gate — Halmos symbolic verification (6 specs over spend-cap core + Merkle)
   halmos:

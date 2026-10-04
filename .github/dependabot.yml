@@ -34,8 +34,17 @@ updates:
         update-types:
           - "major"
     open-pull-requests-limit: 10
-    reviewers:
-      - sigilkit/leads
+    # NO `reviewers:` BLOCK, deliberately (2026-10-04).
+    #
+    # This file asked for review from `sigilkit/leads`, a team slug that does not exist —
+    # `GET /teams/sigilkit/leads` returns 404, and the org has no teams at all. GitHub does
+    # NOT error on an unresolvable reviewer: it silently drops the request, so every
+    # dependency PR was asking nobody to review it while the config read as though it had an
+    # owner. That is worse than no reviewer line, because it looks assigned.
+    #
+    # The `needs-ci` label below is what actually routes these — it is the same signal the
+    # human triage path uses. Add a `reviewers:` entry only once the team exists, and check
+    # it with: gh api teams/<slug> (a 404 means the slug is wrong, not that review is optional).
     labels:
       - "dependencies"
       - "needs-ci"
