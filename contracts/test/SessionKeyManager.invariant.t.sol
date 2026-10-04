@@ -427,11 +427,32 @@ contract SessionKeyManagerInvariant is Test {
     ///      balance vs. test-side bookkeeping), the equality fails if the contract ever lets
     ///      value leave by another route, or if a spend is recorded without moving the
     ///      balance. Deleting the `ghostTotalSpent += value` bookkeeping now makes this red.
+    ///
+    ///      THE SUBTRACTION IS UNCHECKED-ON-PURPOSE-CONVERSELY, and that ordering matters.
+    ///      Written as a bare `INITIAL_BALANCE - ghostTotalSpent`, an over-count makes the
+    ///      subtraction underflow and revert — and a reverting invariant is reported by forge
+    ///      as a REVERT, so the failure surfaces as a run-count truncation
+    ///      (`runs: 161` instead of 256) with no indication of what went wrong. It read as a
+    ///      depth budget, not a broken ghost model, and sent the investigation after the
+    ///      fuzzer rather than after the arithmetic.
+    ///
+    ///      Saturating at zero turns the same condition into a NAMED failure carrying the
+    ///      three numbers that explain it. Conservation is still checked exactly whenever
+    ///      `ghostTotalSpent` is within range, which is every healthy sequence.
     function invariant_valueIsConserved() public view {
+        uint256 spent = ghostTotalSpent;
+        uint256 expected = INITIAL_BALANCE > spent ? INITIAL_BALANCE - spent : 0;
         assertEq(
             address(skm).balance,
-            INITIAL_BALANCE - ghostTotalSpent,
-            "conservation violated: balance is not the initial balance minus tracked outflow"
+            expected,
+            string.concat(
+                "conservation violated: balance ",
+                vm.toString(address(skm).balance),
+                " != initial ",
+                vm.toString(INITIAL_BALANCE),
+                " - tracked ",
+                vm.toString(spent)
+            )
         );
     }
 }
