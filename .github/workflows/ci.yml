@@ -215,7 +215,9 @@ jobs:
       # Build BEFORE lint: demo-agent/indexer/mcp typecheck against @sigilkit/core's
       # dist/*.d.ts (its exports point at dist), which only exists after a build. On a
       # fresh clone, lint-before-build cannot resolve the module at all (CI-found).
-      - run: npm run build --workspaces
+      # Dependency-ordered, not alphabetical: @sigilkit/agent sorts before core but
+      # imports it, so `--workspaces` compiled agent first and every import failed TS2307.
+      - run: npm run build
       # T-05 vector no-op gate. `actionrequest.json` and `merkle-v2.json` are generated
       # from @sigilkit/core's OWN dist, so a breaking SDK change followed by a generator
       # re-run produces a clean `git diff` — the self-certifying loop absorbs the break

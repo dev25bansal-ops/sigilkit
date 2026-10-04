@@ -32,6 +32,32 @@ A full-codebase review surfaced six blockers and a number of correctness defects
 
 **Totals:** 977 TS tests across five packages (was 951 across four) — core 573, indexer 163, mcp 131, demo-agent 85, agent 25. Foundry 225 unchanged.
 
+### 2026-10-04 — Build ordering, a silent no-emit build, and a process-tree kill that missed
+
+Found by actually running CI (the first push opened PR #5) rather than by review:
+
+- **`npm run build --workspaces` compiled `@sigilkit/agent` before `@sigilkit/core`** — npm walks
+  workspaces alphabetically, and `agent` imports `core`, so from a clean tree every one of its
+  imports failed TS2307. `indexer`, `mcp` and `demo-agent` survive only because their names sort
+  after `core`. New `scripts/build-workspaces.mjs` derives the order from each workspace's actual
+  dependencies (Kahn's algorithm, cycle-detecting) and is used by the root `build` script, both
+  workflows, and the Dockerfile.
+- **A stale `.tsbuildinfo` made `tsc` emit nothing and still exit 0.** `packages/agent` sets
+  `composite: true`, so tsc trusted a buildinfo file that had been committed; it then skipped all
+  output — no `.js`, no `.d.ts` — while reporting success. That is how `check-package-artifacts`
+  came to report all five agent entry targets missing. `tsBuildInfoFile` is now pinned inside
+  `dist/` so it is untracked and removed by `npm run clean`, and the committed file is untracked.
+- **`verify.mjs` killed only the direct child on POSIX.** The Windows branch uses `taskkill /T /F`
+  precisely because a bare kill leaves grandchildren running, but the POSIX path sent SIGTERM to
+  the direct child alone — so a hung `npm run build` (npm → tsc → esbuild) left that tree alive
+  after the gate reported failure. Steps now spawn `detached` and the timeout signals the whole
+  process group. This surfaced as an intermittently red `workflow lint` job: its test asserts the
+  grandchild is gone, and it was measuring OS reaping latency against a 3s budget.
+- **`Dockerfile` never copied `packages/agent/package.json`** into either stage, so the image
+  could not see the newest workspace.
+- **`spendByAgent` has no row ceiling, deliberately** — it is an aggregation, so a LIMIT would
+  silently under-count. Documented rather than "fixed", with the reasoning inline.
+
 ### 2026-10-03 — Ralph loop iteration 1: full E2E verification + README polish
 
 **Verification performed (all commands reproducible locally with CI-pinned toolchain):**

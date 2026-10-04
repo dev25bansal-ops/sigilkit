@@ -360,7 +360,7 @@ function build() {
   }
   // A build that exits 0 without producing a dist/ has not built. Reporting a missing dist/ as
   // a warning let the summary print "every workspace built" over a tree where none of them
-  // had: npm run build --workspaces --if-present succeeds trivially when a workspace has no
+  // had: `npm run build --workspaces --if-present` succeeds trivially when a workspace has no
   // build script, when its tsc run emitted nothing, or when the output landed elsewhere — and
   // `npm run verify` then failed much later on a missing dist/index.js, a long way from the
   // step that caused it. Missing output is a build failure: it goes to `failures` and the

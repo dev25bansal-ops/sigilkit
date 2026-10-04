@@ -16,6 +16,16 @@
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
     "isolatedModules": true,
+    // `composite: true` makes tsc trust `<config>.tsbuildinfo`. A STALE one (committed, copied
+    // between machines, or left behind by a different tsc version) makes tsc believe every
+    // output is current: it then emits NOTHING — no .js, no .d.ts — and still exits 0. That is
+    // how `check-package-artifacts` came to report every agent entry target missing while the
+    // build command reported success.
+    //
+    // `tsBuildInfoFile` is pinned inside dist/ so the file is untracked (see .gitignore's
+    // `*.tsbuildinfo`) and so `npm run clean` removes it with the rest of the output. A clean
+    // clone has no .tsbuildinfo, so the first build always emits.
+    "tsBuildInfoFile": "./dist/.tsbuildinfo",
     "composite": true,
     "emitDeclarationOnly": false,
     "allowSyntheticDefaultImports": true,

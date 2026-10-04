@@ -683,7 +683,23 @@ function run(label, cmd, argv, opts = {}) {
     // its resolved JS entry point instead (see {@link resolveNpm}), so an args array is always
     // enough. Every step therefore uses one code path, and there is no shell flag left to
     // mis-set at a call site.
-    const child = spawn(cmd, argv, { cwd: ROOT, env, stdio: ["inherit", "pipe", "pipe"] });
+    // `detached: true` puts the child in its OWN process group on POSIX, so the timeout can
+    // signal the whole tree with `process.kill(-pid, …)`.
+    //
+    // WITHOUT IT the POSIX path signalled only the direct child. `child.kill()` does not
+    // reach grandchildren, and the steps that hang are exactly the ones that spawn trees:
+    // `npm run build` is npm → tsc → esbuild, `npm run test` is vitest → its workers. A
+    // timed-out step therefore left that whole tree running after the gate reported failure
+    // — the precise "kills only the direct child, with no way to reach a process tree" hazard
+    // the file header documents. It surfaced as an intermittently red `workflow lint` job:
+    // the test asserts the grandchild is gone, and whether the OS had reaped it yet is a race.
+    // Windows is unaffected — it has no process-group signal and uses `taskkill /T /F`.
+    const child = spawn(cmd, argv, {
+      cwd: ROOT,
+      env,
+      stdio: ["inherit", "pipe", "pipe"],
+      detached: !IS_WIN,
+    });
 
     let timedOut = false;
     let timer = null;
@@ -702,8 +718,21 @@ function run(label, cmd, argv, opts = {}) {
         });
         return;
       }
-      child.kill("SIGTERM");
-      killTimer = setTimeout(() => child.kill("SIGKILL"), KILL_GRACE_MS);
+      // Signal the whole process group, not just the direct child — see the `detached`
+      // note at the spawn. The negative pid is the group id; if the group is already gone
+      // ESRCH is thrown and the kill is a no-op, which is the correct outcome here.
+      const signalGroup = (signal) => {
+        if (child.pid === undefined) return;
+        try {
+          process.kill(-child.pid, signal);
+        } catch {
+          // Group already reaped, or the platform refused. Fall back to the direct child so
+          // a single-shot failure still stops the step rather than leaving it running.
+          try { child.kill(signal); } catch { /* already gone */ }
+        }
+      };
+      signalGroup("SIGTERM");
+      killTimer = setTimeout(() => signalGroup("SIGKILL"), KILL_GRACE_MS);
     };
 
     const finish = (code, signal) => {

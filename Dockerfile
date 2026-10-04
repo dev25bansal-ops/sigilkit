@@ -31,10 +31,11 @@ COPY packages/core/package.json ./packages/core/
 COPY packages/indexer/package.json ./packages/indexer/
 COPY packages/mcp/package.json ./packages/mcp/
 COPY packages/demo-agent/package.json ./packages/demo-agent/
+COPY packages/agent/package.json ./packages/agent/
 RUN npm ci
 
 COPY packages ./packages
-RUN npm run build --workspaces --if-present
+RUN npm run build
 
 # ── runtime ───────────────────────────────────────────────────────────────────────
 FROM node:24-bookworm-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6 AS runtime
@@ -50,6 +51,7 @@ COPY packages/core/package.json ./packages/core/
 COPY packages/indexer/package.json ./packages/indexer/
 COPY packages/mcp/package.json ./packages/mcp/
 COPY packages/demo-agent/package.json ./packages/demo-agent/
+COPY packages/agent/package.json ./packages/agent/
 RUN npm ci --omit=dev && npm cache clean --force
 
 COPY --from=build /app/packages/core/dist ./packages/core/dist

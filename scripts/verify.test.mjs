@@ -143,7 +143,7 @@ function isAlive(pid) {
 }
 
 /** Reaping is asynchronous after a kill; poll briefly instead of asserting a race. */
-async function waitForDead(pid, budgetMs = 3_000) {
+async function waitForDead(pid, budgetMs = 10_000) {
   const deadline = Date.now() + budgetMs;
   let state = isAlive(pid);
   while (state === true && Date.now() < deadline) {
@@ -461,6 +461,11 @@ test("a timed-out step is killed, leaving no surviving process tree", async (t) 
   const status = await exited;
   assert.equal(status, 1, `a hung step must exit 1, got ${status}`);
 
+  // 10s, not 3s: the gate signals the tree, but a killed process stays visible to
+  // `process.kill(pid, 0)` until the OS reaps it, and that lag is scheduler-dependent on a
+  // loaded CI runner. A 3s budget made this test intermittently red for a tree that WAS killed
+  // correctly — it measured reaping latency, not gate behaviour. 10s is still far below the
+  // 30s watchdog above, so a genuinely surviving process is not masked.
   const selfState = await waitForDead(pids.self);
   const childState = await waitForDead(pids.grandchild);
   if (selfState === null || childState === null) {
