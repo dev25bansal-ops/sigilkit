@@ -300,27 +300,31 @@ test("sanitizePath leaves non-strings untouched", () => {
 });
 
 // ── DEBT-06 · is `collect()` dead code? ───────────────────────────────────────────────
-// The debt entry claimed `collect()` had "no caller". That is a claim about a whole
-// repository, so it is checked here rather than repeated in a comment: the three places it
-// could be wired in are the root manifest, the CI workflows, and the verify gate. If a
-// future change adds a caller, this test says so, and the recommendation below goes stale
-// visibly rather than silently.
+// RESOLVED 2026-10-04. This block used to assert the OPPOSITE of what it should have: that
+// no manifest script, workflow or gate ran check-runtime.mjs. That assertion was accurate
+// and it was the problem — a guard with a full test suite that CI executes, while the
+// diagnostic the suite exists for was wired into nothing. `npm run verify` reported a clean
+// run of a guard it never invoked.
+//
+// It is now a `verify.mjs` step (`--only=runtime`), and the test below asserts THAT. Inverting
+// it is the point: a test that documented the gap would have blocked the fix, and a test that
+// only checked the new wiring would let the manifest/workflow halves rot silently. So all
+// three wiring sites are still checked — now as a floor rather than a ceiling.
 
-test("collect() is reachable only through the CLI: no manifest script, workflow or gate calls it", () => {
+test("check-runtime is wired into the verify gate (DEBT-06 closed)", () => {
   const ROOT = fileURLToPath(new URL("..", import.meta.url));
   const manifest = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
 
-  // 1. No npm script invokes this file. `verify` and `check:docs` are the release-path
-  //    entry points, and this script appears in neither.
+  // 1. Still not a standalone manifest script: the gate is the entry point, so a second
+  //    caller here would mean two ways to run the same guard and drift between them.
   const scripts = Object.entries(manifest.scripts).map(([name, cmd]) => `${name}: ${cmd}`);
   const invoking = scripts.filter((line) => line.includes("check-runtime"));
-  assert.deepEqual(invoking, [], "a package script now calls check-runtime; update the DEBT-06 note");
+  assert.deepEqual(invoking, [], "a package script now calls check-runtime; keep ONE entry point");
 
-  // 2. No workflow runs it. The files under .github/workflows are the only CI entry points,
-  //    and a diagnostic that is never wired into CI cannot be a gate. `ci.yml` *does* name
-  //    the file — but only `check-runtime.test.mjs`, i.e. it runs the tests for the script.
-  //    Running a suite that exercises collect() is not the same as running the diagnostic, so
-  //    the check has to look for the CLI specifically rather than for the substring.
+  // 2. No workflow runs it directly. `ci.yml` *does* name the file — but only
+  //    `check-runtime.test.mjs`, i.e. it runs the tests for the script. Running a suite
+  //    that exercises collect() is not the same as running the diagnostic, so the check
+  //    looks for the CLI specifically rather than for the substring.
   const workflowDir = join(ROOT, ".github", "workflows");
   const offenders = [];
   for (const name of readdirSync(workflowDir)) {
@@ -331,16 +335,23 @@ test("collect() is reachable only through the CLI: no manifest script, workflow 
   }
   assert.deepEqual(offenders, [], "a workflow now runs check-runtime; update the DEBT-06 note");
 
-  // 3. The verify gate runs the script's *tests* (listed alongside check-doc-counts.test.mjs)
-  //    but never the script itself — so the tests are green in CI while the diagnostic that
-  //    motivated them produces no signal there.
+  // 3. The verify gate runs the script's tests AND the diagnostic itself. Both halves are
+  //    asserted: the suite keeps the collector honest, and the step is what makes the
+  //    diagnostic produce a signal in `npm run verify` rather than only on demand.
   const verifySource = readFileSync(join(ROOT, "scripts", "verify.mjs"), "utf8");
   assert.match(verifySource, /"scripts\/check-runtime\.test\.mjs"/, "its test suite should still be gated");
-  assert.doesNotMatch(verifySource, /check-runtime\.mjs(?![\w-]*\.test)/, "verify.mjs now gates on check-runtime");
+  // The load-bearing assertion: the gate runs the DIAGNOSTIC, not just its tests. The
+  // `helpers` list names `check-runtime.test.mjs`, so a naive substring match would pass on
+  // the test alone — this requires the bare `scripts/check-runtime.mjs` step invocation.
+  assert.match(
+    verifySource,
+    /"scripts\/check-runtime\.mjs"/,
+    "verify.mjs must invoke scripts/check-runtime.mjs as a step, not only list its test",
+  );
 
-  // Given all three, `collect()` is called from exactly one place — `main()` — and is
-  // therefore not unreachable dead code. It is *un-wired*: fully exercised, correctly
-  // implemented, and never run by anything the project depends on.
+  // `collect()` is called from exactly one place — `main()` — and is therefore not
+  // unreachable dead code. It is reachable and gated: the CLI on demand, and every
+  // `npm run verify` through the `runtime` step.
   const source = readFileSync(SCRIPT, "utf8");
   assert.equal(source.match(/\bcollect\(/g)?.length, 2, "collect() should be defined once and called once");
 });

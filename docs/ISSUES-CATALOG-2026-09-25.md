@@ -444,8 +444,10 @@ RPC 数 = `ceil(span/2000) + 去重区块数 + 6`：
 ### DEBT-05 · `clean.mjs` 会删 `broadcast/`（半不可再生）且无测试 `P1 · 3–4 h`
 `:62-64` 已有 `--dry`（但 `npm run clean` 不暴露）；`:65` `rmSync(recursive, force)` **不校验结果**；`broadcast/`（306 文件/8.1 MB 本地部署记录，多链/主网部署无法从源码重新生成）在 TARGETS 里，注释只说"All of it is reproducible"——**这是错的**；**全目录唯一没有任何测试的主脚本**。
 
-### DEBT-06 · 4 个零覆盖的提取/解析器 `P1 · 5–7 h`
-`checkSecurityTxt`（RFC 9116 披露通道守卫，零测试）/ `halmosSpecCount`/`echidnaPropertyCount`/`forgeCounts` 三个计数正则（docs 数字的唯一来源）/ `check-runtime.mjs:169 collect()`（唯一真正碰盘的代码，**从未被调用**）。**这 4 个是"docs 数字对得上"这一发布凭据的裸奔代码**。
+### DEBT-06 · 3 个零覆盖的提取/解析器 `P1 · 4–6 h`
+`checkSecurityTxt`（RFC 9116 披露通道守卫，零测试）/ `halmosSpecCount`/`echidnaPropertyCount`/`forgeCounts` 三个计数正则（docs 数字的唯一来源）。**这 3 个是"docs 数字对得上"这一发布凭据的裸奔代码**。
+
+**2026-10-04 部分关闭。** 第四项 `check-runtime.mjs collect()` 原记为「从未被调用」——该脚本有完整测试套件、也被 CI 跑，但**守卫本身从未被任何入口执行**，于是 `npm run verify` 报告了一次它从未运行的守卫的干净结果。现已接入 `verify.mjs` 的 `runtime` 步骤（LABELS/BUDGETS/STEPS 三处），`--only=runtime` 可单独运行。`check-runtime.test.mjs` 中断言「未被接线」的用例已反转为断言「已接线」，防止再次脱钩。
 
 ### DEBT-07 · `check-doc-counts.mjs` 文件头声称守 CHANGELOG 但代码没做 `P1 · 6–8 h`
 `:5-8` 的设计目标是"测试/job 计数漂移"，代码只读 README + `docs/WHITEPAPER-v2.1.md`（`:334`）。CHANGELOG 贡献了本轮全部 6 处数字漂移却**完全不在守卫范围**。现有 `checkReadmeCounts`/`checkWhitepaperCounts` 是纯函数，扩展只需复用同模式。
