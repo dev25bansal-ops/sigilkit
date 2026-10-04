@@ -181,8 +181,27 @@ const HOME_PATH = /\/(?:home|Users)[\\/][^\s"'\x60<>|]*/g;
 /** Query/header parameter names whose value is a credential. */
 const SENSITIVE_PARAM =
   /^(?:key|api[_-]?key|access[_-]?key|token|access[_-]?token|secret|password|passwd|auth|authorization|jwt|secret[_-]?key|private[_-]?key)$/i;
-/** Providers whose URL path ends in the API key (Alchemy `/v2/<key>`, Infura `/v3/<key>`, …). */
+/**
+ * Providers whose URL path ends in the API key (Alchemy `/v2/<key>`, Infura `/v3/<key>`, …).
+ *
+ * This list is a FAST PATH, not the safety boundary. It used to be the boundary: a URL was
+ * only path-masked when its host appeared here, so any RPC provider not on this 12-entry
+ * list printed its key verbatim (`https://rpc.example.io/v1/<key>` → unredacted). A redaction
+ * scheme that depends on enumerating every provider is not a redaction scheme. The
+ * credential-shaped path segment test below is what actually guarantees masking; this regex
+ * only lets a known provider be masked even when its key does not look high-entropy.
+ */
 const RPC_PROVIDER_HOST = /(?:^|\.)(alchemy\.com|infura\.io|quicknode\.com|ankr\.com|llamarpc\.com|drpc\.org|nownodes\.io|chainstack\.com|moralis\.io|blastapi\.io|4everland\.io|securerpc\.com)$/i;
+/**
+ * A URL path segment that looks like a provider key rather than a route.
+ *
+ * Provider keys are long, mixed-alphanumeric, and contain at least one digit — which is what
+ * separates `v2/a1b2c3d4e5f6…` from an ordinary route segment like `v1` or `status`. Length
+ * is deliberately generous (16) because short test/dev keys exist, and mixed-case plus a
+ * digit requirement is what keeps ordinary paths from being over-masked. Masking a
+ * non-secret segment is a cosmetic loss in a log; printing a key is a credential leak.
+ */
+const CREDENTIAL_SEGMENT = /^(?=.{16,}$)(?=.*[0-9])[A-Za-z0-9_-]+$/;
 /** Field names that imply the value is an RPC endpoint, used as a hint for the path mask. */
 const RPC_HINT = /(rpc|provider|endpoint|node|alchemy|infura|quicknode)/i;
 /** Keys that must never be copied onto the rebuilt object (prototype-pollution hygiene). */
@@ -256,7 +275,17 @@ function scrubUrl(raw: string, rpcHint: boolean): string {
   for (const [name] of url.searchParams) {
     if (SENSITIVE_PARAM.test(name)) maskedParams.push(name);
   }
-  if (url.username === "" && url.password === "" && maskedParams.length === 0 && !provider) return raw;
+  if (url.username === "" && url.password === "" && maskedParams.length === 0 && !provider) {
+    // Still fall through: a credential-shaped final path segment is maskable even on an
+    // unlisted host. Returning here (as this did before the CREDENTIAL_SEGMENT check existed)
+    // was what let `https://rpc.example.io/v1/<key>` print verbatim — the only thing that
+    // separated a known provider from an unknown one was that allowlist.
+    const earlyCut = raw.search(/[?#]/);
+    const earlyHead = earlyCut === -1 ? raw : raw.slice(0, earlyCut);
+    const earlySlash = earlyHead.lastIndexOf("/");
+    const earlySegment = earlySlash === -1 ? "" : earlyHead.slice(earlySlash + 1);
+    if (!CREDENTIAL_SEGMENT.test(earlySegment)) return raw;
+  }
 
   let out = raw;
   // userinfo: scheme://user:pass@host → scheme://[redacted]@host
@@ -272,13 +301,22 @@ function scrubUrl(raw: string, rpcHint: boolean): string {
   for (const name of maskedParams) {
     out = out.replace(new RegExp(`([?&])${escapeRegExp(name)}=[^&#]*`, "g"), `$1${name}=${URL_MASK}`);
   }
-  // provider path key: the last non-empty segment is the key (Alchemy/Infura convention)
-  if (provider) {
+  // provider path key: the last non-empty segment is the key (Alchemy/Infura convention).
+  // A known provider, an `rpc`-named field, OR a credential-shaped final segment all trigger
+  // masking. An unknown host whose last segment does not look like a key keeps its path
+  // readable, so ordinary routes (`/v1/status`) survive while an unlisted provider's key
+  // does not. Previously the whole block sat behind `if (provider)`, which meant an unknown
+  // host was never even examined.
+  {
     const cut = out.search(/[?#]/);
     const head = cut === -1 ? out : out.slice(0, cut);
     const tail = cut === -1 ? "" : out.slice(cut);
     const lastSlash = head.lastIndexOf("/");
-    if (lastSlash !== -1 && head.length > lastSlash + 1) out = `${head.slice(0, lastSlash + 1)}${URL_MASK}${tail}`;
+    const lastSegment = lastSlash === -1 ? "" : head.slice(lastSlash + 1);
+    const maskable = provider || CREDENTIAL_SEGMENT.test(lastSegment);
+    if (lastSlash !== -1 && head.length > lastSlash + 1 && maskable) {
+      out = `${head.slice(0, lastSlash + 1)}${URL_MASK}${tail}`;
+    }
   }
   return out;
 }

@@ -256,7 +256,7 @@ design choice, annotate it in place:
 if (block.timestamp > scope.expiresAt) revert KeyExpired();
 ```
 
-with a comment explaining why. There are 56 such annotations in the repo to copy from. The
+with a comment explaining why. There are 57 such annotations in the repo to copy from. The
 count moves as the contracts change, so re-derive it from the tree rather than trusting this page:
 
 ```

@@ -10,9 +10,19 @@ broadcast/
 lib/forge-std/
 
 # Env / secrets
+# Every `.env*` variant, not just the two common ones: `.env.production`, `.env.staging`,
+# `.env.development` and `.env.test` were committable before this rule was widened. Negated
+# below so a committed example file stays tracked.
 .env
+.env.*
+!.env.example
 .env.local
 *.key
+
+# TypeScript incremental-build artifacts. `packages/agent/tsconfig.build.tsbuildinfo` was
+# tracked, which makes it a merge-conflict magnet and a stale-state source: it records
+# absolute paths and build hashes that mean nothing on another machine.
+*.tsbuildinfo
 
 # Local assistant-tool configuration (SK-01): models.json carries populated
 # credential fields and must never be committed. This single-file rule is

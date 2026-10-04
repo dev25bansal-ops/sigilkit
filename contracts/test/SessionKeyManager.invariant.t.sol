@@ -195,10 +195,18 @@ contract SessionKeyManagerInvariant is Test {
 
     /// @dev Denylist toggles — covers the un-deny path (previously unreachable by fuzz).
     ///      Denying poke() flips _expectedOutcome for subsequent executes automatically.
+    ///
+    ///      The read MUST be hoisted into a local before `vm.prank`. Written inline as
+    ///      `skm.setSelectorDenied(selector, !skm.isSelectorDenied(selector))`, the
+    ///      `isSelectorDenied` staticcall is a foreign call evaluated after the prank is set,
+    ///      so it consumes the prank: the outer call then executes as this test contract and
+    ///      reverts `NotOwner`. The handler reverted 100% of the time, silently leaving the
+    ///      un-deny path uncovered and the INV-4-deny branch of the oracle unreachable.
     function toggleDenylistRandom(uint256 seed) external {
         bytes4 selector = seed % 2 == 0 ? counter.poke.selector : skm.grantSessionKey.selector;
+        bool currentlyDenied = skm.isSelectorDenied(selector);
         vm.prank(owner);
-        skm.setSelectorDenied(selector, !skm.isSelectorDenied(selector));
+        skm.setSelectorDenied(selector, !currentlyDenied);
     }
 
     /// @dev Time travel — expiry and window-rollover branches execute mid-sequence.
@@ -259,7 +267,7 @@ contract SessionKeyManagerInvariant is Test {
         bytes32 ds = skm.DOMAIN_SEPARATOR();
         bytes memory sig = _sign(pk, req, ds);
 
-        bool shouldSucceed = _expectedOutcome(a, value);
+        bool shouldSucceed = _expectedOutcome(a, value, req.expiry);
 
         (bool ok,) = address(skm).call(
             abi.encodeWithSelector(skm.executeWithSessionKey.selector, req, sig, new bytes32[](0), bytes(""))
@@ -325,8 +333,20 @@ contract SessionKeyManagerInvariant is Test {
         return abi.encodePacked(r, s, v);
     }
 
-    function _expectedOutcome(address a, uint256 value) internal view returns (bool) {
+    function _expectedOutcome(address a, uint256 value, uint48 requestExpiry)
+        internal
+        view
+        returns (bool)
+    {
         if (skm.isSelectorDenied(counter.poke.selector)) return false; // INV-4 denylist
+        // Ghost-model mirror of the REQUEST expiry check (not the key expiry below). This is
+        // a time-dependent branch, so it must be modelled explicitly or the ghost desyncs
+        // the moment `warpRandom` jumps past the request's window — which is exactly the
+        // failure mode this suite's SEC-5 note warns about. Without it, a request that the
+        // contract correctly refuses to execute is counted as spend, and conservation fails
+        // with the wallet drained against a ghost that never recorded the outflow.
+        // forge-lint: disable-next-line(block-timestamp)
+        if (block.timestamp > requestExpiry) return false; // request expiry
         SessionKeyManager.Scope memory s = skm.getScope(a);
         // Ghost-model mirror of INV-2 (key expiry) — time-based by design.
         // forge-lint: disable-next-line(block-timestamp)

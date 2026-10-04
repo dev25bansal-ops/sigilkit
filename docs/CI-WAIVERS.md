@@ -15,7 +15,7 @@ checklist run.
 
 | Job (ci.yml) | Waiver | Criterion to remove (must be met, in order) | Expiry hard stop |
 |---|---|---|---|
-| `wallet-e2e-weekly` | `continue-on-error: true` | The four scheduled runs of 2026-09-14, 2026-09-21, 2026-09-28 and 2026-10-05 were all green. Any red run is triaged and fixed **before the next run** — the waiver is not extended past a red run without a written postmortem here. | 2026-10-12 |
+| `wallet-e2e-weekly` | `continue-on-error: true` | Four consecutive scheduled runs green. **As of 2026-10-04 there is no green history**: every scheduled `SigilKit CI` run on `master` to date has concluded `failure` (most recent: 2026-10-03, run 37112325930 — failing jobs were workflow-lint, Slither, Echidna nightly and TS SDK conformance). The previously-recorded criterion citing runs on 2026-09-14, 09-21, 09-28 *and 2026-10-05* was inaccurate: 2026-10-05 had not occurred, and the two-per-week schedule does not match those four dates. Any red run is triaged and fixed **before the next run** — the waiver is not extended past a red run without a written postmortem here. | 2026-10-12 |
 | `foundry-canary` | `continue-on-error: true` | Two consecutive green monthly runs (2026-10-01 and 2026-11-01). A red canary is upstream Foundry drift: pin or adapt in a follow-up PR, then clear the waiver. | 2026-11-30 |
 
 ## Rules

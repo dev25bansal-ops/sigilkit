@@ -11,7 +11,7 @@
 import { createPublicClient, http, type PublicClient, type Address, type Hash, type Hex } from "viem";
 import { foundry, type Chain } from "viem/chains";
 import type { ActionRequest, Scope } from "@sigilkit/core";
-import { SigilKitClient, targetLeaf, merkleProof } from "@sigilkit/core";
+import { SigilKitClient, targetLeaf, merkleProof, SESSION_KEY_MANAGER_ABI } from "@sigilkit/core";
 import { createWalletClient } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { keccak256, toHex } from "viem";
@@ -116,7 +116,18 @@ export class McpAgentRunner {
 
   async buildContext(): Promise<AgentContext> {
     const balance = await this.publicClient.getBalance({ address: this.config.managerAddress });
-    const nonce = await this.publicClient.getTransactionCount({ address: this.sessionKeyAddress });
+    // The nonce must come from the MANAGER's per-key counter, not the session key's own
+    // EOA transaction count. They diverge from the first action onward (the manager starts
+    // at 0 and increments once per accepted action, while the EOA count includes every
+    // unrelated transaction the session key has ever sent), so reading the EOA count makes
+    // every request replay-rejected on-chain. Same source `SigilKitClient.prepareExecution`
+    // uses when the caller does not supply a nonce.
+    const nonce = await this.publicClient.readContract({
+      address: this.config.managerAddress,
+      abi: SESSION_KEY_MANAGER_ABI,
+      functionName: "getNonce",
+      args: [this.sessionKeyAddress],
+    });
     return {
       tick: this.state.tick,
       managerAddress: this.config.managerAddress,
@@ -159,6 +170,18 @@ export class McpAgentRunner {
   }
 
   async tick(): Promise<TickResult> {
+    // `state.tick` advances once per loop iteration, in a `finally`, so it counts
+    // ATTEMPTS rather than successes. Brains gate on it as a schedule
+    // (`tick % period === offset`), and a brain that returns null — the common case —
+    // would otherwise never advance the phase, so a tick-gated brain could never fire.
+    try {
+      return await this.runTick();
+    } finally {
+      this.state.tick += 1;
+    }
+  }
+
+  private async runTick(): Promise<TickResult> {
     const context = await this.buildContext();
     const proposal = await this.config.brain.propose(context);
     if (!proposal) {

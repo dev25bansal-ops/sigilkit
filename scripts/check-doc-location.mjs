@@ -73,6 +73,7 @@ const EXACT_ALLOWLIST = new Set([
   "packages/indexer/README.md",
   "packages/mcp/README.md",
   "packages/demo-agent/README.md",
+  "packages/agent/README.md",
   "packages/core/test/wallet-e2e/README.md",
   "contracts/test/README.md",
 ]);

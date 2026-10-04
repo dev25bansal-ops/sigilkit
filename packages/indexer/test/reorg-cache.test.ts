@@ -17,16 +17,18 @@
  *
  * PROVENANCE OF THE CASE COUNT
  * -----------------------------
- *   DECLARATIONS = RUNTIME CASES = 16. No parameterized blocks, so the two coincide.
+ *   DECLARATIONS = RUNTIME CASES = 18. No parameterized blocks, so the two coincide.
  *
- * Runtime confirmation (read from the run log, not recomputed):
- *   `Tests  16 passed (16)` / `Test Files  1 passed (1)` — a clean single-file run, so this
- *   is a direct reading rather than a derivation. It is also the run that supplies the 16
- *   subtracted from the two-file total quoted in `event-parsing.test.ts`'s header; keep it.
+ * CORRECTION (2026-10-04): this header claimed 16. Re-measured under plain vitest on a
+ * populated tree, the file runs `Tests  18 passed (18)` — two cases were added since the
+ * count was taken.
  *
- * Caveat on that run: collected under an alias harness substituting the `@sigilkit/*`
- * workspace specifiers, because the dependency tree was empty at the time. It evidences what
- * these assertions catch, not a clean-environment baseline.
+ * Runtime confirmation, re-measured 2026-10-04:
+ *   `Tests  18 passed (18)` / `Test Files  1 passed (1)`.
+ *
+ * The earlier caveat — collected under an alias harness because the dependency tree was empty
+ * at the time — no longer applies. `node_modules/@sigilkit/*` all resolve and the suite runs
+ * green unmodified.
  */
 import { describe, expect, it, vi } from "vitest";
 import { mkdirSync, rmSync } from "node:fs";

@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { initParams, train, load, save } from "./src/nn/mlp.js";
-import { teacherLabel, safeAmountWei } from "./src/model/policy.js";
+import { initParams, train, load, save } from "../src/nn/mlp.js";
+import { teacherLabel, safeAmountWei } from "../src/model/policy.js";
 
 /** XOR-like learning test: simple rule (A and B) -> 1 else 0. The MLP should learn this deterministic teacher. */
 describe("Mlp", () => {

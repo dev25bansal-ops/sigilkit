@@ -81,7 +81,7 @@ found. On Windows the binaries are `forge.exe` / `anvil.exe`; both resolvers han
 | `SIGILKIT_MAX_BLOCK_RANGE` | `2000` | Largest block span per `eth_getLogs`; bigger catch-ups are chunked. |
 | `SIGILKIT_LOG_LEVEL` | `info` | `debug` · `info` · `warn` · `error` · `silent`. |
 | `SIGILKIT_LOG_FORMAT` | `text` | `text` for humans, `json` for a log collector. |
-| `SIGILKIT_AUDIT_DB_ROOT` | *(none — MCP `audit_query` is inert)* | **Required by the MCP server's `audit_query` tool.** `;`-separated list of **absolute** directories a database may live in. While unset, `audit_query` refuses **every** path, and the refusal surfaces as a "database not found"-style error rather than a "not configured" message. Read **once at startup** — a later change needs a restart. Relative entries are dropped with a warning. See [TROUBLESHOOTING.md](TROUBLESHOOTING.md#audit_query-returns-database-not-found). |
+| `SIGILKIT_AUDIT_DB_ROOT` | *(none — MCP `audit_query` is inert)* | **Required by the MCP server's `audit_query` tool.** `;`-separated list of **absolute** directories a database may live in. While unset, `audit_query` refuses **every** path, and the refusal surfaces as a "database not found"-style error rather than a "not configured" message. Read **once at startup** — a later change needs a restart. Relative entries are dropped with a warning. See [TROUBLESHOOTING.md](TROUBLESHOOTING.md#audit_query-returns-db_not_allowed). |
 
 ### Log output
 
@@ -176,7 +176,13 @@ fi
 The SDK exposes the same readers, so an embedder can validate its own config the same way:
 
 ```ts
-import { loadServiceConfig, readEnvInt, requireEnv, createLogger } from "@sigilkit/core";
+// Config readers and the logger live on SUBPATHS, not the root barrel. `@sigilkit/core`'s
+// index re-exports types/signing/accounts/client/eip7702/abis/errors/validation only —
+// importing these from "@sigilkit/core" fails at runtime with "does not provide an export
+// named ...". See packages/core/src/index.ts for why `config`, `logger` and `cli` are
+// deliberately excluded from the barrel.
+import { loadServiceConfig, readEnvInt, requireEnv } from "@sigilkit/core/config";
+import { createLogger } from "@sigilkit/core/logger";
 
 const config = loadServiceConfig();        // defaults + validation, never throws for absent vars
 const port = readEnvInt(process.env, "PORT", { fallback: 8080, min: 1, max: 65535 });

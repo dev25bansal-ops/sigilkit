@@ -73,7 +73,7 @@ function chargeLog(over: Partial<Log> = {}, value = 5n, logIndex = 0): Log {
     topics: [CHARGE_TOPIC, pad(MANAGER), pad(KEY)],
     data: encodeAbiParameters(
       [{ type: "uint256" }, { type: "uint48" }, { type: "uint256" }],
-      [value, 1_700_000_000n, value],
+      [value, 1_700_000_000, value],
     ),
     blockNumber: 1n,
     transactionHash: ("0x" + "c2".repeat(32)) as Hash,

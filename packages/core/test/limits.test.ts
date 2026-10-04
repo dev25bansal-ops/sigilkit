@@ -13,6 +13,9 @@
  *    caps arrive as; the silent rounding broke the exact-amount promise.
  */
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { privateKeyToAccount } from "viem/accounts";
 import { foundry } from "viem/chains";
 import { zeroHash, type Address, type Hash, type Hex, type PublicClient, type WalletClient } from "viem";
@@ -29,6 +32,8 @@ import {
   type ActionRequest,
   type Scope,
 } from "../src/index.js";
+
+const ROOT = dirname(dirname(dirname(dirname(fileURLToPath(import.meta.url)))));
 
 const MANAGER = "0x00000000000000000000000000000000000000aa" as Address;
 const TARGET = "0x0000000000000000000000000000000000009001" as Address;
@@ -223,11 +228,21 @@ describe("PERF-11 · Merkle builders are bounded", () => {
     });
   });
 
-  it("keeps the proof ceiling aligned with the on-chain MAX_TOTAL_PROOF_ELEMENTS", () => {
-    // SessionKey7579Module.sol:88. If this drifts, the local pre-flight silently becomes
-    // looser than the chain — the exact "local passes, chain reverts" case the bound exists
-    // to prevent.
-    expect(MAX_MERKLE_PROOF_ELEMENTS).toBe(32);
+  it("keeps the proof ceiling aligned with the on-chain MAX_SINGLE_PROOF_ELEMENTS", () => {
+    // Read the ceiling out of the contract rather than restating it. This test used to
+    // assert a literal 32 while naming MAX_TOTAL_PROOF_ELEMENTS — the batch aggregate. A
+    // single execution carries ONE proof, and the module caps that at
+    // MAX_SINGLE_PROOF_ELEMENTS = 8, so the literal was 4x looser than the constraint it
+    // claimed to track: proofs of 9..32 elements passed the local pre-flight, consumed a
+    // signature, and reverted on-chain. Parsing the source makes the alignment structural —
+    // if either side changes, this fails.
+    const src = readFileSync(
+      join(ROOT, "contracts", "src", "SessionKey7579Module.sol"),
+      "utf8",
+    );
+    const single = /MAX_SINGLE_PROOF_ELEMENTS\s*=\s*(\d+)/.exec(src);
+    expect(single, "MAX_SINGLE_PROOF_ELEMENTS not found in SessionKey7579Module.sol").not.toBeNull();
+    expect(MAX_MERKLE_PROOF_ELEMENTS).toBe(Number(single![1]));
   });
 });
 

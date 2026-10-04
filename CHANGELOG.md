@@ -5,6 +5,33 @@ All notable changes to SigilKit are documented here. Format based on
 
 ## [Unreleased]
 
+### 2026-10-04 — Review-driven fixes: build unblocked, 3 real defects corrected
+
+A full-codebase review surfaced six blockers and a number of correctness defects. Fixed here:
+
+**Build / release (both had never been exercised — CI has not run on this branch):**
+- `package-lock.json` had no entry for `packages/agent`, so `npm ci` failed outright. Lockfile regenerated; `npm ci` now exits 0. This gated `ci.yml` and `publish.yml` at every install step.
+- `publish.yml` ran `npm run test:coverage --workspaces` with no `--if-present`, and `packages/agent` had no `test:coverage` script — npm aborted the whole release. Added the script and a `vitest.config.ts` with real coverage floors.
+
+**Correctness defects (each had a regression test added that fails without the fix):**
+- `packages/indexer/src/indexer.ts` — `sleep(ms)` called `setTimeout(cb)` without passing `ms`, so the delay was dropped and the watch loop polled ~290× faster than `pollMs`. Existing lifecycle tests could not catch this (they use `pollMs` of 5–60 000 and pass either way).
+- `packages/agent/src/agent-runner.ts` — the request nonce was read from the session key's **EOA transaction count** instead of the manager's per-key `getNonce`. The two diverge from the first action onward, so every proposal would have been rejected on-chain. The package could not have worked end to end.
+- `packages/agent/src/agent-runner.ts` — `state.tick` was read and initialised but never assigned, so any brain gating on phase (`tick % period`) could never reach its fire condition. Now advanced once per attempt in a `finally`.
+
+**Test integrity:**
+- `packages/agent/test/local-model-brain.test.ts` asserted `result.amount` — a field that does not exist on `ActionRequest` (it is `value`) — behind an `if (!result) return` early exit, so the file's stated hard invariant was never evaluated. Rewritten with `forceSchedule` so the assertion always runs.
+- `packages/agent/test/mlp.test.ts` imported `./src/...`, which resolves only via a Vite root fallback; plain Node gives `ERR_MODULE_NOT_FOUND`. Corrected to `../src/...`.
+- New `packages/agent/test/agent-runner.test.ts` (15 cases) covers the guardrails, the tick counter, Merkle binding and `adoptGrant` receipt validation. Package coverage rose from **50.75% → 85.64%** lines (7 → 25 tests).
+- `packages/indexer` and `packages/mcp` tsconfigs excluded `test/**`, so five real type errors shipped unchecked (Vitest strips types without checking). Added `tsconfig.typecheck.json` to both and fixed the errors. The agent tsconfig excluded tests too and was hiding the errors above.
+- `contracts/test/SessionKeyManager.invariant.t.sol` — `toggleDenylistRandom` called `vm.prank(owner)` then passed `!skm.isSelectorDenied(sel)` as an argument. That inner staticcall consumed the prank, so the outer call ran as the test contract and reverted `NotOwner` on 100% of invocations: the un-deny path had zero coverage and the INV-4-deny oracle branch was dead code.
+
+**Gates that could not fail:**
+- `scripts/check-doc-counts.mjs` hardcoded `["core", "indexer", "mcp", "demo-agent"]`, so the newest workspace was invisible to the count check — the root cause of both the 951-vs-actual drift and the publish-gate failure. Both lists are now derived from `package.json`'s `workspaces` glob.
+
+**Type exports:** `packages/agent/src/index.ts` exported `forward`/`trainMlp` but not the types in their signatures; `Sample` is a required argument of `trainMlp`, so the call could not be written at all. All seven are now exported and verified from a clean consumer compile.
+
+**Totals:** 977 TS tests across five packages (was 951 across four) — core 573, indexer 163, mcp 131, demo-agent 85, agent 25. Foundry 225 unchanged.
+
 ### 2026-10-03 — Ralph loop iteration 1: full E2E verification + README polish
 
 **Verification performed (all commands reproducible locally with CI-pinned toolchain):**

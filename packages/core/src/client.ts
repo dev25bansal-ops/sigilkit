@@ -796,6 +796,9 @@ export class SigilKitClient {
       scope: args.scope,
       windowState,
       merkleProof: args.merkleProof,
+      // E10: forwarded so the local pre-flight can refuse a countersign-required request
+      // before signing, rather than after burning gas on a revert the contract guarantees.
+      ownerApproval: args.ownerApproval,
     });
     if (!check.ok) {
       throw new PolicyRejectedError(check.reason);

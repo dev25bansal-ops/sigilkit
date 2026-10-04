@@ -1122,4 +1122,86 @@ contract SessionKey7579ModuleTest is Test {
             account.validate(op, opHash);
         }
     }
+    // ------------------------------------------------------------------
+    // SEC-12: the module must never be an execution target
+    // ------------------------------------------------------------------
+    //
+    // The admin surface is gated by `_requireInitialized(msg.sender)` — "the account is the
+    // caller". On the account's own 7579 routing `msg.sender` IS the account, so a session key
+    // can cause that condition to hold by making the module a target. Before the exclusion
+    // these two tests both reverted with something OTHER than TargetNotAllowed (they either
+    // succeeded or failed on an unrelated precondition), which is what made the gap live.
+
+    function test_TargetingModule_SingleCall_Reverts() public {
+        installWithScope(); // default scope has merkleRoot == 0 (allow-all)
+        bytes memory payload = abi.encodeCall(
+            SessionKey7579Module.grantSessionKey,
+            (
+                address(0xBAD),
+                SessionKey7579Module.Scope({
+                    expiresAt: type(uint48).max - 1,
+                    windowSeconds: WINDOW_SECONDS,
+                    perActionCap: type(uint256).max,
+                    perWindowCap: type(uint256).max,
+                    merkleRoot: bytes32(0)
+                })
+            )
+        );
+        bytes32 opHash = keccak256("op-self-single");
+        PackedUserOperation memory op = makeUserOp(
+            singleCallData(address(module), 0, payload),
+            signFor(address(account), opHash, new bytes32[](0))
+        );
+        op.sender = address(account);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                SessionKey7579Module.TargetNotAllowed.selector,
+                address(module),
+                bytes4(_grantSelector())
+            )
+        );
+        account.validate(op, opHash);
+    }
+
+    function test_TargetingModule_Batch_Reverts() public {
+        installWithScope();
+        SessionKey7579Module.ExecTuple[] memory calls = new SessionKey7579Module.ExecTuple[](1);
+        calls[0] = SessionKey7579Module.ExecTuple({
+            target: address(module),
+            value: 0,
+            data: abi.encodeCall(SessionKey7579Module.revokeSessionKey, (address(key)))
+        });
+        bytes32 opHash = keccak256("op-self-batch");
+        PackedUserOperation memory op = makeUserOp(
+            batchCallData(calls),
+            signFor(address(account), opHash, new bytes32[](0))
+        );
+        op.sender = address(account);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                SessionKey7579Module.TargetNotAllowed.selector,
+                address(module),
+                SessionKey7579Module.revokeSessionKey.selector
+            )
+        );
+        account.validate(op, opHash);
+    }
+
+    /// @dev Sanity guard: the exclusions above must be the module-as-target check and not an
+    ///      incidental revert. A legitimate external target still validates normally.
+    function test_ExternalTarget_StillValidates() public {
+        installWithScope();
+        bytes32 opHash = keccak256("op-external-ok");
+        PackedUserOperation memory op = makeUserOp(
+            singleCallData(address(0xBEEF), 0.1 ether, hex"deadbeef"),
+            signFor(address(account), opHash, new bytes32[](0))
+        );
+        op.sender = address(account);
+        uint256 vd = account.validate(op, opHash);
+        assertEq(vd, packedSuccess(EXPIRES_AT));
+    }
+
+    function _grantSelector() internal pure returns (bytes4) {
+        return bytes4(keccak256("grantSessionKey(address,(uint48,uint48,uint256,uint256,bytes32))"));
+    }
 }

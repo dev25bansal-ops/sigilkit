@@ -414,6 +414,28 @@ contract SessionKey7579Module {
         ExecTuple memory call_
     ) internal {
         ModuleStorage storage s = _m();
+        // SEC-12: the module must never be an execution target.
+        //
+        // The admin surface (`grantSessionKey`, `revokeSessionKey`, `setSelectorDenied`,
+        // `onUninstall`) is gated by `_requireInitialized(msg.sender)` — i.e. "the account is
+        // the caller". On the account's own 7579 execution routing `msg.sender` IS the
+        // account, so that gate is satisfied by an action the account performs. A session key
+        // can therefore sign a userOp whose only action targets this module, and the account
+        // executes it — escalating to an arbitrary scope, or uninstalling the module and
+        // denying the session-key path until the owner reinstalls.
+        //
+        // The NatSpec on `setSelectorDenied` previously claimed this was unreachable because
+        // "the account (not a session key) is the only caller". That is true of `msg.sender`
+        // but not of *who caused* the account to be the caller — the same reasoning error
+        // `ActionLog7579Executor` records having made and fixed.
+        //
+        // This is a target check rather than a selector denylist on purpose: the module
+        // cannot self-seal (there is no `onlyOwner` here), so a selector list would have to
+        // enumerate `onInstall`/`onUninstall` plus every future admin addition. Excluding the
+        // module's own address closes the class rather than the instances.
+        if (call_.target == address(this)) {
+            revert TargetNotAllowed(call_.target, _selectorOf(call_.data));
+        }
         // BUG-19: the denylist deliberately KEEPS the `bytes4` zero-padding convention rather
         // than reverting on sub-4-byte calldata: the native-ETH-transfer encoding is empty
         // `data` with a non-zero `value`, so a length gate here would break a supported path.
@@ -442,6 +464,11 @@ contract SessionKey7579Module {
         // Checks across every tuple first…
         uint256 totalValue = 0;
         for (uint256 i = 0; i < batch.length; ++i) {
+            // SEC-12: same module-as-target exclusion as `_enforceSingle`. A batch is just
+            // as reachable as a single call — the admin payload can sit in any tuple.
+            if (batch[i].target == address(this)) {
+                revert TargetNotAllowed(batch[i].target, _selectorOf(batch[i].data));
+            }
             bytes4 selector = bytes4(batch[i].data);
             if (s.deniedSelectors[account][selector]) revert SelectorDenied(selector);
             if (batch[i].value > scope.perActionCap) {

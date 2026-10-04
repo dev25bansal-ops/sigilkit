@@ -232,7 +232,7 @@ export SIGILKIT_AUDIT_DB_ROOT=/var/lib/sigilkit   # several roots: ";"-separated
 The value is read **once at startup**, so it must be exported before the MCP process launches — adding
 it to the environment of an already-running framework has no effect. Relative entries are dropped with
 a warning. Full symptom-to-fix entry:
-[TROUBLESHOOTING.md](TROUBLESHOOTING.md#audit_query-returns-database-not-found).
+[TROUBLESHOOTING.md](TROUBLESHOOTING.md#audit_query-returns-db_not_allowed).
 
 ### Containers
 

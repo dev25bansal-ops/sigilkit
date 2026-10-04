@@ -31,25 +31,18 @@
     "build": "tsc -p tsconfig.build.json",
     "test": "vitest run",
     "pretest": "npm run build",
-    "lint": "tsc --noEmit"
+    "test:coverage": "vitest run --coverage",
+    "lint": "tsc -p tsconfig.typecheck.json"
   },
   "dependencies": {
     "@sigilkit/core": "^0.1.0",
-    "@sigilkit/mcp": "^0.1.0",
     "viem": "^2.55.19"
   },
   "devDependencies": {
     "@types/node": "^24.13.3",
+    "@vitest/coverage-v8": "^5.0.0",
     "typescript": "^7.0.2",
     "vitest": "^5.0.0"
-  },
-  "peerDependencies": {
-    "@anthropic-ai/sdk": "*"
-  },
-  "peerDependenciesMeta": {
-    "@anthropic-ai/sdk": {
-      "optional": true
-    }
   },
   "private": false
 }

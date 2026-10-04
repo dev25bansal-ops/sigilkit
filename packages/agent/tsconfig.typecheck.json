@@ -1,0 +1,19 @@
+{
+  // Typecheck-only config: includes the test suite so `npm run lint` can see it.
+  //
+  // WHY THIS EXISTS — the build tsconfig sets `rootDir: "./src"` and excludes
+  // `**/*.test.ts`, so `tsc --noEmit` never saw a single test file in this package. Two
+  // test files carried type errors (asserting a non-existent `result.amount` field and
+  // importing `./src/...`, which resolves only via a Vite root fallback) and nothing in CI
+  // could catch them. Same shape as the indexer/mcp typecheck configs.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": ".",
+    "declaration": false,
+    "declarationMap": false,
+    "composite": false
+  },
+  "include": ["src/**/*", "test/**/*.ts"],
+  "exclude": ["node_modules", "dist"]
+}

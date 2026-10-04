@@ -16,6 +16,7 @@ ffi = false
 # vectors/{actionrequest,eip7702,merkle-v2}.json from the project root. Widen this list
 # deliberately when a new test or script needs another path — not by default.
 fs_permissions = [{ access = "read", path = "./vectors" }]
+deny = "warnings"
 # CQ-1: a compiler warning or lint finding is a build failure. The repo previously carried
 # nine ungated solc warnings (shadowed declarations, `this` in a constructor, a
 # needlessly-`view` helper) plus 31 ungated linter findings (12 `block-timestamp`,

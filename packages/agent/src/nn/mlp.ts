@@ -53,7 +53,12 @@ export function initParams(nIn: number, nHid: number, seed: number): MlpParams {
   return { nIn, nHid, w1, b1, w2, b2: 0 };
 }
 
-interface Activation {
+/**
+ * Output of a forward pass. Exported because `forward` is public API: a consumer naming
+ * this return type would otherwise get TS2305, since the package's `exports` map blocks
+ * the deep import that would otherwise reach it.
+ */
+export interface Activation {
   a1: number[]; // hidden activations (tanh)
   out: number; // sigmoid output in (0,1)
 }

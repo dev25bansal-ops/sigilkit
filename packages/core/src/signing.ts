@@ -530,14 +530,21 @@ export const MAX_LEAVES = 65_536;
 
 /**
  * Hard ceiling on Merkle proof elements (PERF-11), aligned with the on-chain
- * `MAX_TOTAL_PROOF_ELEMENTS` in `SessionKey7579Module.sol:88`.
+ * `MAX_SINGLE_PROOF_ELEMENTS` in `SessionKey7579Module.sol` (8).
  *
  * Without this bound a caller could hand `validateAgainstScope` a proof of any length: the
  * local pre-flight would happily verify it, spend a signature, and burn gas — only for the
  * chain to revert on a proof count the module refuses. The local check exists precisely to
  * reject violations before a signature is created, so it must not be looser than the chain.
+ *
+ * WHY 8 AND NOT 32. The module has two ceilings: `MAX_SINGLE_PROOF_ELEMENTS = 8` per proof,
+ * and `MAX_TOTAL_PROOF_ELEMENTS = 32` across a whole batch. This value was previously 32,
+ * matching only the batch aggregate — so a *single*-call proof of 9..32 elements passed the
+ * local pre-flight, consumed a signature, and reverted on-chain. A single execution carries
+ * one proof, so the binding constraint is 8. (The batch path enforces its per-tuple ceiling on
+ * chain; this constant governs the single-call pre-flight.)
  */
-export const MAX_MERKLE_PROOF_ELEMENTS = 32;
+export const MAX_MERKLE_PROOF_ELEMENTS = 8;
 
 /**
  * Rejects any leaf that is not a 32-byte hex hash, BEFORE a tree is built from it.
@@ -787,6 +794,26 @@ export function validateAgainstScope(args: ValidateAgainstScopeArgs): SigilKitCh
   if (base + request.value > scope.perWindowCap) {
     return { ok: false, reason: `per-window cap exceeded (${base + request.value} > ${scope.perWindowCap})` };
   }
+
+  // Local mirror of E10 graduated authority (SessionKeyManager.sol:598). The contract
+  // reverts `OwnerCountersignRequired` when `countersignAbove != 0 && value > countersignAbove`
+  // and no owner approval accompanies the request. Without this check a caller could sign and
+  // broadcast a request that the chain is guaranteed to reject — spending a signature and gas
+  // on a doomed transaction. `countersignAbove == 0` means "never", matching the contract.
+  //
+  // The presence of an approval is checked, NOT its validity: verifying the owner signature
+  // needs the owner's key, and on-chain remains the only authority for that. This check only
+  // refuses the case where the chain would refuse unconditionally.
+  if (scope.countersignAbove !== 0n && request.value > scope.countersignAbove) {
+    const approval = args.ownerApproval;
+    const hasApproval = typeof approval === "string" && approval.length > 2;
+    if (!hasApproval) {
+      return {
+        ok: false,
+        reason: `owner countersign required (value ${request.value} > countersignAbove ${scope.countersignAbove})`,
+      };
+    }
+  }
   // Mirrors the contract's `block.timestamp > request.expiry` revert: a request is
   // valid through its expiry second (Q5 off-by-one alignment — previously the local
   // check was stricter by one second).
@@ -804,13 +831,13 @@ export function validateAgainstScope(args: ValidateAgainstScopeArgs): SigilKitCh
     }
     // Bound the proof before it is walked (PERF-11). The verification loop below is
     // O(proof.length) synchronous work, and — more importantly — the on-chain
-    // `MAX_TOTAL_PROOF_ELEMENTS = 32` (SessionKey7579Module.sol:88) rejects longer proofs
-    // outright. Accepting one locally would spend a signature and gas on a payload the chain
-    // reverts, which is exactly the local-rejects-first property this pre-flight exists for.
+    // `MAX_SINGLE_PROOF_ELEMENTS = 8` rejects longer single-call proofs outright. Accepting
+    // one locally would spend a signature and gas on a payload the chain reverts, which is
+    // exactly the local-rejects-first property this pre-flight exists for.
     if (args.merkleProof.length > MAX_MERKLE_PROOF_ELEMENTS) {
       return {
         ok: false,
-        reason: `merkle proof too long (${args.merkleProof.length} > ${MAX_MERKLE_PROOF_ELEMENTS} elements, on-chain MAX_TOTAL_PROOF_ELEMENTS)`,
+        reason: `merkle proof too long (${args.merkleProof.length} > ${MAX_MERKLE_PROOF_ELEMENTS} elements, on-chain MAX_SINGLE_PROOF_ELEMENTS)`,
       };
     }
     const leafMatches = (leaf: Hash): boolean => {

@@ -21,7 +21,7 @@ path; these tools are the propose-and-verify layer.
 > someone else's package. Run it from a clone in the meantime.
 
 ```bash
-git clone https://github.com/sigilkit/sigilkit.git && cd sigilkit && npm run setup
+git clone https://github.com/dev25bansal-ops/sigilkit.git && cd sigilkit && npm run setup
 node packages/mcp/dist/cli.js --help
 ```
 

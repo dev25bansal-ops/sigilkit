@@ -111,13 +111,13 @@ describe("SigilIndexer (E9)", () => {
       address: "0x0000000000000000000000000000000000000042",
       topics: [keccak256(toHex("Transfer(address,address,uint256)")), pad(TARGET), pad(TARGET), pad(SELECTOR)],
       data: "0x",
-      blockNumber: 1n,
+      blockNumber: 1,
       transactionHash: ("0x" + "c1".repeat(32)) as Hash,
       blockHash: ("0x" + "ab".repeat(32)) as Hash,
       transactionIndex: 0,
       logIndex: 0,
       removed: false,
-    } as Log;
+    } as unknown as Log;
     expect(ix.ingestLogs([foreign])).toBe(0);
 
     const charge: Log = {
@@ -129,19 +129,85 @@ describe("SigilIndexer (E9)", () => {
       ],
       data: encodeAbiParameters(
         [{ type: "uint256" }, { type: "uint48" }, { type: "uint256" }],
-        [10n ** 16n, 1_700_000_000n, 10n ** 16n],
+        [10n ** 16n, 1_700_000_000, 10n ** 16n],
       ),
-      blockNumber: 1n,
+      blockNumber: 1,
       transactionHash: ("0x" + "c2".repeat(32)) as Hash,
       blockHash: ("0x" + "ab".repeat(32)) as Hash,
       transactionIndex: 0,
       logIndex: 1,
       removed: false,
-    } as Log;
+    } as unknown as Log;
     expect(ix.ingestLogs([charge])).toBe(1);
     const c = ix.latestWindowCharge(KEY)!;
     expect(c.spentThisWindow).toBe((10n ** 16n).toString());
     expect(c.windowStart).toBe(1_700_000_000);
+  });
+});
+
+describe("address column casing (A8/R56 follow-up)", () => {
+  // `agent_id` is a bytes32 hash stored lowercased by `storeAction`, so its query side
+  // lowercases too. The `target` and `key` columns are ADDRESSES stored VERBATIM from the
+  // decoded event args, which viem returns checksummed — lowercasing those queries instead
+  // makes a checksummed lookup silently miss rows that exist. SQLite TEXT comparison is
+  // BINARY, so there is no forgiving normalisation anywhere in the path.
+  //
+  // Both directions are pinned here. A review added `.toLowerCase()` to both query methods
+  // on the assumption that ingest normalizes everything; demo-agent's `e2e-core-indexer-flow`
+  // caught it. These cases would not have, because that fixture's lookup happens to use the
+  // same string as its ingest.
+  // A real checksummed address. `TARGET` above is all-numeric, so it has no case and cannot
+  // distinguish a lowercasing query from a verbatim one — a fixture chosen without thinking
+  // about case proves nothing here.
+  const CKSUM = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8" as const;
+  const CKSUM_LOWER = CKSUM.toLowerCase();
+
+  function store(ix: SigilIndexer): void {
+    ix.storeAction({
+      agentId: AGENT,
+      target: CKSUM,
+      selector: SELECTOR,
+      value: 7n,
+      rationaleHash: `0x${"11".repeat(32)}` as Hash,
+      timestamp: 100,
+      txHash: `0x${"dd".repeat(32)}` as Hash,
+      blockNumber: 1n,
+      logIndex: 0,
+    });
+    ix.storeWindowCharge({
+      chainId: 31337,
+      txHash: `0x${"dd".repeat(32)}` as Hash,
+      logIndex: 1,
+      blockNumber: 1,
+      account: MANAGER,
+      key: CKSUM,
+      value: "7",
+      windowStart: 100,
+      spentThisWindow: "7",
+    });
+  }
+
+  it("finds a checksummed target and key exactly as stored", () => {
+    const ix = new SigilIndexer(":memory:", 31337, { confirmations: 0, logger: silentLogger() });
+    try {
+      store(ix);
+      expect(ix.actionsForTarget(CKSUM)).toHaveLength(1);
+      expect(ix.latestWindowCharge(CKSUM)).not.toBeNull();
+    } finally {
+      ix.close();
+    }
+  });
+
+  it("finds an all-lowercase agent id, which IS stored lowercased", () => {
+    const ix = new SigilIndexer(":memory:", 31337, { confirmations: 0, logger: silentLogger() });
+    try {
+      store(ix);
+      // Mixed case must also resolve, because the column is lowercased on both sides.
+      expect(ix.actionsForAgent(AGENT.toUpperCase() as typeof AGENT)).toHaveLength(1);
+      expect(ix.actionsForAgent(AGENT.toLowerCase() as typeof AGENT)).toHaveLength(1);
+    } finally {
+      ix.close();
+    }
   });
 });
 
@@ -358,15 +424,15 @@ describe("SigilIndexer durability (BUG-5/6/7, BUG-9, ARCH-2/3/4)", () => {
       ],
       data: encodeAbiParameters(
         [{ type: "uint256" }, { type: "uint48" }, { type: "uint256" }],
-        [10n ** 16n, 1_700_000_000n, 10n ** 16n],
+        [10n ** 16n, 1_700_000_000, 10n ** 16n],
       ),
-      blockNumber: 1n,
+      blockNumber: 1,
       transactionHash: ("0x" + "f1".repeat(32)) as Hash,
       blockHash: ("0x" + "ab".repeat(32)) as Hash,
       transactionIndex: 0,
       logIndex: 0,
       removed: false,
-    } as Log;
+    } as unknown as Log;
 
     ix.ingestLogs([charge]);
     ix.ingestLogs([charge]); // re-index of the same range

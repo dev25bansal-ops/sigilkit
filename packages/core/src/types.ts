@@ -88,6 +88,16 @@ export interface ValidateAgainstScopeArgs {
    * silently evaluate the policy in 1970+ (every request looks long expired).
    */
   clock?: PolicyClock;
+  /**
+   * Owner countersignature supplied with the request (E10). When `scope.countersignAbove`
+   * is non-zero and `request.value` exceeds it, the chain requires this to be present and
+   * valid; `validateAgainstScope` refuses the request when it is absent.
+   *
+   * Only PRESENCE is checked here — verifying the owner's signature needs the owner key, and
+   * the contract remains the only authority for validity. This catches the unconditional
+   * reject (a request the chain will certainly refuse) before a signature and gas are spent.
+   */
+  ownerApproval?: Hex;
 }
 
 /**

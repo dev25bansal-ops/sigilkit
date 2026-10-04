@@ -244,6 +244,50 @@ describe("redaction (SEC-12)", () => {
   const VENDOR_URL = `https://eth-mainnet.g.alchemy.com/v2/${VENDOR_KEY}`;
   const RPC_ERROR = `HTTP request failed. URL: ${VENDOR_URL}`;
 
+  it("redacts a provider key on a host that is NOT on the provider allowlist", () => {
+    // SEC-12 regression. Path masking used to be gated on a 12-entry host allowlist, so any
+    // RPC provider not on it printed its key verbatim:
+    //   https://rpc.example.io/v1/<key>  ->  unredacted
+    // A redaction scheme that depends on enumerating every provider is not a redaction
+    // scheme. Masking now keys off the final path segment being credential-shaped, so an
+    // unlisted or self-hosted provider is covered without being known in advance.
+    //
+    // The field names below deliberately avoid `rpc`/`provider`/`endpoint`/`node`, which
+    // match RPC_HINT. That hint already forced masking before this fix, so a test using
+    // those names would pass against the vulnerable code and prove nothing. The leak only
+    // showed up for fields with no such hint.
+    const key = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6";
+    for (const [field, url] of [
+      ["cfg", `https://rpc.example.io/v1/${key}`],
+      ["cfg", `https://my-private-node.example.com/${key}`],
+      ["cfg", `http://127.0.0.1:8545/${key}`],
+      ["failure", `HTTP request failed. URL: https://rpc.example.io/v1/${key}`],
+    ] as const) {
+      const { log, out } = make("info", "json");
+      log.info("x", { [field]: url });
+      expect(out.join("\n"), url).not.toContain(key);
+      expect(out.join("\n"), url).toContain("redacted");
+    }
+  });
+
+  it("still keeps ordinary non-credential URL paths readable (no over-redaction)", () => {
+    // The guard above must not mask every deep path — an operator still needs to see which
+    // endpoint failed. These final segments are short or contain no digit, so they are not
+    // credential-shaped and must survive intact.
+    //
+    // The field is deliberately NOT named `endpoint`/`rpc`/`provider`: those match the
+    // RPC_HINT pattern, and an rpc-named field masks its last path segment unconditionally
+    // (the original behaviour, kept because it is the stronger signal when present).
+    for (const url of [
+      "https://rpc.example.io/v1/status",
+      "https://api.example.com/v2/chain/mainnet",
+    ]) {
+      const { log, out } = make("info", "json");
+      log.info("x", { upstream: url });
+      expect(out.join("\n"), url).toContain(url);
+    }
+  });
+
   it("redacts a secret nested at any depth and combination of objects and arrays", () => {
     for (const format of ["text", "json"] as const) {
       const { log, out } = make("info", format);

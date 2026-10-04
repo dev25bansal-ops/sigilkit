@@ -102,8 +102,39 @@ export const README_PATTERNS = {
  * `vitest list` cannot be used here: it collapses parameterized cases (it reports 171 for
  * core where a real run reports 181), so only an actual run gives a number worth pinning.
  */
+/**
+ * Every TypeScript workspace package name, derived from the filesystem rather than a
+ * hardcoded list. `package.json` declares `workspaces: ["packages/*"]`, so this resolves
+ * the glob and returns each package's directory name (core, indexer, mcp, demo-agent,
+ * agent). Anything that needs to know "all the TS packages" must call this instead of
+ * repeating a list that silently rots when a workspace is added.
+ */
+function tsWorkspaces() {
+  const rootManifest = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
+  const patterns = Array.isArray(rootManifest.workspaces)
+    ? rootManifest.workspaces
+    : rootManifest.workspaces?.packages ?? [];
+  const names = [];
+  for (const pattern of patterns) {
+    if (!pattern.endsWith("/*")) continue;
+    const parent = join(ROOT, pattern.slice(0, -2));
+    if (!existsSync(parent)) continue;
+    for (const entry of readdirSync(parent, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      if (!existsSync(join(parent, entry.name, "package.json"))) continue;
+      names.push(entry.name);
+    }
+  }
+  return names.sort();
+}
+
 function tsTestCounts() {
-  const packages = ["core", "indexer", "mcp", "demo-agent"];
+  // Every workspace, deliberately derived from the root manifest rather than hardcoded.
+  // The list used to be `["core", "indexer", "mcp", "demo-agent"]`, which silently omitted
+  // @sigilkit/agent after it was added — so the doc gate could not see that package's
+  // counts at all, and the 951-vs-actual drift went unreported. `workspaces` in package.json
+  // is the single source of truth; a new workspace is picked up here automatically.
+  const packages = tsWorkspaces();
   const out = {};
   const problems = [];
   for (const p of packages) {
@@ -757,7 +788,7 @@ export function parseCoverageFloors(configText) {
 /** Reads the per-package vitest coverage floors; statically derivable, so it needs no run. */
 function coverageFloors() {
   const floors = {};
-  for (const p of ["core", "indexer", "mcp", "demo-agent"]) {
+  for (const p of tsWorkspaces()) {
     const file = join(ROOT, "packages", p, "vitest.config.ts");
     if (!existsSync(file)) continue;
     floors[p] = parseCoverageFloors(readFileSync(file, "utf8"));

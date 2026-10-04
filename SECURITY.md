@@ -33,6 +33,19 @@ in `docs/CI-WAIVERS.md` ("Static-analysis triage") and `docs/NUMBERS-2026-09-26.
   across a whole batch.
 - No `ActionLogged` at validation time: validation passing ≠ execution landing (bundler may drop).
   Pair with an executor/hook for per-execution audit trails.
+- **The module refuses to be an execution target (SEC-12, fixed 2026-10-04).** The admin surface
+  (`grantSessionKey`, `revokeSessionKey`, `setSelectorDenied`, `onUninstall`) is gated by
+  `_requireInitialized(msg.sender)` — "the account is the caller". On the account's own ERC-7579
+  execution routing `msg.sender` *is* the account, so a session key could make the module a target
+  of a validated op and the account would execute it, escalating to an arbitrary scope or
+  uninstalling the module to deny the session-key path. `_enforceSingle` and `_enforceBatch` now
+  reject `target == address(this)` with `TargetNotAllowed`. This is enforced as a **target** check
+  rather than a selector denylist because the module cannot self-seal (no `onlyOwner`), so a
+  selector list would have to enumerate every admin function including future additions.
+  Reachable only when `merkleRoot == 0` (the documented allow-all mode) or when the root whitelists
+  the module; under a tight root the whitelist already blocked it.
+  Regression tests: `SessionKey7579Module.t.sol::test_TargetingModule_SingleCall_Reverts`,
+  `…_Batch_Reverts`, and `…_ExternalTarget_StillValidates` as the negative control.
 
 ## Invariants under formal verification
 
@@ -72,6 +85,27 @@ argument-bound whitelist leaves. An SDK-side ERC-20 pre-check **is implemented**
 `balanceOf(from)` and, for `transferFrom` where the manager is not the owner,
 `allowance(from, managerAddress)`, and never blocks a request. On-chain enforcement remains the
 only authority; do not treat a passing pre-check as a guarantee.
+
+### E11 declared-outflow semantics (reviewed 2026-10-04, unchanged)
+
+`_verifyBalances` compares each watched balance against `before − declaredTokens`, where
+`declaredTokens` comes from `_declaredTokenOutflow` — i.e. the transfer amount read out of the
+request's own calldata. A reviewer flagged "the tolerance is attacker-supplied" as a possible
+defect. On review this is the **intended** contract, and the alternative would break the feature:
+
+- The check's purpose is to refuse **undeclared** outflow. `E11WatchlistRead.t.sol` documents a
+  `rug(from, to, amount)` helper — a selector that is neither `transfer` nor `transferFrom`, so
+  `_declaredTokenOutflow` returns 0 and any real movement is refused. That is the threat E11
+  exists to stop.
+- An ERC-20 `transfer`/`transferFrom` is a **declared** outflow, bounded by `perActionCap` /
+  `perWindowCap` and by the requested `value`. Tolerating exactly the declared amount is what
+  makes a whitelisted token spend possible at all.
+- Treating declared calldata as untrusted would mean refusing every legitimate token transfer,
+  which is a policy change to the contract's economics, not a bug fix.
+
+`docs/ARCH-CONTRACTS-2026-09-26.md` states the invariant in these terms (row 1.9): net reduction
+of native/ watched balances must not exceed the **declared** amount. The implementation matches
+the documented invariant. No change made.
 
 ## Executor audit attribution (`ActionLog7579Executor`)
 

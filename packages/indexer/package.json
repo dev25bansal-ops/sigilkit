@@ -16,16 +16,24 @@
   ],
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "bin": { "sigilkit-indexer": "./dist/cli.js" },
+  "bin": {
+    "sigilkit-indexer": "./dist/cli.js"
+  },
   "exports": {
-    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
-    "./cli": { "types": "./dist/cli.d.ts", "default": "./dist/cli.js" }
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./cli": {
+      "types": "./dist/cli.d.ts",
+      "default": "./dist/cli.js"
+    }
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
-    "lint": "tsc --noEmit",
+    "lint": "tsc -p tsconfig.typecheck.json",
     "cli": "node dist/cli.js"
   },
   "dependencies": {
@@ -37,5 +45,8 @@
     "typescript": "^7.0.2",
     "vitest": "^5.0.0"
   },
-  "repository": { "type": "git", "url": "git+https://github.com/dev25bansal-ops/sigilkit.git" }
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dev25bansal-ops/sigilkit.git"
+  }
 }

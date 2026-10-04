@@ -33,7 +33,7 @@ import {
   type Scope,
   type ActionRequest,
 } from "@sigilkit/core";
-import { SigilIndexer } from "@sigilkit/indexer";
+import { RowLimitExceededError, SigilIndexer } from "@sigilkit/indexer";
 import { readEnvChoice } from "@sigilkit/core/config";
 // P0-3: the logger surface comes from the `/logger` subpath, not the barrel. `createLogger`
 // and `type Logger` are declared there and nowhere else, so the barrel import of them was a
@@ -858,7 +858,16 @@ export const TOOLS: ToolDef[] = [
         // "no such table: actions" — free confirmation that the guessed path really is
         // a database. Mask it, but let our own argument validation (a bad agentId, an
         // unknown query mode) keep its specific, actionable message.
+        //
+        // The row ceiling is the same kind of our-own error: it means the filter matched
+        // more rows than the indexer will list without an explicit limit. Masking that as
+        // "database not found" told a caller with a real database the wrong thing, so it
+        // is re-thrown with its own message. Only genuinely unrecognised failures — the
+        // ones that could confirm a path — stay masked.
         if (err instanceof ValidationError) throw err;
+        if (err instanceof RowLimitExceededError) {
+          throw new ValidationError("limit", err.message);
+        }
         throw new ValidationError("db", DB_NOT_FOUND_MESSAGE);
       }
     },

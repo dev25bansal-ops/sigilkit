@@ -73,7 +73,12 @@ jobs:
           gitleaks_bin="$(bash scripts/install-gitleaks.sh)"
           "$gitleaks_bin" detect --config .gitleaks.toml --redact --no-banner
       - name: Required workspace coverage thresholds
-        run: npm run test:coverage --workspaces
+        # `--if-present` is load-bearing, not defensive: without it, any workspace lacking a
+        # `test:coverage` script aborts the whole release before a byte is published. That
+        # is exactly how `packages/agent` (added 2026-10-04, no script at the time) turned
+        # this workflow red. Every workspace now HAS the script; the flag keeps a future
+        # workspace from re-breaking the release the same way.
+        run: npm run test:coverage --workspaces --if-present
       - name: Required ABI drift check
         run: |
           while IFS= read -r c; do

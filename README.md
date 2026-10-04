@@ -70,7 +70,7 @@ npm run build --workspaces --if-present && npm run test --workspaces --if-presen
 1. **Read the specs:** `contracts/src/` (Solidity implementation) + [`packages/core/src/`](packages/core/src/) (SDK). The code *is* the spec (L1 layer per [`docs/STATUS.md`](docs/STATUS.md)).
 2. **Run local Anvil:** deploy the manager, grant a session key, sign an action request, execute it. Observe the `ActionLogged` event emitted. The [`packages/demo-agent/`](packages/demo-agent/) directory provides examples.
 3. **Inspect the conformance harnesses:** MetaMask 13.49.0 / Coinbase Smart Wallet Playwright fixtures live in [`packages/core/test/wallet-e2e/`](packages/core/test/wallet-e2e/README.md). They require a real extension profile and persistent Chromium.
-4. **Audit the docs:** `docs/SECURITY.md` (threat map + triage), `docs/WALLET_BEHAVIOR_ALLOWLIST.json` (wallet-conformance record), `docs/WHITEPAPER-v2.1.md` (corrected whitepaper, no fabricated claims).
+4. **Audit the docs:** [`SECURITY.md`](SECURITY.md) (threat map + triage), [`packages/core/test/WALLET_BEHAVIOR_ALLOWLIST.json`](packages/core/test/WALLET_BEHAVIOR_ALLOWLIST.json) (wallet-conformance record), [`docs/WHITEPAPER-v2.1.md`](docs/WHITEPAPER-v2.1.md) (corrected whitepaper, no fabricated claims).
 
 ---
 
@@ -91,7 +91,7 @@ After these are resolved, the next step is commissioning an external audit via t
 
 | Layer | Status |
 |---|---|
-| Foundry unit + fuzz | ✅ 225 tests across 18 suites (7579 module 39 · manager 34 · gas uncovered paths 33 · native transfer authorization 14 · executor 12 · gas budget 11 · graduated authority 11 · ERC-1271 keys 10 · delegator 10 · denylist coverage 10 · E11 watchlist read 9 · account-execute E2E 7 · SEC-10 window rotation 6 · 7579 gas scaling 5 · governance recovery 5 · golden vectors 4 · scope watchlist multi-token 4 · Halmos auth meta-test 1) |
+| Foundry unit + fuzz | ✅ 228 tests across 18 suites (7579 module 42 · manager 34 · gas uncovered paths 33 · native transfer authorization 14 · executor 12 · gas budget 11 · graduated authority 11 · ERC-1271 keys 10 · delegator 10 · denylist coverage 10 · E11 watchlist read 9 · account-execute E2E 7 · SEC-10 window rotation 6 · 7579 gas scaling 5 · governance recovery 5 · golden vectors 4 · scope watchlist multi-token 4 · Halmos auth meta-test 1) |
 | Echidna property fuzzing | ✅ 4 properties (independent second fuzzer, nightly) — all four are falsifiable: funding is pulled into the wallet through a public `refill()` + `_ensureFunded`, so the `value > 0` paths are reachable instead of reverting on balance; `echidna_attackerNeverSucceedsAtAdmin` (replaces the tautological `echidna_ownerImmutableByFuzzer`) probes all 6 admin functions as a genuine non-owner and fails if `onlyOwner` is ever bypassed; `echidna_scopesMatchOwnerActions` now requires each on-chain scope to be one of three genuinely distinct granted shapes. Fixed in BUG-18 — see [`docs/ISSUES-CATALOG-2026-09-25.md`](docs/ISSUES-CATALOG-2026-09-25.md) §A P0-2 |
 | Foundry invariant (INV-1/2/4, handler-only fuzzing incl. admin transitions) | ✅ 4 invariants in 1 suite × 256 runs × 500 calls |
 | Fork smoke (Base) | ✅ 1 test — runs nightly against a live Base fork (chainid + chain-bound domain separator + live state) |
@@ -157,7 +157,7 @@ the agent's session key, enforced on-chain, and audited via `ActionLogged`.
 ```bash
 forge install foundry-rs/forge-std   # or: git clone --depth 1 https://github.com/foundry-rs/forge-std lib/forge-std
 forge build
-npm test                             # 225 unit + fuzz tests + full TS suite (excludes invariants + fork smoke)
+npm test                             # 228 unit + fuzz tests + full TS suite (excludes invariants + fork smoke)
 forge test --match-contract '.*Invariant'   # invariant suite (4 invariants × 256 runs)
 forge test --match-contract '.*Fork' --fork-url $RPC_BASE   # fork smoke (Base)
 ```

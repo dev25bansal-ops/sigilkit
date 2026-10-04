@@ -22,14 +22,21 @@
  *   DECLARATIONS = 18   17 plain `it(...)` + 1 `it.each([...])` call site
  *   RUNTIME CASES = 22  the single `it.each` in this file expands to 5 values
  *
- * The arithmetic trap: `17 + 5 = 22`, NOT `17 + 4` and NOT `17 - 1 + 5`. The single
- * `it.each` *declaration* is already one of the 18 declaration sites, so subtracting it before
- * adding its expansion double-counts the subtraction. Quote the pair, never a bare integer.
+ * The arithmetic: `17 + 5 = 22`. The `it.each` declaration IS one of the 18 declaration
+ * sites, so `18 - 1 + 5 = 22` is the same number by a different route — but subtracting it
+ * and then forgetting to add the expansion gives 17, which is wrong. Quote the pair, never a
+ * bare integer.
  *
- * Runtime confirmation (read from the run log, not recomputed):
- *   `Tests  4 failed | 18 passed (22)` / `Test Files  1 failed (1)`
- * The 4 failures are the INJECTED mutation (the fail-closed row-ceiling probe disabled in
- * `latestRows`), which this file is the regression guard for — they are not defects.
+ * CORRECTION (2026-10-04): this header previously read "RUNTIME CASES = 22 (17 + 5)" while
+ * also describing the block as "1 `it.each` call site" — those agree — but the surrounding
+ * prose claimed `17 + 4`. It is 5 values (line 129), so 17 + 5 = 22 is correct.
+ *
+ * Runtime confirmation, re-measured 2026-10-04 under plain vitest on a populated tree:
+ *   `Tests  22 passed (22)` / `Test Files  1 passed (1)`
+ *
+ * The earlier caveat — that these counts were collected under an alias harness because the
+ * dependency tree was empty — no longer applies. `node_modules/@sigilkit/*` all resolve and
+ * the suite runs green unmodified.
  *
  * Caveat on that run: it was collected under an alias harness that substitutes the
  * `@sigilkit/*` workspace specifiers, because the dependency tree was empty at the time. It
@@ -191,7 +198,7 @@ describe("explicit projection (PERF-05) — reads cannot widen silently", () => 
         chainId: CHAIN,
         txHash: ("0x" + "1a".repeat(32)) as Hash,
         logIndex: 0,
-        blockNumber: 1n,
+        blockNumber: 1,
         account: TARGET,
         key: TARGET,
         value: "1",
@@ -220,7 +227,7 @@ describe("explicit projection (PERF-05) — reads cannot widen silently", () => 
       expect(rows[0]!.blockHash).toBeNull();
       const withHash = new SigilIndexer(":memory:", CHAIN, { logger: silentLogger() });
       try {
-        withHash.storeAction(rec(), "0x" + "cd".repeat(32), CHAIN);
+        withHash.storeAction(rec(), ("0x" + "cd".repeat(32)) as Hash, CHAIN);
         expect(withHash.actionsForAgent(AGENT, undefined, 10).every((r) => r.blockHash === "0x" + "cd".repeat(32))).toBe(true);
       } finally {
         withHash.close();

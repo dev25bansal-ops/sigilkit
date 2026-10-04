@@ -321,7 +321,7 @@ const sleep = (ms: number, signal?: AbortSignal): Promise<void> =>
     const timer = setTimeout(() => {
       signal?.removeEventListener("abort", onAbort);
       resolve();
-    });
+    }, ms);
     const onAbort = () => {
       clearTimeout(timer);
       resolve();
@@ -355,6 +355,31 @@ export function isCanonicalInt64Decimal(v: string): boolean {
   // Comparison is by magnitude, not by digit count: int64 spans 19 digits but not all 19-digit
   // values, and a digit-count ceiling rejects legitimate large wei amounts (1e18 and up).
   return BigInt(v) <= INT64_MAX;
+}
+
+/**
+ * Raised when a listing would exceed `DEFAULT_QUERY_LIMIT` and the caller gave no explicit
+ * limit to page with.
+ *
+ * A DISTINCT CLASS ON PURPOSE. The MCP server's `audit_query` handler masks unrecognised
+ * errors as "database not found", so a guessed path cannot be confirmed by the shape of its
+ * failure — a real property, since a valid-but-foreign SQLite file raises "no such table:
+ * actions". A plain `Error` from the row ceiling fell into that same bucket, so a caller whose
+ * filter simply matched too many rows was told the database was missing. Naming the class lets
+ * the handler re-throw it with an actionable message while leaving the path-confirmation
+ * masking intact for everything it does not recognise.
+ */
+export class RowLimitExceededError extends Error {
+  constructor(
+    readonly column: string,
+    readonly limit: number,
+  ) {
+    super(
+      `SigilIndexer: more than ${limit} rows match ${column}. ` +
+        "Refusing to silently truncate an audit listing — pass an explicit limit to page through them.",
+    );
+    this.name = "RowLimitExceededError";
+  }
 }
 
 export class SigilIndexer {
@@ -1326,6 +1351,15 @@ export class SigilIndexer {
    * A8/R56: the id is normalized to lowercase to match the case-normalized rows the
    * ingest path stores — SQLite TEXT comparison is BINARY, so a mixed-case id must not
    * silently sum zero against rows that exist.
+   *
+   * NO ROW CEILING HERE, DELIBERATELY (reviewed 2026-10-04). Every other read path in this
+   * class is bounded by `DEFAULT_QUERY_LIMIT` / `NO_ROW_LIMIT`, and a review flagged this
+   * query as the one unbounded `SELECT` left. Adding the same ceiling would be a
+   * correctness bug: this is an AGGREGATION, so a `LIMIT` silently truncates the sum and
+   * reports a total that is simply wrong — worse than a slow query, because nothing fails.
+   * The real exposure is memory during the one-pass materialisation, and that is bounded by
+   * the row count the caller chose to ingest, not by anything this function can cap without
+   * lying about the answer. Mitigation is operational (retention/ingest bounds), not a LIMIT.
    */
   spendByAgent(agentId: Hash, chainId?: number): bigint {
     const id = agentId.toLowerCase() as Hash;
@@ -1389,6 +1423,9 @@ export class SigilIndexer {
     chainId?: number,
     limit: number | undefined = NO_ROW_LIMIT,
   ): StoredAction[] {
+    // NOT lowercased. `agent_id` is lowercased on store (a bytes32 hash has no case), but
+    // `target` is an ADDRESS stored verbatim from the decoded event args, so viem's checksummed
+    // form is what lands in the column. Lowercasing the query would miss those rows.
     return this.latestRows("target", target, chainId, limit);
   }
 
@@ -1399,6 +1436,12 @@ export class SigilIndexer {
        WHERE ${chainScoped("key", chainId)}
        ORDER BY window_start DESC, block_number DESC, log_index DESC
        LIMIT 1`,
+    // NOT lowercased, unlike `actionsForAgent`. `agent_id` is a bytes32 hash stored via
+    // `storeAction`'s explicit `.toLowerCase()`, so its query side has to match. The `key`
+    // column is an ADDRESS stored verbatim from the decoded event args (see the ingest path's
+    // `storeWindowCharge`), which viem returns checksummed. Lowercasing here would make a
+    // checksummed lookup miss a row that plainly exists — caught by demo-agent's
+    // `e2e-core-indexer-flow` test.
     ).get(...chainArgs(key, chainId)) as Record<string, unknown> | undefined;
     if (!row) return null;
     return {
@@ -1453,10 +1496,9 @@ export class SigilIndexer {
       bound,
     ) as Array<Record<string, unknown>>;
     if (probe && rows.length > DEFAULT_QUERY_LIMIT) {
-      throw new Error(
-        `SigilIndexer: more than ${DEFAULT_QUERY_LIMIT} rows match ${column} ${value}` +
-          `${chainId === undefined ? "" : ` on chain ${chainId}`}. ` +
-          `Refusing to silently truncate an audit listing — pass an explicit limit to page through them.`,
+      throw new RowLimitExceededError(
+        `${column} ${value}${chainId === undefined ? "" : ` on chain ${chainId}`}`,
+        DEFAULT_QUERY_LIMIT,
       );
     }
     return rows.map(toStoredAction);

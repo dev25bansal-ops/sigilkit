@@ -158,7 +158,7 @@ L4 explains motivation and history. It never overrides behaviour. Three specific
 |---|---|---|---|
 | `docs/GETTING-STARTED.md` | **CURRENT** | L5 | The onboarding path a new user follows. Prerequisites, first run, SDK/indexer/MCP usage. L1 wins on any behavioural claim |
 | `docs/DEPLOYMENT.md` | **CURRENT** | L5 | Deployment, npm publishing, services, rollback. Carries the pre-audit banner. L1 wins on behaviour; `docs/DEPLOY-OPS-2026-09-26.md` (L3) is the deeper assessment |
-| `docs/CONFIGURATION.md` | **CURRENT** | L5 | Every environment variable and CLI flag with defaults. `check-doc-counts.mjs` verifies parts of it, so parts are machine-checked — but `packages/*/src/**` wins on any default or accepted value |
+| `docs/CONFIGURATION.md` | **CURRENT** | L5 | Every environment variable and CLI flag with defaults. **No gate reads this file** (corrected 2026-10-04 — it previously claimed `check-doc-counts.mjs` verified parts of it, but that script never references CONFIGURATION.md). Treat every default below as unverified; `packages/*/src/**` wins on any default or accepted value |
 | `docs/TROUBLESHOOTING.md` | **CURRENT** | L5 | Symptom → cause → fix. L1 wins; where a documented cause is wrong, the cause is a bug in the code, not in this file |
 | `docs/SECURITY-7702-THREAT-MAP.md` | **CURRENT** | L5 | EIP-7702 threat map. **Subject to the L4 "audited" trap above** — as of 2026-09-26 its row 7 read "a fixed, audited contract", which was false and has been corrected. **Extended 2026-09-28 (dc-sec2): rows 11–13 added — 7579-has-no-E10 (structural: the `countersignAbove` field is absent from `SessionKey7579Module.Scope`, so the mitigation *cannot* exist there, by decision not oversight), MEV/sandwich (no code-level control), and governance capture (one-step ownership transfer, no timelock/accept; the mandated 2-of-3 Safe is an OPERATIONAL control, not a design one). All three are recorded as UNMITIGATED — do not read this map as all-clear.** L1 + `SECURITY.md` win |
 
@@ -200,7 +200,7 @@ effect as no audit at all.
 | `packages/*/README.md` | The published face of one package: install, usage, API | ❌ no (per-package by design) | ✅ yes, it's in `files[]` |
 | `contracts/test/README.md` | Test-suite guidance | ❌ no | n/a |
 | `vault/` | Private research notes, deliberately non-normative | ✅ as one L4 row for the whole directory | ❌ no |
-| `.workbuddy-ai/`, `agents/` | Assistant scratch — **gitignored, not a deliverable** | ❌ no | ❌ no |
+| `.workbuddy-ai/`, `agents/` | Assistant scratch — **gitignored, not a deliverable** (corrected 2026-10-04: `.workbuddy-ai/` is on the directory allowlist in `check-doc-location.mjs`, and markdown there is counted as tracked, so the directory is governed rather than invisible) | ❌ no | ❌ no |
 
 **Previously misplaced — migrated 2026-09-26.** Three finished deliverables were written next to the
 code they audit, which put them in no layer table *and*, for the two in a package, in no npm
@@ -249,7 +249,9 @@ this one is a real gate, wired into the verify pipeline:
 node scripts/check-doc-location.mjs     # or: npm run verify -- --only=docslocation
 ```
 
-It runs in `npm run verify` as its own step (**`doc location`**, 600s budget) immediately after
+It runs in `npm run verify` as its own step (**`doc location`**, 60s budget — `scripts/verify.mjs`
+`BUDGETS.docslocation`; corrected 2026-10-04, this line previously said 600s, which is the
+fallback budget `FALLBACK_TIMEOUT_MS`, not this step's) immediately after
 `doc counts`, and it needs no `forge`, so it runs on any machine. It checks **both directions**:
 the *location* half (no tracked `.md` outside `docs/` in a place that may not hold one) and the
 *index* half (every `docs/` file has a row; every row resolves to a real file). It is **tested in

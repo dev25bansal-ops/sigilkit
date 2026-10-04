@@ -37,7 +37,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { keccak256, toHex, type Hash } from "viem";
+import { keccak256, toHex, type Address, type Hash } from "viem";
 import { SigilIndexer } from "@sigilkit/indexer";
 import { handleMessage, TOOLS, __setAuditDbRootsForTests } from "../src/server.js";
 
@@ -461,6 +461,39 @@ describe("audit_query error paths (SEC-04 path policy + SEC-13 bounds)", () => {
     const { isError, text } = await call("audit_query", { db: join(dir, "notes.txt"), query: "summary" });
     expect(isError).toBe(true);
     expect(text).toContain("DATABASE_NOT_FOUND");
+  });
+
+  it("does NOT report the row ceiling as DATABASE_NOT_FOUND", async () => {
+    // The indexer refuses to silently truncate a listing over DEFAULT_QUERY_LIMIT (1 000
+    // rows). That refusal used to be a plain `Error`, so this handler's catch-all masked it
+    // as "no audit database at that path" — telling a caller with a perfectly valid
+    // database that it was missing. It now carries RowLimitExceededError and surfaces its
+    // own actionable message, while genuine unrecognised failures stay masked.
+    const { db } = allowlistedStore("rowlimit");
+    const agentId = ("0x" + "ab".repeat(32)) as Hash;
+    const ix = new SigilIndexer(db, 8453);
+    try {
+      for (let i = 0; i < 1_005; i++) {
+        ix.storeAction({
+          agentId,
+          target: "0x1234567890abcdef1234567890abcdef12345678" as Address,
+          selector: "0xdeadbeef",
+          value: 1n,
+          rationaleHash: ("0x" + "cd".repeat(32)) as Hash,
+          timestamp: 1_700_000_000,
+          txHash: ("0x" + i.toString(16).padStart(64, "0")) as Hash,
+          blockNumber: BigInt(i),
+          logIndex: 0,
+        });
+      }
+    } finally {
+      ix.close();
+    }
+
+    const { isError, text } = await call("audit_query", { db, query: "actions", agentId });
+    expect(isError).toBe(true);
+    expect(text).not.toContain("DATABASE_NOT_FOUND");
+    expect(text).toContain("more than 1000 rows");
   });
 
   it("returns the SAME answer for a missing file and a missing directory (no existence oracle)", async () => {

@@ -397,6 +397,44 @@ describe("BUG-17 — stop() interrupts the in-flight poll interval", () => {
     }
   });
 
+  it("actually waits pollMs between ticks instead of spinning", async () => {
+    // The regression this pins: `sleep(ms)` was written as `setTimeout(resolveFn)` with
+    // the delay argument never passed, so every poll fired at 0ms and the watch loop
+    // hammered the RPC endpoint ~pollMs times faster than configured. The earlier cases
+    // above cannot catch it — they use pollMs of 5-60_000 and pass under a spinning loop
+    // too. The distinguishing measurement is tick COUNT in a window shorter than pollMs.
+    vi.useFakeTimers();
+    const ix = new SigilIndexer(":memory:", CHAIN, { confirmations: 0, backoffMs: 1, logger: silentLogger() });
+    let stop: (() => Promise<void>) | undefined;
+    try {
+      let ticks = 0;
+      const base = stubChain([], 10n, { chainId: CHAIN });
+      const client = {
+        ...base,
+        getBlockNumber: async () => {
+          ticks++;
+          return base.getBlockNumber();
+        },
+      } as unknown as PublicClient;
+
+      const POLL_MS = 60_000;
+      stop = ix.watch(client, MANAGER, POLL_MS);
+      // Let the first tick land, so the loop is parked inside its sleep.
+      await vi.advanceTimersByTimeAsync(10);
+      const afterFirstTick = ticks;
+      expect(afterFirstTick).toBeGreaterThan(0);
+
+      // Half of one poll interval: a loop that honours pollMs cannot have ticked again.
+      await vi.advanceTimersByTimeAsync(POLL_MS / 2);
+      expect(ticks).toBe(afterFirstTick);
+    } finally {
+      await stop?.();
+      await vi.advanceTimersByTimeAsync(20);
+      vi.useRealTimers();
+      ix.close();
+    }
+  });
+
   it("does not report a stop-in-progress as a poll failure", async () => {
     // The catch-all in the loop logs and backs off. If shutdown raced an in-flight tick,
     // a Ctrl+C would produce a scary "poll failed; backing off" line and then wait out the

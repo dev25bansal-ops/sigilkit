@@ -7,15 +7,17 @@
 // `module.stripTypeScriptTypes` and stubbing only `viem` — 9/9 checks passed, including a
 // control group that re-injects the old flag ordering and confirms the retry test goes RED
 // without the fix. That harness proved the ASSERTIONS are sound; it did not prove they run
-// here, and no committed vitest artifact in this workspace records them executing.
+// here.
 //
-// Two things changed since: the `viem` dependency IS installed in this workspace, so the
-// former claim that "viem fails to load and `vitest run` cannot start at all" no longer holds
-// as written; but the two tests still have no recorded green run under vitest. Run this file
-// (`npx vitest run test/config.test.ts` from `packages/core`) and commit the result before
-// treating the P1 fix as covered by CI.
+// RESOLVED 2026-10-04. This note asked for a recorded green vitest run before treating the
+// P1 fix as covered by CI. Run on the populated tree:
 //
-// The remaining tests in this file predate that breakage and have run in CI previously.
+//   $ cd packages/core && npx vitest run test/config.test.ts
+//    Test Files  1 passed (1)
+//         Tests  22 passed (22)
+//
+// Both `loadDotEnv` cases are inside that green run, so the P1 fix is covered by CI and the
+// caveat is retired. `viem` is installed in this workspace, which is what unblocked it.
 import { afterAll, describe, expect, it } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
