@@ -332,10 +332,15 @@ jobs:
         run: |
           forge snapshot --no-match-contract '.*Invariant|.*Fork'
           if ! git diff --quiet .gas-snapshot; then
-            echo "### Gas snapshot changed" >> "$GITHUB_STEP_SUMMARY"
-            echo '```diff' >> "$GITHUB_STEP_SUMMARY"
-            git diff .gas-snapshot >> "$GITHUB_STEP_SUMMARY"
-            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            # One grouped redirect rather than four (shellcheck SC2129): the block opens
+            # "$GITHUB_STEP_SUMMARY" once and writes all four pieces through it, instead of
+            # re-opening the file per echo.
+            {
+              echo "### Gas snapshot changed"
+              echo '```diff'
+              git diff .gas-snapshot
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
           fi
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -471,6 +476,10 @@ jobs:
       # version-specific locators honest.
       - name: Check extension build identity (self-declared, not integrity)
         run: |
+          # shellcheck disable=SC2016
+          # SC2016 fires on the backticks inside the JS template literal below. They are JS
+          # interpolation, not shell expansion — the single quotes are load-bearing: they stop
+          # the shell touching `${m.version}` before node ever sees it.
           node -e '
             const m = require("./packages/core/test/wallet-e2e/metamask/manifest.json");
             if (m.version !== "13.49.0.0" || m.manifest_version !== 3) {

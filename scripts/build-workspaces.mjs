@@ -104,11 +104,21 @@ if (DRY_RUN) {
 }
 
 for (const name of order) {
+  // The flags must be SEPARATE argv entries. Building the string
+  // `--workspace=<name> --if-present` and passing it as one element makes npm look for a
+  // workspace literally named "@sigilkit/core --if-present" and fail with
+  // "No workspaces found" — which is exactly what CI reported.
+  const argv = ["run", "build", `--workspace=${name}`];
   // `--if-present` mirrors the historical `npm run build --workspaces --if-present`: a
   // workspace with no build script is skipped rather than failing the whole build.
-  const flags = IF_PRESENT ? " --if-present" : "";
+  if (IF_PRESENT) argv.push("--if-present");
   console.log(`\n> build ${name}`);
-  execFileSync("npm", ["run", "build", `--workspace=${name}${flags}`], {
+  // `shell: true` only on Windows, where `npm` is a `.cmd` shim Node cannot spawn directly
+  // (Node >= 20 rejects `.cmd` without a shell, and `npm.cmd` as a bare path gives EINVAL).
+  // The argv above is fixed and script-owned — no caller input reaches it — so the
+  // DEP0190 "args are not escaped" caveat does not apply. It must NOT be enabled on POSIX:
+  // there the argv passes through directly, which is what keeps the flags separate.
+  execFileSync("npm", argv, {
     cwd: ROOT,
     stdio: "inherit",
     shell: process.platform === "win32",
