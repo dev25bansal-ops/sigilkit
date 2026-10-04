@@ -39,7 +39,7 @@ import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { keccak256, toHex, type Address, type Hash } from "viem";
 import { SigilIndexer } from "@sigilkit/indexer";
-import { handleMessage, TOOLS, __setAuditDbRootsForTests } from "../src/server.js";
+import { handleMessage, TOOLS, __auditHandleCacheSizeForTests, __setAuditDbRootsForTests } from "../src/server.js";
 
 const ALICE = "0x70997970c51812dc3a010c7d01b50e0d17dc79c8";
 const BOB = "0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc";
@@ -586,21 +586,42 @@ describe("audit_query error paths (SEC-04 path policy + SEC-13 bounds)", () => {
     // 9th distinct database evicts the oldest, which on Windows means its file lock is
     // released — so the file can then be deleted. A cache that grew without bound (or that
     // counted spellings instead of resolved paths) would keep the lock and the delete throws.
-    const base = sandbox("lru");
+    // ONE allowlist covering every sandbox, set once. Calling `__setAuditDbRootsForTests`
+    // inside the loop reset the cache on each iteration (it calls closeAllAuditHandles), so
+    // the cache never held more than one entry: eviction was never actually exercised, and
+    // the bound could be raised to 32 with this test still green.
+    const dirs: string[] = [];
     const paths: string[] = [];
     for (let i = 0; i < 9; i++) {
       const d = mkdtempSync(join(tmpdir(), `sigilkit-mcp-err-lru-${i}-`));
       sandboxes.push(d);
+      dirs.push(d);
       const db = join(d, "audit.db");
       new SigilIndexer(db, 8453).close();
-      __setAuditDbRootsForTests({ SIGILKIT_AUDIT_DB_ROOT: d });
-      await call("audit_query", { db, query: "summary" });
       paths.push(db);
     }
+    __setAuditDbRootsForTests({ SIGILKIT_AUDIT_DB_ROOT: dirs.join(";") });
+    for (const db of paths) {
+      await call("audit_query", { db, query: "summary" });
+    }
+    // Nine distinct paths opened against a bound of 8: the cache must have evicted, not grown.
     // The first handle was evicted (cache bound is 8), so its file is unlocked and removable.
     expect(() => rmSync(paths[0]!, { force: true })).not.toThrow();
-    // …and the most recent one is still cached, so it is still locked.
-    expect(() => rmSync(paths[8]!, { force: true })).toThrow();
+
+    // …and the most recent one is still cached. Observed through the cache itself, which
+    // works on every platform. The previous version inferred this from a file lock: POSIX
+    // lets an open file be unlinked, so `rmSync` succeeds there whether or not the handle is
+    // cached, and the test failed on Linux CI while passing on every Windows dev machine —
+    // it was measuring the filesystem, not the cache.
+    // The bound itself, asserted directly: 9 paths opened, ceiling 8. The file-lock
+    // observation this replaces could not tell "evicts" from "grows without bound" on POSIX,
+    // where an open file is unlinkable.
+    expect(__auditHandleCacheSizeForTests()).toBe(8);
+
+    // The lock is still a valid signal where the platform provides one.
+    if (process.platform === "win32") {
+      expect(() => rmSync(paths[8]!, { force: true })).toThrow();
+    }
     // Cleanup must not fail the test: the last handle is released by the afterEach reset.
     expect(existsSync(paths[8]!)).toBe(true);
   });

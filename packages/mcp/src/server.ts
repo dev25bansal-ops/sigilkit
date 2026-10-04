@@ -535,6 +535,18 @@ function closeAllAuditHandles(): void {
 }
 
 /**
+ * Number of audit handles currently cached. Test-only.
+ *
+ * The LRU bound was previously observed indirectly, through whether a cached file could be
+ * unlinked — which only distinguishes a cached handle on Windows. That made the SEC-13 bound
+ * untested on POSIX, where an open file is unlinkable. This exposes the count so the test can
+ * assert the property directly on every platform.
+ */
+export function __auditHandleCacheSizeForTests(): number {
+  return AUDIT_HANDLES.size;
+}
+
+/**
  * Runs {@link parseActionRequest} and re-labels its failures for the tool boundary.
  *
  * `parseActionRequest` is the shared SDK parser, and its messages are already good, but two
