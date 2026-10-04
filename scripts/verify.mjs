@@ -79,6 +79,7 @@ const LABELS = {
   helpers: { label: "helper suites", why: "regression tests for the guard scripts themselves" },
   docs: { label: "doc counts", why: "documented counts still match the code" },
   docslocation: { label: "doc location", why: "no .md stranded outside docs/, where it would be unindexed and unshipped" },
+  runtime: { label: "runtime resolution", why: "the executing Node meets the declared floor and every workspace resolves one vitest" },
   // P0-WIRE: the next three guards each had a full test suite (6/11/31 cases) and each was
   // referenced in this file ONLY inside the `helpers` --test list. Nothing ever executed them.
   // That is the inverse of a silent-pass gate: the tests were green, the guards were absent,
@@ -299,6 +300,7 @@ const DEFAULT_STEP_TIMEOUTS = {
   // Pure-Node guards that shell out to `forge test --match-test` per registered row, or walk
   // the working tree. Minutes, not seconds — but still far above normal, per the rule above.
   docslocation: 60_000,
+  runtime: 60_000,
   helperregistry: 60_000,
   trackedrefs: 60_000,
   // The probe itself is fast; the budget covers a cold filesystem walk on a loaded runner.
@@ -1015,6 +1017,13 @@ await runWave([
   // It is safe to overlap with `docs`: both only *read* docs/STATUS.md, and read-read is
   // not contention (its subprocess is `git ls-files`, not forge).
   ["docslocation", () => run(labelOf("docslocation"), process.execPath, ["scripts/check-doc-location.mjs"])],
+  // `check-runtime.mjs` had a full test suite (`scripts/check-runtime.test.mjs`) and was named
+  // in the `helpers` list, so `npm run verify` reported a clean run of a guard it never
+  // invoked — the same inverse-of-a-silent-pass failure the P0-WIRE guards above had. It exits
+  // 1 when the executing Node is below the declared `engines.node` floor or when workspaces
+  // disagree with the root vitest version, which is exactly the class of environment
+  // difference that produces a failure nobody can reproduce.
+  ["runtime", () => run(labelOf("runtime"), process.execPath, ["scripts/check-runtime.mjs"])],
   // P0-WIRE: see the LABELS note. These three were suite-only — present in the `helpers`
   // --test list above, executed by nothing. Each is now a real step, so a regression in any
   // of them reddens `npm run verify` instead of sitting inert behind a green test run.

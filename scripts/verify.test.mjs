@@ -280,6 +280,10 @@ test("reduced gate builds before artifact validation and labels its scope", (t) 
     "scripts/check-dockerfile.mjs": "process.exit(0);\n",
     "scripts/check-doc-counts.mjs": "process.exit(0);\n",
     "scripts/check-doc-location.mjs": "process.exit(0);\n",
+    // The `runtime` step (check-runtime.mjs) is a real gate wired into the full run, so a
+    // reduced-gate fixture must stub it for the same reason as its neighbours: the real
+    // script resolves vitest against the fixture root, where it does not exist.
+    "scripts/check-runtime.mjs": "process.exit(0);\n",
     // P0-WIRE: the three guards wired in as steps are executed by the full gate, so a fixture
     // that runs the full gate must stub them. Without these the real scripts are spawned in
     // the fixture root, where their inputs do not exist, and the step fails for a reason that
@@ -885,6 +889,8 @@ test("the TypeScript test suite runs after build, never beside it", (t) => {
     "scripts/check-dockerfile.mjs": "process.exit(0);\n",
     "scripts/check-doc-counts.mjs": "process.exit(0);\n",
     "scripts/check-doc-location.mjs": "process.exit(0);\n",
+    // Same reason as the fixture above — `runtime` is a real step in the full gate.
+    "scripts/check-runtime.mjs": "process.exit(0);\n",
     "scripts/check-helper-suites.mjs": "process.exit(0);\n",
     "scripts/check-tracked-refs.mjs": "process.exit(0);\n",
     "scripts/check-reparse-points.mjs": "process.exit(0);\n",

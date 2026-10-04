@@ -208,6 +208,16 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with: { node-version: "24", cache: npm }
       - run: npm ci
+      # Dependency-advisory gate. Nothing in the repo ran `npm audit` before this, and
+      # `.github/dependabot.yml` cannot cover it either: the GitHub API reports Dependabot
+      # alerts DISABLED for this repository (HTTP 403 — a private repo needs GHAS), so the
+      # "default security-updates lane" its comment relied on does not exist. A security fix
+      # can therefore only arrive as an ordinary grouped Dependabot PR, which is a review
+      # queue rather than an alarm. `--audit-level=high` is the bar: it fails the build on a
+      # high-or-critical advisory and stays quiet on the low/moderate noise that would
+      # otherwise train people to ignore a red X.
+      - name: Dependency audit (npm audit, high+)
+        run: npm audit --audit-level=high
       # CQ-3: lint and test EVERY workspace, not just core. The indexer and mcp suites
       # (and mcp's typecheck) were previously never run in CI — which is exactly where the
       # audit-trail data-integrity bugs lived. `publish.yml` already used --workspaces,

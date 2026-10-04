@@ -15,8 +15,14 @@ updates:
     schedule:
       interval: weekly
       day: monday
-    # Group everything so one review session covers the weekly drift; security bumps
-    # still arrive as their own (urgent) PRs via the default security-updates lane.
+    # Group everything so one review session covers the weekly drift.
+    #
+    # CORRECTION (2026-10-04): this comment previously claimed "security bumps still arrive
+    # as their own (urgent) PRs via the default security-updates lane". That lane does not
+    # exist here — the GitHub API reports `Dependabot alerts are disabled for this repository`
+    # (HTTP 403; a private repo needs GitHub Advanced Security). Version-update PRs do run, so
+    # a security fix arriving as an ordinary grouped PR is the ONLY path an advisory has.
+    # `ci.yml`'s `npm audit` gate is what makes that visible; this file cannot.
     groups:
       minor-and-patch:
         update-types:
