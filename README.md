@@ -152,6 +152,36 @@ Deploys SessionKeyManager + a Counter target, funds the wallet, grants a 1-hour 
 (0.01 ETH/action, 0.05 ETH/window), and fires two on-chain rebalance actions — each signed by
 the agent's session key, enforced on-chain, and audited via `ActionLogged`.
 
+### Prove the enforcement (no setup, exits non-zero on failure)
+
+```bash
+bash scripts/proof-demo.sh
+```
+
+One command: starts its own Anvil, deploys, grants, runs the agent, then **tries to make the
+agent exceed its scope** and prints what stopped it. It exits 0 only if the whole sequence
+held, so it is safe to run in front of a reviewer rather than merely read.
+
+```
+· control: an action INSIDE the granted scope
+    accepted on-chain — the key is genuinely able to act.
+✓ spend 10,000 ETH — a million times the per-action cap      PerActionCapExceeded
+✓ call transferOwnership — owner-only — via the session key  TargetNotAllowed
+✓ replay a nonce this key already spent                       NonceUsed
+✓ use a request that expired a minute ago                     RequestExpired
+```
+
+Two details make those verdicts mean something:
+
+- **Every attempt carries a real EIP-712 signature.** An unsigned request dies at
+  signature recovery, so a rejection would prove nothing about the *policy*.
+- **The control runs first.** Four refusals alone cannot distinguish "the policy works" from
+  "this key cannot do anything at all" — a broken deployment would pass all four. The control
+  proves the key genuinely can act, so the refusals are the policy working.
+- **The guard must match.** A refusal by some *other* guard counts as a failure, so a script
+  that merely checked "something reverted" cannot report a false PASS. (Verified: pointing an
+  expectation at a non-existent guard makes the run exit 1.)
+
 ### Contracts (Foundry)
 
 ```bash
