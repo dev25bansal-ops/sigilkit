@@ -352,6 +352,14 @@ jobs:
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
           fi
+      # The drift check above is report-only on purpose — gas moves with the solc patch and
+      # the runner, so gating exact values would redden unrelated PRs. But "report-only"
+      # cannot tell "gas moved" from "this test is not tracked at all", and that is how the
+      # snapshot rotted to 162 entries against 228 tests with nothing red. This gates the
+      # deterministic half — the SET of test names — so a test can never silently become
+      # untracked, and a renamed test cannot leave a stale entry behind.
+      - name: Gas snapshot completeness
+        run: node scripts/check-gas-snapshot.mjs
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: forge-lcov

@@ -22,14 +22,19 @@ import { zeroHash, type Address, type Hash, type Hex, type PublicClient, type Wa
 import {
   assertBigInt,
   MAX_LEAVES,
+  MAX_CALLDATA_BYTES,
   MAX_MERKLE_PROOF_ELEMENTS,
   merkleProof,
   merkleRoot,
+  parseActionRequest,
   SigilKitClient,
   targetLeaf,
   ValidationError,
   validateAgainstScope,
   type ActionRequest,
+  type Address,
+  type Hash,
+  type Hex,
   type Scope,
 } from "../src/index.js";
 
@@ -243,6 +248,48 @@ describe("PERF-11 · Merkle builders are bounded", () => {
     const single = /MAX_SINGLE_PROOF_ELEMENTS\s*=\s*(\d+)/.exec(src);
     expect(single, "MAX_SINGLE_PROOF_ELEMENTS not found in SessionKey7579Module.sol").not.toBeNull();
     expect(MAX_MERKLE_PROOF_ELEMENTS).toBe(Number(single![1]));
+  });
+});
+
+describe("SEC-13 · calldata is bounded at the parse boundary", () => {
+  // `data` was the only unbounded field on ActionRequest, and `actionRequestDigest` keccaks
+  // the whole payload. Measured on this toolchain, 512 KB hashed in ~30 ms and 1 MB in
+  // ~60 ms, so an unbounded field let one request stall the caller's event loop for a
+  // minute — before any scope check, because hashing is what the digest does.
+  const base = {
+    agentId: ("0x" + "11".repeat(32)) as Hash,
+    target: ("0x" + "22".repeat(20)) as Address,
+    selector: "0xdeadbeef" as Hex,
+    value: 0n,
+    nonce: 0n,
+    expiry: Math.floor(Date.now() / 1000) + 3600,
+    rationaleHash: ("0x" + "33".repeat(32)) as Hash,
+  };
+  const withData = (bytes: number) => ({ ...base, data: ("0x" + "ab".repeat(bytes)) as Hex });
+
+  it("accepts calldata exactly at the bound", () => {
+    expect(parseActionRequest(withData(MAX_CALLDATA_BYTES)).data).toHaveLength(2 + MAX_CALLDATA_BYTES * 2);
+  });
+
+  it("rejects calldata one byte over the bound", () => {
+    expect(() => parseActionRequest(withData(MAX_CALLDATA_BYTES + 1))).toThrow(/calldata bound/);
+  });
+
+  it("rejects a grossly oversized payload rather than hashing it", () => {
+    // 1 MiB — the size the review measured at ~60 ms of keccak per call.
+    expect(() => parseActionRequest(withData(1024 * 1024))).toThrow(/calldata bound/);
+  });
+
+  it("does not reject realistic agent calldata", () => {
+    // The bound must be a DoS backstop, not a policy limit: an approve/swap/permit is
+    // hundreds of bytes. If this ever fails, MAX_CALLDATA_BYTES has been set too low.
+    for (const bytes of [0, 4, 68, 100, 512, 4096]) {
+      expect(parseActionRequest(withData(bytes)).data).toBeDefined();
+    }
+  });
+
+  it("still rejects malformed hex before considering the size", () => {
+    expect(() => parseActionRequest({ ...base, data: "0xzz" as Hex })).toThrow(/even-length hex/);
   });
 });
 

@@ -380,6 +380,22 @@ export function parseActionRequest(raw: unknown): ActionRequest {
   if (typeof dataRaw !== "string" || !isHex(dataRaw) || dataRaw.length % 2 !== 0) {
     throw new Error(`parseActionRequest: data is not valid even-length hex: ${String(dataRaw)}`);
   }
+  // Size bound, at the trust boundary (SEC-13). Every other field here is fixed-width, but
+  // `data` was length-checked only for hex validity, so a caller could hand the SDK a
+  // megabyte of calldata. The cost is not hypothetical: `actionRequestDigest` keccaks the
+  // WHOLE payload, and keccak is roughly linear in input length — measured at ~30 ms for
+  // 512 KB and ~60 ms for 1 MB on this toolchain, so one request could burn a minute of the
+  // caller's CPU and block the event loop, before any policy check or signature.
+  //
+  // 64 KiB is far above any realistic agent action (a router swap or an ERC-20 approve is
+  // hundreds of bytes) and far below anything that could stall a caller. MCP already caps
+  // whitelist leaf data at 4 KiB; this is the SDK-level backstop for callers that bypass MCP.
+  if (dataRaw.length > 2 + MAX_CALLDATA_BYTES * 2) {
+    throw new Error(
+      `parseActionRequest: data exceeds the ${MAX_CALLDATA_BYTES}-byte calldata bound ` +
+        `(got ${(dataRaw.length - 2) / 2} bytes)`,
+    );
+  }
   const data = dataRaw as Hex;
 
   return { agentId, target, selector, value, nonce, expiry, rationaleHash, data } as ActionRequest;
@@ -527,6 +543,20 @@ export function targetLeaf(target: Address, selector: Hex, data?: Hex): Hash {
  * callers needing more should batch on-chain instead of building one enormous tree locally.
  */
 export const MAX_LEAVES = 65_536;
+
+/**
+ * Hard ceiling on `ActionRequest.data`, in bytes (SEC-13).
+ *
+ * The digest path keccaks the entire payload, so cost grows with calldata length. Measured
+ * on this toolchain: 512 KB hashed in ~29.93 ms, ~60 ms at 1 MB — near-linear. An unbounded
+ * field therefore lets one request stall the caller's event loop for a minute, and it does so
+ * BEFORE any scope check, because hashing is what the digest is for.
+ *
+ * 64 KiB is deliberately generous: an ERC-20 approval, a router swap, or a permit batch are
+ * all hundreds of bytes. It is a denial-of-service backstop, not a protocol limit — nothing
+ * legitimate comes near it, and anything that does is not an agent action.
+ */
+export const MAX_CALLDATA_BYTES = 65_536;
 
 /**
  * Hard ceiling on Merkle proof elements (PERF-11), aligned with the on-chain
