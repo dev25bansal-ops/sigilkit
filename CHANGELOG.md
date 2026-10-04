@@ -58,6 +58,35 @@ Found by actually running CI (the first push opened PR #5) rather than by review
 - **`spendByAgent` has no row ceiling, deliberately** — it is an aggregation, so a LIMIT would
   silently under-count. Documented rather than "fixed", with the reasoning inline.
 
+### 2026-10-04 — agent runtime: the advisory path could never fire
+
+Two defects found by testing the package's behaviour rather than its coverage number.
+
+- **`LocalModelBrain` proposed nothing, ever.** `safeAmountWei` returns
+  `min(cap x usageFraction, window remaining, balance)`, and `propose()` passed
+  `perWindowCap: 0n` alongside `windowSpendRemaining` straight from the context — so the
+  minimum was always zero and `if (amount === 0n) return null` fired on every call.
+  Measured: **0 proposals across 50 ticks at threshold 0.** Every existing test used
+  `forceSchedule: true`, which returns before the amount is computed, so this was invisible.
+  The cap property the file claimed to guard was never at risk; liveness was simply broken.
+- **`buildContext()` hardcoded `windowSpendRemaining: 0n`** rather than reading the manager's
+  `getWindowState`. Since that field feeds the minimum above, it was the second half of the
+  same failure. It now reads on-chain state, applies the same fixed-window rollover rule the
+  SDK uses (an elapsed window frees the whole cap again), saturates at zero rather than
+  underflowing when a re-granted cap is lower than prior spend, and fails closed to zero if
+  the read throws.
+
+The RPC stub in `agent-runner.test.ts` was dispatching every `readContract` to one answer,
+which would have passed for the wrong reason once the second call existed; it now dispatches by
+function name and refuses an unstubbed one.
+
+New: `local-model-brain-liveness.test.ts` (4 cases) and 7 window-state cases including the
+rollover. Package coverage 85.64% -> 88.37% lines; 7 -> 36 tests. Both fixes verified
+load-bearing by reverting each and watching the tests go red.
+
+Totals: 994 TS tests across five packages — core 576, indexer 165, mcp 132, demo-agent 85,
+agent 36.
+
 ### 2026-10-03 — Ralph loop iteration 1: full E2E verification + README polish
 
 **Verification performed (all commands reproducible locally with CI-pinned toolchain):**

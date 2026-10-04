@@ -74,8 +74,14 @@ export class LocalModelBrain implements DecisionProvider {
 
     const amount = safeAmountWei({
       perActionCap: context.perActionCap || 0n,
-      perWindowCap: 0n,
-      windowSpendRemaining: context.windowSpendRemaining || 0n,
+      // `safeAmountWei` returns min(cap x usageFraction, window remaining, balance), so a
+      // zero here forces the result to zero and the brain returns null on every call —
+      // which is what happened: with the real `buildContext()` output this path proposed
+      // nothing across 50 ticks even at threshold 0. `AgentContext` carries no per-window
+      // cap, so the window term is bounded by what the per-action cap allows rather than
+      // left at 0. On-chain enforcement remains the authority on the real window.
+      perWindowCap: context.perActionCap || 0n,
+      windowSpendRemaining: context.windowSpendRemaining || context.perActionCap || 0n,
       balance: context.balance,
       usageFraction: this.config.usageFraction ?? 0.5,
     });

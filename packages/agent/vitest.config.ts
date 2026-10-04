@@ -11,13 +11,13 @@ export default defineConfig({
       include: ["src/**/*.ts"],
       exclude: ["src/index.ts"],
       thresholds: {
-        // Measured 2026-10-04 after adding agent-runner/stub-brain suites: 85.77 stmts /
-        // 68.18 branches / 93.54 funcs / 85.64 lines. Floors sit just under, so any
-        // regression fails rather than silently reducing the reported number.
-        lines: 85,
-        statements: 85,
-        functions: 92,
-        branches: 67,
+        // Measured 2026-10-04 after the window-state and LocalModelBrain-liveness suites:
+        // 88.14 stmts / 72.0 branches / 93.75 funcs / 88.37 lines. Floors sit just under, so
+        // any regression fails rather than silently reducing the reported number.
+        lines: 88,
+        statements: 87,
+        functions: 93,
+        branches: 71,
       },
     },
   },

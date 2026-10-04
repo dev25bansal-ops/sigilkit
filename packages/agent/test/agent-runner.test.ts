@@ -77,10 +77,29 @@ function makeRunner(brain: DecisionProvider, over: Partial<ConstructorParameters
 }
 
 /** Replace the runner's publicClient with one that answers getBalance/getNonce locally. */
-function stubRpc(runner: McpAgentRunner, answers: { balance: bigint; nonce: bigint }): void {
+function stubRpc(
+  runner: McpAgentRunner,
+  answers: {
+    balance: bigint;
+    nonce: bigint;
+    windowStart?: number;
+    spentThisWindow?: bigint;
+    windowThrows?: boolean;
+  },
+): void {
   const fake = {
     getBalance: async () => answers.balance,
-    readContract: async () => answers.nonce,
+    // Dispatched BY FUNCTION NAME. `buildContext` now makes two `readContract` calls
+    // (getNonce, getWindowState); returning the nonce for both would hand a number to the
+    // window-state reader, so the stub would pass for the wrong reason.
+    readContract: async ({ functionName }: { functionName: string }) => {
+      if (functionName === "getNonce") return answers.nonce;
+      if (functionName === "getWindowState") {
+        if (answers.windowThrows) throw new Error("window state unavailable");
+        return { windowStart: answers.windowStart ?? 0, spentThisWindow: answers.spentThisWindow ?? 0n };
+      }
+      throw new Error(`stubRpc: unstubbed function ${functionName}`);
+    },
     getTransactionCount: async () => 0,
     waitForTransactionReceipt: async () => {
       throw new Error("not stubbed");
@@ -242,6 +261,86 @@ describe("McpAgentRunner — adoptGrant validates the grant receipt", () => {
     const r = runnerWithReceipt(stubReceipt({ logs: [] }));
     await expect(r.adoptGrant(`0x${"01".repeat(32)}` as Hash)).rejects.toThrow(/did not emit SessionKeyGranted/);
     expect(r.isGranted).toBe(false);
+  });
+});
+
+describe("McpAgentRunner — windowSpendRemaining is read, not hardcoded", () => {
+  // `buildContext` returned a literal `windowSpendRemaining: 0n`. Because `safeAmountWei`
+  // takes the MINIMUM of cap, window remaining and balance, a hardcoded 0 pinned every
+  // policy-engine decision to zero — which is one of the two reasons the advisory
+  // LocalModelBrain could never propose anything. These pin the real read and, more
+  // importantly, the ROLLOVER rule: a window that has elapsed frees the whole cap again,
+  // and reading `spentThisWindow` without that check would report the window as still full.
+
+  const WINDOW_CAP = 1_000n;
+
+  async function contextWith(opts: {
+    windowStart?: number;
+    spentThisWindow?: bigint;
+    windowThrows?: boolean;
+    windowSeconds?: number;
+  }): Promise<AgentContext> {
+    const runner = makeRunner(fixedBrain(null), {
+      scope: { ...SCOPE, perWindowCap: WINDOW_CAP, windowSeconds: opts.windowSeconds ?? 3600 },
+    });
+    stubRpc(runner, {
+      balance: 10n ** 24n,
+      nonce: 3n,
+      windowStart: opts.windowStart,
+      spentThisWindow: opts.spentThisWindow,
+      windowThrows: opts.windowThrows,
+    });
+    return runner.buildContext();
+  }
+
+  it("reports the full cap when no window has been opened yet", async () => {
+    const ctx = await contextWith({ windowStart: 0, spentThisWindow: 0n });
+    expect(ctx.windowSpendRemaining).toBe(WINDOW_CAP);
+  });
+
+  it("subtracts spend inside a live window", async () => {
+    const nowSec = Math.floor(Date.now() / 1000);
+    const ctx = await contextWith({ windowStart: nowSec, spentThisWindow: 250n });
+    expect(ctx.windowSpendRemaining).toBe(WINDOW_CAP - 250n);
+  });
+
+  it("restores the FULL cap once the window has rolled over", async () => {
+    // windowStart + windowSeconds is in the past → this is a NEW window, so the previous
+    // window's spend must not be subtracted. Reading spentThisWindow naively would report
+    // 750n here instead of the full 1_000n.
+    const nowSec = Math.floor(Date.now() / 1000);
+    const ctx = await contextWith({
+      windowStart: nowSec - 7200, // started 2h ago, window is 1h → expired
+      spentThisWindow: 250n,
+      windowSeconds: 3600,
+    });
+    expect(ctx.windowSpendRemaining).toBe(WINDOW_CAP);
+  });
+
+  it("reports zero when the window is already spent to the cap", async () => {
+    const nowSec = Math.floor(Date.now() / 1000);
+    const ctx = await contextWith({ windowStart: nowSec, spentThisWindow: WINDOW_CAP });
+    expect(ctx.windowSpendRemaining).toBe(0n);
+  });
+
+  it("does not underflow when spend exceeds the cap", async () => {
+    // A scope re-granted with a LOWER cap than the key was charged under can leave
+    // spentThisWindow above the new cap. Subtraction would revert on an unchecked path.
+    const nowSec = Math.floor(Date.now() / 1000);
+    const ctx = await contextWith({ windowStart: nowSec, spentThisWindow: WINDOW_CAP + 500n });
+    expect(ctx.windowSpendRemaining).toBe(0n);
+  });
+
+  it("fails closed to zero when the read throws", async () => {
+    const ctx = await contextWith({ windowThrows: true });
+    expect(ctx.windowSpendRemaining).toBe(0n);
+  });
+
+  it("reads the nonce from the manager, not the EOA transaction count", async () => {
+    // The two diverge from the first action onward. Distinct stub values make a mix-up
+    // visible: nonce 3 comes from getNonce, while getTransactionCount returns 0.
+    const ctx = await contextWith({});
+    expect(ctx.nonce).toBe(3n);
   });
 });
 

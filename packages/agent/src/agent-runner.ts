@@ -122,23 +122,65 @@ export class McpAgentRunner {
     // unrelated transaction the session key has ever sent), so reading the EOA count makes
     // every request replay-rejected on-chain. Same source `SigilKitClient.prepareExecution`
     // uses when the caller does not supply a nonce.
-    const nonce = await this.publicClient.readContract({
-      address: this.config.managerAddress,
-      abi: SESSION_KEY_MANAGER_ABI,
-      functionName: "getNonce",
-      args: [this.sessionKeyAddress],
-    });
+    const [nonce, windowState] = await Promise.all([
+      this.publicClient.readContract({
+        address: this.config.managerAddress,
+        abi: SESSION_KEY_MANAGER_ABI,
+        functionName: "getNonce",
+        args: [this.sessionKeyAddress],
+      }),
+      this.readWindowState(),
+    ]);
+    const perActionCap = this.config.scope.perActionCap || 0n;
     return {
       tick: this.state.tick,
       managerAddress: this.config.managerAddress,
       balance,
-      windowSpendRemaining: 0n,
-      perActionCap: this.config.scope.perActionCap || 0n,
+      // Real remaining headroom, not a hardcoded 0. This field used to be a literal, which
+      // silently capped every policy-engine decision to zero (`safeAmountWei` takes the
+      // minimum of cap, window remaining and balance) and is part of why the advisory
+      // LocalModelBrain could never propose.
+      windowSpendRemaining: windowState,
+      perActionCap,
       nonce: BigInt(nonce),
       expiresAt: this.config.scope.expiresAt || Infinity,
       lastTxHash: this.state.lastTxHash,
       actionsExecuted: this.state.actionsExecuted,
     };
+  }
+
+  /**
+   * Remaining spend in the CURRENT fixed window, in wei.
+   *
+   * Mirrors the SDK's own rollover rule (`signing.ts`): a window is live only while
+   * `windowStart != 0` and `block.timestamp < windowStart + windowSeconds`; outside it the
+   * whole `perWindowCap` is available again. A read failure returns 0 — the conservative
+   * direction, since the on-chain cap still applies at execution and the local number only
+   * ever sizes a proposal.
+   */
+  private async readWindowState(): Promise<bigint> {
+    const perWindowCap = this.config.scope.perWindowCap || 0n;
+    if (perWindowCap === 0n) return 0n;
+    try {
+      const state = (await this.publicClient.readContract({
+        address: this.config.managerAddress,
+        abi: SESSION_KEY_MANAGER_ABI,
+        functionName: "getWindowState",
+        args: [this.sessionKeyAddress],
+      })) as { windowStart: number; spentThisWindow: bigint };
+
+      const windowSeconds = BigInt(this.config.scope.windowSeconds || 0);
+      const nowSec = BigInt(Math.floor(Date.now() / 1000));
+      const windowStart = BigInt(state.windowStart ?? 0);
+      const live = windowStart !== 0n && nowSec < windowStart + windowSeconds;
+      const spent = live ? BigInt(state.spentThisWindow ?? 0n) : 0n;
+      return spent >= perWindowCap ? 0n : perWindowCap - spent;
+    } catch (err) {
+      log.warn("getWindowState unavailable — reporting zero remaining window spend", {
+        reason: err instanceof Error ? err.message : String(err),
+      });
+      return 0n;
+    }
   }
 
   private validateAgainstGuardrails(proposal: ActionRequest): { ok: boolean; reason?: string } {
