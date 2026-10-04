@@ -32,9 +32,6 @@ import {
   ValidationError,
   validateAgainstScope,
   type ActionRequest,
-  type Address,
-  type Hash,
-  type Hex,
   type Scope,
 } from "../src/index.js";
 
