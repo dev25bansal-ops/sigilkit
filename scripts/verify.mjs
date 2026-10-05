@@ -1048,7 +1048,17 @@ await runWave([
   ["testwaivers", () => run(labelOf("testwaivers"), process.execPath, ["scripts/check-test-waivers.mjs"])],
   // Consumers resolve @sigilkit/core through dist/*.d.ts, absent on a fresh checkout.
   // Match CI: generate workspace outputs before checking their dependent types.
-  ["build", () => run(labelOf("build"), NPM[0], [...NPM[1], "run", "build", "--workspaces", "--if-present"])],
+  //
+  // Delegate to build-workspaces.mjs rather than passing --workspaces here. That script
+  // exists precisely because npm walks workspaces ALPHABETICALLY: `@sigilkit/agent` sorts
+  // before `@sigilkit/core` but imports it, so `--workspaces` compiled agent first and
+  // every import failed TS2307. CI was pointed at the ordered builder; this step was left on
+  // the raw call, so `npm run verify` still had the failure the builder fixed. One code
+  // path builds the workspaces now, and it is the correct one.
+  // `NPM` is `[command, prefixArgs]` — on this machine `[process.execPath, [<npm-cli.js path]]`.
+// The prefix is the npm CLI entrypoint and MUST be spread in front of "run build"; dropping
+// it hands node a bare "run" and it exits MODULE_NOT_FOUND.
+  ["build", () => run(labelOf("build"), NPM[0], [...NPM[1], "run", "build"])],
 ], concurrencyLimit());
 
 // `docs` runs alone: it shells out to forge three times (`test --list` plus `config --json`

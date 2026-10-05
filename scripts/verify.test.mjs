@@ -13,6 +13,11 @@ function makeLayout(t, files = {}) {
   t.after(() => rmSync(root, { recursive: true, force: true }));
   mkdirSync(join(root, "scripts"));
   copyFileSync(new URL("./verify.mjs", import.meta.url), join(root, "scripts/verify.mjs"));
+  // The `build` step delegates to build-workspaces.mjs (dependency-ordered, because npm's
+  // own --workspaces walks alphabetically and compiles @sigilkit/agent before the core it
+  // imports). So the fixture root needs that script too — without it the step fails on a
+  // missing module rather than on whatever the test is actually about.
+  copyFileSync(new URL("./build-workspaces.mjs", import.meta.url), join(root, "scripts/build-workspaces.mjs"));
   for (const [path, content] of Object.entries(files)) {
     mkdirSync(dirname(join(root, path)), { recursive: true });
     writeFileSync(join(root, path), content);
@@ -155,7 +160,13 @@ async function waitForDead(pid, budgetMs = 10_000) {
 
 test("fresh workspace builds declarations before typechecking", (t) => {
   const r = runVerify(t, ["--only=workspace"], {
-    "package.json": JSON.stringify({ private: true, workspaces: ["packages/*"] }),
+    "package.json": JSON.stringify({
+      private: true, workspaces: ["packages/*"],
+      // The real repo delegates `npm run build` to this script; the fixture must
+      // mirror that or the step fails on "Missing script" before reaching the
+      // ordering behaviour under test.
+      scripts: { build: "node scripts/build-workspaces.mjs --if-present" },
+    }),
     "packages/fixture/package.json": JSON.stringify({
       name: "verify-order-fixture", private: true,
       scripts: { build: "node build.cjs", lint: "node lint.cjs" },
@@ -296,7 +307,13 @@ test("reduced gate builds before artifact validation and labels its scope", (t) 
     // inputs (docs/CI-WAIVERS.md, forge) do not exist and the step fails for an unrelated reason.
     "scripts/check-test-waivers.mjs": "process.exit(0);\n",
     "scripts/check-package-artifacts.mjs": "import { existsSync } from 'node:fs'; if (!existsSync('packages/fixture/built.d.ts')) process.exit(1);\n",
-    "package.json": JSON.stringify({ private: true, workspaces: ["packages/*"] }),
+    "package.json": JSON.stringify({
+      private: true, workspaces: ["packages/*"],
+      // The real repo delegates `npm run build` to this script; the fixture must
+      // mirror that or the step fails on "Missing script" before reaching the
+      // ordering behaviour under test.
+      scripts: { build: "node scripts/build-workspaces.mjs --if-present" },
+    }),
     "packages/fixture/package.json": JSON.stringify({
       name: "verify-artifact-order", private: true,
       scripts: { build: "node build.cjs", lint: "node -e \"process.exit(0)\"", test: "node -e \"process.exit(0)\"" },
@@ -896,7 +913,13 @@ test("the TypeScript test suite runs after build, never beside it", (t) => {
     "scripts/check-reparse-points.mjs": "process.exit(0);\n",
     "scripts/check-test-waivers.mjs": "process.exit(0);\n",
     "scripts/check-package-artifacts.mjs": "process.exit(0);\n",
-    "package.json": JSON.stringify({ private: true, workspaces: ["packages/*"] }),
+    "package.json": JSON.stringify({
+      private: true, workspaces: ["packages/*"],
+      // The real repo delegates `npm run build` to this script; the fixture must
+      // mirror that or the step fails on "Missing script" before reaching the
+      // ordering behaviour under test.
+      scripts: { build: "node scripts/build-workspaces.mjs --if-present" },
+    }),
     "packages/fixture/package.json": JSON.stringify({
       name: "verify-build-before-tests", private: true,
       scripts: {
