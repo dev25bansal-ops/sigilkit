@@ -3,7 +3,7 @@ import { McpAgentRunner } from "../src/agent-runner.js";
 import { StubBrain } from "../src/brain/stub-brain.js";
 import type { AgentContext, DecisionProvider } from "../src/types.js";
 import type { ActionRequest, Scope } from "@sigilkit/core";
-import type { Address, Hash } from "viem";
+import type { Address, Hash, PublicClient } from "viem";
 
 /**
  * McpAgentRunner is the package's orchestration layer: it is where SEC-06 role separation
@@ -60,34 +60,46 @@ const SIGNER_PK = "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b7
 
 
 function makeRunner(brain: DecisionProvider, over: Partial<ConstructorParameters<typeof McpAgentRunner>[0]> = {}) {
-  const r = new McpAgentRunner({
+  const { publicClient: injected, ...rest } = over;
+  // Injected at CONSTRUCTION so both transports the runner uses are addressable. The runner
+  // reads balance/nonce/window on its own publicClient and makes the per-window read inside
+  // SigilKitClient — two separate clients. Assigning the private field afterwards reached only
+  // the first, so the second still dialled `rpcUrl`: validateAgainstScope logged "getWindowState
+  // unavailable" and SKIPPED the per-window check, which made the cap-boundary case pass for the
+  // wrong reason and go red whenever anything happened to be listening on that port.
+  const client =
+    injected ?? fakeClient({ balance: 10n ** 24n, nonce: 7n, windowStart: 0, spentThisWindow: 0n });
+  return new McpAgentRunner({
     managerAddress: MANAGER,
     sessionSigner: SIGNER_PK,
     scope: SCOPE,
     brain,
     rpcUrl: RPC,
-    ...over,
+    ...rest,
+    publicClient: client,
   });
-  // `tick()` opens with `buildContext()`, which does two RPC reads (getBalance and the
-  // manager's getNonce). Without a stub those hit the dead RPC URL above and the case
-  // fails on a fetch error rather than on the behaviour under test. Answering both by
-  // method name keeps the runner's real code path — only the transport is replaced.
-  stubRpc(r, { balance: 10n ** 24n, nonce: 7n });
-  return r;
 }
 
 /** Replace the runner's publicClient with one that answers getBalance/getNonce locally. */
-function stubRpc(
-  runner: McpAgentRunner,
-  answers: {
-    balance: bigint;
-    nonce: bigint;
-    windowStart?: number;
-    spentThisWindow?: bigint;
-    windowThrows?: boolean;
-  },
-): void {
-  const fake = {
+/**
+ * The stub every case uses, built BEFORE the runner so it can be INJECTED.
+ *
+ * `McpAgentRunner` reads the nonce and window state on its own `publicClient` and makes
+ * its per-window read inside `SigilKitClient` — two separate transports. Assigning the
+ * private `runner.publicClient` afterwards only reached the first, so the second still
+ * dialled `rpcUrl`: `validateAgainstScope` logged "getWindowState unavailable" and SKIPPED
+ * the per-window check, which made the cap-boundary case pass for the wrong reason and go
+ * red whenever anything happened to be listening on that port. Injecting one client at
+ * construction reaches both, so no test depends on a socket.
+ */
+function fakeClient(answers: {
+  balance: bigint;
+  nonce: bigint;
+  windowStart?: number;
+  spentThisWindow?: bigint;
+  windowThrows?: boolean;
+}): PublicClient {
+  return {
     getBalance: async () => answers.balance,
     // Dispatched BY FUNCTION NAME. `buildContext` now makes two `readContract` calls
     // (getNonce, getWindowState); returning the nonce for both would hand a number to the
@@ -104,8 +116,11 @@ function stubRpc(
     waitForTransactionReceipt: async () => {
       throw new Error("not stubbed");
     },
-  };
-  (runner as unknown as { publicClient: unknown }).publicClient = fake;
+  } as unknown as PublicClient;
+}
+
+function stubRpc(runner: McpAgentRunner, answers: Parameters<typeof fakeClient>[0]): void {
+  (runner as unknown as { publicClient: unknown }).publicClient = fakeClient(answers);
 }
 
 describe("McpAgentRunner — guardrails reject before any signature", () => {

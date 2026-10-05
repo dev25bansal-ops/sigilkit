@@ -20,6 +20,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { SigilIndexer } from "@sigilkit/indexer";
 import { handleMessage, __setAuditDbRootsForTests } from "../src/server.js";
 
 /** Calls `audit_query` through the real dispatcher and returns the reply text. */
@@ -64,8 +65,27 @@ function pair(): { root: string; outside: string; loot: string } {
   const root = sandbox();
   const outside = sandbox();
   const loot = join(outside, "loot.db");
-  // A plain file is enough: the *policy* must refuse it before SQLite is ever involved.
-  writeFileSync(loot, "not-really-a-database");
+  // A REAL SigilIndexer database, not a text file.
+  //
+  // This is load-bearing. The suite previously wrote "not-really-a-database", so removing
+  // the post-realpath containment check (server.ts step 4) still produced an error — SQLite's
+  // own "file is not a database" — and `expect(res.isError).toBe(true)` was satisfied by the
+  // wrong cause. That made the containment check a surviving mutant: delete it and all 132
+  // tests stay green, while an in-root symlink to a real out-of-root store gets SERVED.
+  // With a real store at the target, step 4 is the only thing that can refuse it.
+  const ix = new SigilIndexer(loot, 8453);
+  ix.storeAction({
+    agentId: ("0x" + "ab".repeat(32)) as `0x${string}`,
+    target: ("0x" + "cd".repeat(20)) as `0x${string}`,
+    selector: "0xdeadbeef",
+    value: 1n,
+    rationaleHash: ("0x" + "ef".repeat(32)) as `0x${string}`,
+    timestamp: 1_700_000_000,
+    txHash: ("0x" + "11".repeat(32)) as `0x${string}`,
+    blockNumber: 1n,
+    logIndex: 0,
+  });
+  ix.close();
   __setAuditDbRootsForTests({ SIGILKIT_AUDIT_DB_ROOT: root });
   return { root, outside, loot };
 }

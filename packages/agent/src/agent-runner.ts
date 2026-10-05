@@ -38,6 +38,19 @@ export interface RunnerConfig {
   /** A real viem Chain object (e.g., foundry). Defaults to foundry for local test. */
   chain?: Chain;
   rpcUrl: string;
+  /**
+   * Optional pre-built viem PublicClient, used for EVERY read this runner makes.
+   *
+   * Without it the runner builds its own `publicClient` here AND a second, independent one
+   * inside `SigilKitClient`, both pointed at `rpcUrl`. A test can only reach the first by
+   * assigning a private field, so `prepareExecution`'s per-window read still went to the
+   * network: the window check was skipped (core logs "getWindowState unavailable"), and
+   * whether the case passed depended on whether anything was listening on that port.
+   *
+   * Supplying one client makes both reads addressable, so a test can drive them without a
+   * socket. Takes precedence over `rpcUrl`.
+   */
+  publicClient?: PublicClient;
 }
 
 export type TickResult =
@@ -50,7 +63,8 @@ function padAddress(address: Address): string {
 }
 
 export class McpAgentRunner {
-  private config: Required<Pick<RunnerConfig, "managerAddress" | "scope" | "brain" | "chain" | "rpcUrl">> & Pick<RunnerConfig, "sessionSigner" | "relayer" | "whitelistLeaves">;
+  private config: Required<Pick<RunnerConfig, "managerAddress" | "scope" | "brain" | "chain" | "rpcUrl">> &
+    Pick<RunnerConfig, "sessionSigner" | "relayer" | "whitelistLeaves" | "publicClient">;
   private client: SigilKitClient;
   private sessionSigner: { address: Address; sign: (args: { hash: Hash }) => Promise<Hex> };
   private relayer?: ReturnType<typeof privateKeyToAccount>;
@@ -64,11 +78,25 @@ export class McpAgentRunner {
       managerAddress: this.config.managerAddress,
       chain: this.config.chain,
       rpcUrl: this.config.rpcUrl,
+      // Injectable so BOTH transports in this class can be driven from one stub. The runner
+      // reads the nonce and window state on `publicClient` and `prepareExecution` makes
+      // its own reads through `client`; a test that stubbed only the former left the
+      // latter talking to a real RPC URL. `validateAgainstScope` then silently SKIPPED its
+      // per-window check (core logs "getWindowState unavailable"), so the boundary case
+      // passed for the wrong reason — and turned red if anything happened to be listening
+      // on that port. `SigilKitClient` already accepted `publicClient`; the runner simply
+      // never passed it through.
+      publicClient: this.config.publicClient,
     });
-    this.publicClient = createPublicClient({
-      chain: this.config.chain,
-      transport: http(this.config.rpcUrl),
-    });
+    // Honour an injected client for the runner's OWN reads too, not just the SigilKitClient
+    // one above. Creating a fresh client here regardless is what made the injection appear
+    // to do nothing: `buildContext` kept dialling rpcUrl and the stub was never called.
+    this.publicClient =
+      this.config.publicClient ??
+      createPublicClient({
+        chain: this.config.chain,
+        transport: http(this.config.rpcUrl),
+      });
 
     if (typeof config.sessionSigner === "string") {
       const account = privateKeyToAccount(config.sessionSigner);
