@@ -33,6 +33,8 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "
 
 let anvil: ChildProcess | null = null;
 let available = false;
+/** True only when THIS suite started the node, so afterAll never kills someone else's. */
+let ownsAnvil = false;
 
 async function waitForRpc(url: string, timeoutMs = 15000): Promise<void> {
   const start = Date.now();
@@ -52,21 +54,80 @@ async function waitForRpc(url: string, timeoutMs = 15000): Promise<void> {
   throw new Error("anvil did not start in time");
 }
 
+/**
+ * Starts an Anvil ONLY if nothing already answers on the port, and records whether the
+ * chain is ours.
+ *
+ * The previous version spawned unconditionally, ignored whether the spawn SUCCEEDED, and
+ * then accepted any node that answered. So with a developer's `anvil &` already running —
+ * which README.md tells people to do — the suite silently ran against THAT chain and left
+ * its deployments, grants and transactions there. Reproduced: a pre-existing node at block 0
+ * ended the run at block 7.
+ *
+ * Two consequences of the old shape, both fixed here:
+ *   - `waitForRpc` proves "someone answers", not "the process I spawned is answering";
+ *   - `afterAll` called `anvil?.kill()` unconditionally, so if the spawn had failed it would
+ *     try to kill a process it did not start (harmless in practice, wrong in intent).
+ */
 beforeAll(async () => {
   try {
     const v = execFileSync(FORGE, ["--version"], { stdio: "pipe" }).toString();
     if (!v.includes("Version")) return;
-    anvil = spawn(ANVIL, ["--port", "8545", "--silent"], { stdio: "ignore" });
-    await waitForRpc(ANVIL_URL);
+
+    if (await rpcUp()) {
+      // Reuse, but say so loudly — these tests assert on a chain they did not create.
+      const height = await rpcNumber("eth_blockNumber");
+      console.warn(
+        `[smoke.e2e] REUSING the Anvil already on ${ANVIL_URL} (block ${height}).
+` +
+          `[smoke.e2e] This suite writes to whatever chain it finds; stop that node first for a hermetic run.`,
+      );
+      ownsAnvil = false;
+    } else {
+      anvil = spawn(ANVIL, ["--port", "8545", "--silent"], { stdio: "ignore" });
+      // A spawn can fail asynchronously (EADDRINUSE in a race, missing binary). Without an
+      // error listener the failure is silent and `waitForRpc` then accepts someone else's node.
+      const spawnFailure = new Promise<never>((_, reject) => {
+        anvil?.once("error", reject);
+      });
+      await Promise.race([waitForRpc(ANVIL_URL), spawnFailure]);
+      ownsAnvil = true;
+    }
     available = true;
-  } catch {
+  } catch (err) {
+    console.warn(`[smoke.e2e] no usable chain: ${err instanceof Error ? err.message : err}`);
     available = false;
   }
 }, 60000);
 
 afterAll(() => {
-  anvil?.kill();
+  // Only ever stop a node this suite started. Killing a developer's long-running anvil
+  // because our spawn lost a race is not a thing a test should be able to do.
+  if (ownsAnvil) anvil?.kill();
 });
+
+async function rpcUp(): Promise<boolean> {
+  try {
+    await waitForRpc(ANVIL_URL);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function rpcNumber(method: string): Promise<number> {
+  try {
+    const res = await fetch(ANVIL_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params: [] }),
+    });
+    const body = (await res.json()) as { result?: string };
+    return body.result ? Number(body.result) : 0;
+  } catch {
+    return 0;
+  }
+}
 
 describe("demo agent end-to-end (CQ-4)", () => {
   it("runs the documented flow: grant → tick → on-chain enforce → ActionLogged", async () => {
