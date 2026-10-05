@@ -288,6 +288,49 @@ describe("redaction (SEC-12)", () => {
     }
   });
 
+  it("does not let an allowlisted FIELD NAME bypass text scrubbing", () => {
+    // The allowlist exists so a bytes32 hash under the name `hash` is not mistaken for a
+    // private key. It was implemented as `if (PUBLIC_IDENTIFIERS.test(key)) return value;`
+    // — an early return that also skipped `scrubString`, which is what strips Bearer
+    // tokens, JWTs, provider keys and absolute paths. So a credential logged under any of
+    // the 26 allowlisted names came out verbatim while the identical value under `note` was
+    // redacted. Verified before the fix:
+    //   {note:"Bearer sk-…"}  -> "[redacted]"
+    //   {hash:"Bearer sk-…"}  -> "Bearer sk-…"
+    //   {digest:"<JWT>"}      -> verbatim
+    // The fix keeps the identifier exemption and re-runs the text scrubs.
+    const BEARER = "Bearer sk-abc123SECRETVALUE";
+    const JWT = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abcdefghijkl";
+    for (const field of ["hash", "digest", "root", "to", "from", "address"]) {
+      for (const secret of [BEARER, JWT, "C:\\Users\\dev\\secret\\key.pem"]) {
+        const { log, out } = make("info", "json");
+        log.info("x", { [field]: secret });
+        const all = out.join("\n");
+        expect(all, `${field} must not pass a credential through`).not.toContain(secret);
+        // The mask token differs by KIND: a credential becomes "[redacted]", an absolute
+        // path becomes "[path]". Assert it is not verbatim, and that SOME mask replaced it —
+        // asserting the word "redacted" specifically failed on the path case.
+        // The mask token differs by output format and by kind: the TEXT logger emits "[path]",
+        // while the JSON logger emits the bare token "redacted". Assert the secret is gone
+        // and that a mask replaced it, without pinning which spelling.
+        expect(all, `${field} must be masked`).toMatch(/\[?(redacted|path)\]?/);
+      }
+    }
+  });
+
+  it("still preserves an allowlisted identifier that IS an identifier", () => {
+    // The no-over-redaction half. If the fix were "scrub everything under an allowlisted
+    // name", these would be destroyed — the allowlist is what keeps them readable.
+    for (const field of ["agentId", "hash", "digest", "target"]) {
+      const { log, out } = make("info", "json");
+      log.info("x", { [field]: AGENT_ID });
+      expect(out.join("\n"), field).toContain(AGENT_ID);
+    }
+    const { log, out } = make("info", "json");
+    log.info("x", { target: TARGET });
+    expect(out.join("\n")).toContain(TARGET);
+  });
+
   it("redacts a secret nested at any depth and combination of objects and arrays", () => {
     for (const format of ["text", "json"] as const) {
       const { log, out } = make("info", format);

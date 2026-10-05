@@ -321,15 +321,39 @@ function scrubUrl(raw: string, rpcHint: boolean): string {
   return out;
 }
 
-/** Masks credentials, provider keys and absolute paths inside a free-text string. */
-function scrubString(value: string, rpcHint: boolean): string {
-  if (KEY_SHAPE.test(value)) return REDACTED;
+/**
+ * True when a string carries content the free-text scrubs must act on, whatever the field
+ * name is.
+ *
+ * This is what separates "an allowlisted identifier holding an identifier" from "an
+ * allowlisted field name carrying a credential". A bytes32 hash or a bare address matches
+ * none of these, so an allowlisted field holding one is still returned verbatim — the
+ * property the allowlist exists for. A `hash` field holding `Bearer sk-…` or an absolute
+ * path matches, and must be scrubbed even though its NAME says the value is public.
+ */
+const NEEDS_TEXT_SCRUB =
+  /[A-Za-z]:[\\/]|\\|\/(?:home|Users|root)\/|\/\/|eyJ|[\w-]+\.[\w-]+\.[\w-]+|bearer\s|0x[0-9a-fA-F]{40,}/i;
+
+/**
+ * Masks credentials, provider keys and absolute paths inside a free-text string.
+ *
+ * @param allowlistedField when the field NAME is an allowlisted public identifier. Only the
+ *   value-SHAPE heuristics are suppressed in that case (`KEY_SHAPE` would redact a bytes32
+ *   hash, which is exactly the identifier the allowlist is meant to preserve). The free-text
+ *   scrubs — Bearer tokens, JWTs, URLs with embedded keys, absolute paths — still run,
+ *   because a credential does not stop being one because it was logged under `hash`.
+ */
+function scrubString(value: string, rpcHint: boolean, allowlistedField = false): string {
+  // A 32-byte hex identifier is the case the allowlist protects: shape heuristics would
+  // redact it as a private key, which is a false positive on the single most common value
+  // these fields hold. Anything that still needs text scrubbing goes through below.
+  if (!allowlistedField && KEY_SHAPE.test(value)) return REDACTED;
   if (BEARER.test(value)) return REDACTED;
   if (URL_PREFIX.test(value)) return scrubUrl(value, rpcHint);
   let out = value;
   out = out.replace(JWT, URL_MASK);
   out = out.replace(URL_LIKE_TOKEN, (match) => scrubUrl(match, rpcHint));
-  out = out.replace(EMBEDDED_HEX64, REDACTED);
+  if (!allowlistedField) out = out.replace(EMBEDDED_HEX64, REDACTED);
   out = out.replace(WINDOWS_PATH, maskPath);
   out = out.replace(HOME_PATH, maskPath);
   return out;
@@ -405,11 +429,17 @@ function redactField(
     return REDACTED;
   }
   if (typeof value === "string") {
-    // 2. Allowlisted public identifiers bypass the shape heuristic (a bytes32 and a
-    //    private key are the same bytes; only the field name can tell them apart).
-    if (PUBLIC_IDENTIFIERS.test(key)) return value;
+    // 2. Allowlisted public identifiers bypass the SHAPE heuristic — a bytes32 hash and a
+    //    private key are the same bytes, so only the field name can tell them apart.
+    //    They do NOT bypass free-text scrubbing. Returning early did exactly that, and
+    //    `scrubString` is what strips Bearer tokens, JWTs, provider keys and absolute
+    //    paths, so a credential logged under `hash` / `digest` / `root` (26 allowlisted
+    //    names) came out verbatim while the identical value under `note` was redacted.
+    //    Only the value-shape heuristics are skipped; the text scrubs still run.
+    const allowlisted = PUBLIC_IDENTIFIERS.test(key);
+    if (allowlisted && !NEEDS_TEXT_SCRUB.test(value)) return value;
     // 3. Value shape and free text — catches `note: "0x…"` and viem error messages.
-    return scrubString(value, RPC_HINT.test(key));
+    return scrubString(value, RPC_HINT.test(key), allowlisted);
   }
   if (value === null || typeof value !== "object") return redactPrimitive(value);
   return redactObject(value, isSensitive, seen, depth + 1, withStack);
