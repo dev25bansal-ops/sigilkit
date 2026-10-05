@@ -1,0 +1,7 @@
+{
+  "$comment": "Single source of truth for which Solidity contract suites are excluded from the PR gate. unitExclude is the ONLY place a new exclusion category is added: invariantMatch/forkMatch must each be one of its branches, and jsExclude is a derived mirror (sync-facts.mjs --write regenerates it). GitHub Actions cannot read this file from env:, so workflow files are asserted by --check and updated by hand.",
+  "unitExclude": ".*Invariant|.*Fork",
+  "invariantMatch": ".*Invariant",
+  "forkMatch": ".*Fork",
+  "jsExclude": "Invariant|Fork"
+}

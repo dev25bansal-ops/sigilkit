@@ -2,7 +2,7 @@
 
 **Live MetaMask and Coinbase Smart Wallet end-to-end tests** for the SigilKit
 EIP-7702 + SessionKey SDK. Both harnesses run a real Chromium with a real
-extension (MetaMask 12.5.0 MV3) or a real on-chain designator (Coinbase Smart
+extension (MetaMask 13.49.0 MV3) or a real on-chain designator (Coinbase Smart
 Wallet's pinned implementation) against a local Anvil node.
 
 ## Run it
@@ -17,7 +17,7 @@ npx tsx test/wallet-e2e/run-all.ts
 Or individually:
 
 ```bash
-npx tsx test/wallet-e2e/run.ts       # MetaMask 12.5.0 (Chromium + extension)
+npx tsx test/wallet-e2e/run.ts       # MetaMask 13.49.0 (Chromium + extension)
 npx tsx test/wallet-e2e/coinbase.ts  # Coinbase Smart Wallet (on-chain designator)
 ```
 
@@ -78,11 +78,18 @@ regenerate:
 
 ```bash
 cd packages/core/test/wallet-e2e
-curl -L -o metamask.zip \
-  "https://github.com/MetaMask/metamask-extension/releases/download/v12.5.0/metamask-chrome-12.5.0.zip"
+curl -sSfL -o metamask.zip \
+  "https://github.com/MetaMask/metamask-extension/releases/download/v13.49.0/metamask-chrome-13.49.0.zip"
+# Verify before extracting — CI does the same, so a local bundle must match it.
+echo "7ba00bfe4fe8b0ffb27be1e8fc06506248f1b888cb4f2e5e5e8b1c37f461f262  metamask.zip" | sha256sum --check
 unzip -o metamask.zip -d metamask
 rm metamask.zip
 ```
+
+The pin is deliberate: the harness drives MetaMask's onboarding DOM, which
+changes between majors, so `metamask/manifest.json`'s version is asserted in CI
+rather than tracking the store's rolling release. Bumping the pin means
+re-deriving the locators in `run.ts` against the new bundle.
 
 The first run also creates a persistent profile at `.playwright-profile/` —
 MetaMask remembers nothing between runs (intentional) so tests are hermetic.

@@ -37,7 +37,6 @@ contract SessionKeyManagerInvariant is Test {
     address[] internal agents;
 
     // Ghost bookkeeping (lives in the test contract's storage).
-    mapping(address => uint256) internal expectedWindowSpend;
     mapping(address => uint256) internal successes;
     mapping(address => uint256) internal successesAtRevoke;
     mapping(address => bool) internal everRevoked;
@@ -47,11 +46,20 @@ contract SessionKeyManagerInvariant is Test {
     mapping(address => uint256) internal ghostPerActionCap;
     mapping(address => uint256) internal ghostWindowSeconds;
     mapping(address => uint256) internal ghostMaxPerWindowCap;
+    // Monotonic total of value that left the wallet through a SUCCESSFUL agent action.
+    // Only ever incremented, never window-reset, so it is comparable with the wallet's
+    // balance at every point in the sequence (see invariant_valueIsConserved).
+    uint256 internal ghostTotalSpent;
+
+    /// @dev The wallet's entire starting native balance. A named constant rather than the
+    ///      literal `1_000 ether` repeated at each use, so the conservation law has exactly
+    ///      one definition that cannot drift from the `vm.deal` that funds it.
+    uint256 internal constant INITIAL_BALANCE = 1_000 ether;
 
     function setUp() public {
         skm = new SessionKeyManager(owner);
         counter = new Counter();
-        vm.deal(address(skm), 1_000 ether);
+        vm.deal(address(skm), INITIAL_BALANCE);
 
         // The fuzzer must reach state changes ONLY through our handler functions —
         // otherwise it can call grantSessionKey directly as the owner and trivially
@@ -187,10 +195,18 @@ contract SessionKeyManagerInvariant is Test {
 
     /// @dev Denylist toggles — covers the un-deny path (previously unreachable by fuzz).
     ///      Denying poke() flips _expectedOutcome for subsequent executes automatically.
+    ///
+    ///      The read MUST be hoisted into a local before `vm.prank`. Written inline as
+    ///      `skm.setSelectorDenied(selector, !skm.isSelectorDenied(selector))`, the
+    ///      `isSelectorDenied` staticcall is a foreign call evaluated after the prank is set,
+    ///      so it consumes the prank: the outer call then executes as this test contract and
+    ///      reverts `NotOwner`. The handler reverted 100% of the time, silently leaving the
+    ///      un-deny path uncovered and the INV-4-deny branch of the oracle unreachable.
     function toggleDenylistRandom(uint256 seed) external {
         bytes4 selector = seed % 2 == 0 ? counter.poke.selector : skm.grantSessionKey.selector;
+        bool currentlyDenied = skm.isSelectorDenied(selector);
         vm.prank(owner);
-        skm.setSelectorDenied(selector, !skm.isSelectorDenied(selector));
+        skm.setSelectorDenied(selector, !currentlyDenied);
     }
 
     /// @dev Time travel — expiry and window-rollover branches execute mid-sequence.
@@ -222,9 +238,13 @@ contract SessionKeyManagerInvariant is Test {
         SessionKeyManager.Scope memory s = skm.getScope(a);
         ghostPerActionCap[a] = s.perActionCap;
         ghostWindowSeconds[a] = s.windowSeconds;
-        if (s.perWindowCap > ghostMaxPerWindowCap[a]) {
-            ghostMaxPerWindowCap[a] = s.perWindowCap;
-        }
+        // `ghostMaxPerWindowCap` is deliberately NOT raised here. It is the highest cap under
+        // which value was actually CHARGED, so it is maintained in `_executeAs` at the moment
+        // of a successful charge. Ratcheting it on a GRANT let the owner weaken INV-1 for
+        // free: granting a large cap that is never spent raised the ghost, after which any
+        // window spend — even one exceeding the cap actually in force — satisfied the
+        // invariant. Moving the update to the charge site keeps the bound tied to caps that
+        // money actually moved under.
         // A successful grant clears the revoked flag (the reinstatement path);
         // re-baseline the ghost so INV-2 only bites revocations that were NOT
         // legitimately reinstated by an owner action.
@@ -247,7 +267,7 @@ contract SessionKeyManagerInvariant is Test {
         bytes32 ds = skm.DOMAIN_SEPARATOR();
         bytes memory sig = _sign(pk, req, ds);
 
-        bool shouldSucceed = _expectedOutcome(a, value);
+        bool shouldSucceed = _expectedOutcome(a, value, req.expiry);
 
         (bool ok,) = address(skm).call(
             abi.encodeWithSelector(skm.executeWithSessionKey.selector, req, sig, new bytes32[](0), bytes(""))
@@ -256,7 +276,18 @@ contract SessionKeyManagerInvariant is Test {
         if (shouldSucceed) {
             assertTrue(ok, "expected success but call failed");
             successes[a] += 1;
-            expectedWindowSpend[a] += value;
+            // Monotonic across window rollovers, so it stays a valid lower bound on total
+            // outflow for the whole sequence (F2: a per-window counter would reset and could
+            // be satisfied by a balance that grew).
+            ghostTotalSpent += value;
+            // Track the cap that was ACTUALLY IN FORCE at the moment of the charge. This is
+            // what makes `invariant_windowSpendNeverExceedsCap` mean something: raising the
+            // ghost at grant time instead would let an unused large cap license any later
+            // spend, which is precisely the P0 #4 blind spot.
+            SessionKeyManager.Scope memory charged = skm.getScope(a);
+            if (charged.perWindowCap > ghostMaxPerWindowCap[a]) {
+                ghostMaxPerWindowCap[a] = charged.perWindowCap;
+            }
         } else {
             assertFalse(ok, "INV violation: succeeded when scope forbids");
         }
@@ -302,8 +333,20 @@ contract SessionKeyManagerInvariant is Test {
         return abi.encodePacked(r, s, v);
     }
 
-    function _expectedOutcome(address a, uint256 value) internal view returns (bool) {
+    function _expectedOutcome(address a, uint256 value, uint48 requestExpiry)
+        internal
+        view
+        returns (bool)
+    {
         if (skm.isSelectorDenied(counter.poke.selector)) return false; // INV-4 denylist
+        // Ghost-model mirror of the REQUEST expiry check (not the key expiry below). This is
+        // a time-dependent branch, so it must be modelled explicitly or the ghost desyncs
+        // the moment `warpRandom` jumps past the request's window — which is exactly the
+        // failure mode this suite's SEC-5 note warns about. Without it, a request that the
+        // contract correctly refuses to execute is counted as spend, and conservation fails
+        // with the wallet drained against a ghost that never recorded the outflow.
+        // forge-lint: disable-next-line(block-timestamp)
+        if (block.timestamp > requestExpiry) return false; // request expiry
         SessionKeyManager.Scope memory s = skm.getScope(a);
         // Ghost-model mirror of INV-2 (key expiry) — time-based by design.
         // forge-lint: disable-next-line(block-timestamp)
@@ -363,8 +406,53 @@ contract SessionKeyManagerInvariant is Test {
         }
     }
 
-    /// @dev Conservation: wallet never mints value out of thin air.
-    function invariant_walletNeverGrows() public view {
-        assertTrue(address(skm).balance <= 1_000 ether, "wallet balance grew");
+    /// @dev CONSERVATION (F2). Was `address(skm).balance <= 1_000 ether`, which is a
+    ///      tautology: `setUp` deals exactly 1_000 ether, every handler that can move value
+    ///      only ever moves value OUT (`poke` is payable and receives it, the agent sends it
+    ///      to `counter`), and no handler ever calls `withdraw`, so the balance can only fall.
+    ///      The inequality was therefore satisfied by construction on every reachable state
+    ///      and could not fail — it asserted that the fixture is monotonic, not that the
+    ///      contract conserves value. (SEC-08b's "fixed" status was exactly this.)
+    ///
+    ///      The real conservation law is an EQUALITY, and it is assertable here because the
+    ///      only value exit is a successful agent action: nothing else in this harness can
+    ///      move native value out of `skm`.
+    ///
+    ///          balance == INITIAL_BALANCE - ghostTotalSpent
+    ///
+    ///      `ghostTotalSpent` is incremented only on a confirmed success, is never reset by a
+    ///      window rollover, and counts each action's `value` exactly once. A counter that
+    ///      reset per window could be satisfied by a balance that had grown back; a monotonic
+    ///      one cannot. And because the two sides are derived from different sources (on-chain
+    ///      balance vs. test-side bookkeeping), the equality fails if the contract ever lets
+    ///      value leave by another route, or if a spend is recorded without moving the
+    ///      balance. Deleting the `ghostTotalSpent += value` bookkeeping now makes this red.
+    ///
+    ///      THE SUBTRACTION IS UNCHECKED-ON-PURPOSE-CONVERSELY, and that ordering matters.
+    ///      Written as a bare `INITIAL_BALANCE - ghostTotalSpent`, an over-count makes the
+    ///      subtraction underflow and revert — and a reverting invariant is reported by forge
+    ///      as a REVERT, so the failure surfaces as a run-count truncation
+    ///      (`runs: 161` instead of 256) with no indication of what went wrong. It read as a
+    ///      depth budget, not a broken ghost model, and sent the investigation after the
+    ///      fuzzer rather than after the arithmetic.
+    ///
+    ///      Saturating at zero turns the same condition into a NAMED failure carrying the
+    ///      three numbers that explain it. Conservation is still checked exactly whenever
+    ///      `ghostTotalSpent` is within range, which is every healthy sequence.
+    function invariant_valueIsConserved() public view {
+        uint256 spent = ghostTotalSpent;
+        uint256 expected = INITIAL_BALANCE > spent ? INITIAL_BALANCE - spent : 0;
+        assertEq(
+            address(skm).balance,
+            expected,
+            string.concat(
+                "conservation violated: balance ",
+                vm.toString(address(skm).balance),
+                " != initial ",
+                vm.toString(INITIAL_BALANCE),
+                " - tracked ",
+                vm.toString(spent)
+            )
+        );
     }
 }

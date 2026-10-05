@@ -43,7 +43,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/sigilkit/sigilkit.git"
+    "url": "git+https://github.com/dev25bansal-ops/sigilkit.git"
   },
   "private": true
 }

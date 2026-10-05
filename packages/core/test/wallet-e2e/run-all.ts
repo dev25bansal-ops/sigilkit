@@ -17,15 +17,12 @@ interface SuiteResult {
 }
 
 function runSuite(name: string, file: string): Promise<SuiteResult> {
-  return new Promise<SuiteResult>((resolve) => {
-    // `npx tsx` resolves the repo-local node_modules/.bin/tsx reliably; a
-    // hard-coded home-dir path does not exist on a fresh checkout.
-    // cwd = __dirname so the suite's relative paths (metamask/, dapp.html) resolve.
-    const proc = spawn("npx", ["tsx", file], {
-      shell: true,
+  return new Promise<SuiteResult>((resolve, reject) => {
+    const proc = spawn(process.execPath, [fileURLToPath(import.meta.resolve("tsx/cli")), file], {
       cwd: __dirname,
       stdio: "pipe",
     });
+    proc.once("error", reject);
     let out = "";
     proc.stdout.on("data", (b) => (out += b.toString()));
     proc.stderr.on("data", (b) => (out += b.toString()));
@@ -34,7 +31,7 @@ function runSuite(name: string, file: string): Promise<SuiteResult> {
 }
 
 async function main() {
-  console.log("[1/2] MetaMask harness (Anvil + Chromium + MetaMask 12.5.0 extension)");
+  console.log("[1/2] MetaMask harness (Anvil + Chromium + MetaMask 13.49.0 extension)");
   const metamask = await runSuite("MetaMask", join(__dirname, "run.ts"));
   console.log(metamask.output);
 

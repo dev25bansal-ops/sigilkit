@@ -21,7 +21,7 @@ path; these tools are the propose-and-verify layer.
 > someone else's package. Run it from a clone in the meantime.
 
 ```bash
-git clone https://github.com/sigilkit/sigilkit.git && cd sigilkit && npm run setup
+git clone https://github.com/dev25bansal-ops/sigilkit.git && cd sigilkit && npm run setup
 node packages/mcp/dist/cli.js --help
 ```
 
@@ -34,6 +34,58 @@ node packages/mcp/dist/cli.js --help
 ```
 
 After publication, that becomes `npx -y @sigilkit/mcp`.
+
+## Programmatic use
+
+The server is a plain module, so it can be embedded or driven from a test without a
+subprocess. Like every `@sigilkit/*` package, build the workspace once
+(`npm install && npm run build` at the repo root) before importing it — the import fails
+with `ERR_MODULE_NOT_FOUND` until `@sigilkit/core` has a `dist/`, which is an environment
+problem rather than a problem with the example.
+
+```ts
+import { handleMessage, TOOLS, type ToolDef, type LeafKind } from "@sigilkit/mcp/server";
+
+// `handleMessage` takes one JSON-RPC 2.0 message and resolves to the response object,
+// or to null for a notification (which by definition gets no reply).
+const init = await handleMessage({
+  jsonrpc: "2.0", id: 1, method: "initialize",
+  params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "my-agent", version: "1.0.0" } },
+});
+console.log(init?.result);   // { protocolVersion, capabilities: { tools: {} }, serverInfo: { name: "sigilkit-mcp", version } }
+
+const list = await handleMessage({ jsonrpc: "2.0", id: 2, method: "tools/list" });
+console.log(list?.result.tools.map((t: ToolDef) => t.name));  // the four tool names
+
+// A tool that throws does NOT break the session: the error comes back as a normal
+// result with `isError: true`, so a model can read it and retry.
+const bad = await handleMessage({
+  jsonrpc: "2.0", id: 3, method: "tools/call",
+  params: { name: "validate_request", arguments: { request: { agentId: "0xnope" } } },
+});
+console.log(bad?.result.isError);   // true — not a JSON-RPC error
+```
+
+`TOOLS`, `ToolDef` and `LeafKind` are all exported, so an embedder can wrap, filter or
+re-register the tool surface — `LeafKind` in particular is part of the `build_scope`
+*response*: its `leafKinds` array is positionally aligned with the `targets` you sent, so
+you can tell which whitelist entries are argument-bound (`pinned`) versus open to any
+calldata for that selector (`wildcard`).
+
+### Talking to it over stdio by hand
+
+Each line on stdin is one complete JSON-RPC message; each line on stdout is one response.
+This is the quickest way to confirm the wiring before pointing an agent framework at it:
+
+```bash
+printf '%s\n%s\n' \
+  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"curl","version":"1"}}}' \
+  '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
+  | node packages/mcp/dist/cli.js 2>/dev/null
+```
+
+Note the `2>/dev/null`: **stdout is the protocol channel**, so any diagnostic that leaks
+into it corrupts the stream for the client.
 
 ## Behaviour worth knowing
 

@@ -1,5 +1,8 @@
 /**
- * Adversarial one-off fuzz pass over SDK public functions (temp file, deleted after run).
+ * Adversarial fuzz pass over SDK public functions.
+ *
+ * (The header once said "temp file, deleted after run"; it was kept and folded into the
+ * 573-test core suite instead, so it is pinned now like every other suite.)
  */
 import { describe, expect, it } from "vitest";
 import { actionRequestDigest, parseActionRequest, validateAgainstScope, targetLeaf, merkleRoot, merkleProof } from "../src/index.js";
@@ -41,6 +44,37 @@ describe("adversarial fuzz: SDK public functions", () => {
     expect(() => parseActionRequest({ ...VALID, agentId: "nothex" })).toThrow();
   });
 
+  it("validateAgainstScope: E10 countersign presence mirrors the contract", () => {
+    // SessionKeyManager.sol:598 reverts `OwnerCountersignRequired` when
+    // `countersignAbove != 0 && value > countersignAbove` and no owner approval is
+    // supplied. The local pre-flight did not check this, so a caller could sign and
+    // broadcast a request the chain would certainly reject. Only PRESENCE is verified
+    // here — owner-signature validity is the contract's job alone.
+    const now = Math.floor(Date.now() / 1000);
+    const scope = {
+      expiresAt: now + 100, windowSeconds: 600,
+      perActionCap: 1000n, perWindowCap: 1000n,
+      merkleRoot: "0x" + "00".repeat(32) as `0x${string}`,
+      countersignAbove: 100n, enforceNativeDelta: false, tokenWatchlist: [],
+    };
+    // countersignAbove == 0 means "never" — no approval needed at any value.
+    expect(
+      validateAgainstScope({ request: { ...VALID, value: 1000n, expiry: now + 10 }, scope: { ...scope, countersignAbove: 0n } }).ok,
+    ).toBe(true);
+    // Exactly AT the threshold is not "above" it — no approval required.
+    expect(validateAgainstScope({ request: { ...VALID, value: 100n, expiry: now + 10 }, scope }).ok).toBe(true);
+    // One wei above, no approval → refused with the countersign reason.
+    const noApproval = validateAgainstScope({ request: { ...VALID, value: 101n, expiry: now + 10 }, scope });
+    expect(noApproval.ok).toBe(false);
+    expect(noApproval.ok === false && noApproval.reason).toMatch(/countersign required/i);
+    // Empty hex ("0x") is not an approval — it is the wire value for absent.
+    expect(validateAgainstScope({ request: { ...VALID, value: 101n, expiry: now + 10 }, scope, ownerApproval: "0x" }).ok).toBe(false);
+    // Present approval → the pre-flight stops here; the chain decides validity.
+    expect(
+      validateAgainstScope({ request: { ...VALID, value: 101n, expiry: now + 10 }, scope, ownerApproval: ("0x" + "ab".repeat(65)) as `0x${string}` }).ok,
+    ).toBe(true);
+  });
+
   it("validateAgainstScope: boundary caps and expiry edges", () => {
     const now = Math.floor(Date.now() / 1000);
     const scope = { expiresAt: now + 100, windowSeconds: 600, perActionCap: 100n, perWindowCap: 100n, merkleRoot: "0x" + "00".repeat(32) as `0x${string}`, countersignAbove: 0n, enforceNativeDelta: false, tokenWatchlist: [] };
@@ -71,5 +105,9 @@ describe("adversarial fuzz: SDK public functions", () => {
         expect(acc).toBe(root);
       }
     }
-  }, 30_000);
+  // Budget note: this loops ~2s in isolation, but was once observed at 37.8s while the
+  // full gate's four workspace suites executed on a contended machine — a 30s cap then
+  // fired on nothing being wrong. The ceiling exists to catch a hung keccak loop, and one
+  // still trips it; 120s leaves the measured worst case 3x headroom.
+  }, 120_000);
 });

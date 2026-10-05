@@ -287,7 +287,12 @@ export function helpText(spec: CliSpec): string {
     const rendered = spec.flags.map((f) => {
       const short = f.alias ? `${f.alias}, ` : "    ";
       const value = f.value ? ` ${f.value}` : "";
-      return { label: `${short}${f.name}${value}`, description: f.description };
+      // A declared default is part of what a caller reads off `--help`, so render it.
+      // It was declared on FlagSpec and applied by `parseArgs`, yet never printed, which
+      // made the usage page disagree with the behaviour the flag actually has.
+      const description =
+        f.default === undefined ? f.description : `${f.description} (default: ${f.default})`;
+      return { label: `${short}${f.name}${value}`, description };
     });
     const width = Math.max(...rendered.map((r) => r.label.length));
     for (const r of rendered) lines.push(`  ${r.label.padEnd(width)}  ${r.description}`);
@@ -341,10 +346,39 @@ export interface CliIo {
   exit: (code: number) => void;
 }
 
+/**
+ * The host's stdout, or `undefined` when there is none.
+ *
+ * Same two-step guard `logger.ts` uses for the same reason: `typeof` protects a BARE
+ * identifier, so `typeof process === "undefined"` has to be tested FIRST — evaluating
+ * `process.stdout` in a realm with no `process` throws ReferenceError before the logger-
+ * style fallback can run. Without this, `runCli` without an injected `io` rejected with
+ * `ReferenceError: process is not defined` for `--help` and for a normal run alike.
+ */
+function hostStdout(): { write: (chunk: string) => unknown } | undefined {
+  if (typeof process === "undefined") return undefined;
+  return process.stdout;
+}
+
+/** As {@link hostStdout}, for stderr. */
+function hostStderr(): { write: (chunk: string) => unknown } | undefined {
+  if (typeof process === "undefined") return undefined;
+  return process.stderr;
+}
+
 const defaultIo: CliIo = {
-  stdout: (line) => process.stdout.write(line + "\n"),
-  stderr: (line) => process.stderr.write(line + "\n"),
-  exit: (code) => process.exit(code),
+  // The two sinks degrade to a no-op, exactly as `logger.ts`'s default sinks do: a broken
+  // stream must not take down the process that was only trying to report something.
+  stdout: (line) => hostStdout()?.write(line + "\n"),
+  stderr: (line) => hostStderr()?.write(line + "\n"),
+  exit: (code) => {
+    // Exiting is NOT degradable — a no-op here would let a failing CLI report success to
+    // whatever invoked it — so say so loudly instead of silently doing nothing.
+    if (typeof process === "undefined") {
+      throw new Error("runCli: no `process` global; inject `options.io` to supply exit()");
+    }
+    process.exit(code);
+  },
 };
 
 export interface RunCliOptions {

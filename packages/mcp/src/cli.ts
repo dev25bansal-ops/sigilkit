@@ -16,7 +16,17 @@ import { createRequire } from "node:module";
 import { runCli, type CliSpec } from "@sigilkit/core/cli";
 import { readEnvChoice, loadDotEnv } from "@sigilkit/core/config";
 import { LOG_FORMATS, LOG_LEVELS, createLogger } from "@sigilkit/core/logger";
-import { serveStdio } from "./server.js";
+// `serveStdio` is deliberately NOT statically imported. `./server.js` latches
+// `AUDIT_DB_ROOTS = readAuditDbRoots()` at MODULE-EVALUATION time, and a static ESM import
+// runs that body during this file's import phase — BEFORE the `loadDotEnv()` below. So
+// `cp .env.example .env` and setting SIGILKIT_AUDIT_DB_ROOT there was silently ignored:
+// every audit_query path was refused with DB_NOT_ALLOWED, while the same value exported as
+// a real environment variable worked. Proven end-to-end against the shipped bin.
+//
+// The dynamic `await import("./server.js")` after loadDotEnv() is the fix. The latch itself
+// is CORRECT security — it is what stops a later env change from widening the allowlist
+// mid-process (documented in docs/TROUBLESHOOTING.md) — so the answer is to move the latch
+// later, not to weaken it.
 
 const pkg = createRequire(import.meta.url)("../package.json") as { version: string };
 
@@ -62,8 +72,9 @@ await runCli(SPEC, process.argv.slice(2), async (args) => {
     err: (line) => process.stderr.write(line + "\n"),
   });
 
+  // Dynamic import, AFTER loadDotEnv() — see the note where the static import was.
+  const { serveStdio } = await import("./server.js");
   const stop = serveStdio(process.stdin, process.stdout, logger);
-
   // Stay alive until the client goes away. Without this the process would exit the
   // moment `main` returns, before the first request arrives.
   await new Promise<void>((resolve) => {

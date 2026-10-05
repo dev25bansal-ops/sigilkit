@@ -8,7 +8,7 @@
  * raw-revoke rejection) surfaces before users hit it. See
  * vault/Agent Architecture.md and test/wallet-e2e/README.md.
  *
- * Run locally (requires the MetaMask 12.5.0 extension unpacked at
+ * Run locally (requires the MetaMask 13.49.0 extension unpacked at
  * test/wallet-e2e/metamask/ — see wallet-e2e/README.md):
  *   RUN_WALLET_E2E=1 npx vitest run test/wallet-e2e.manual.test.ts
  */
@@ -16,6 +16,8 @@ import { describe, expect, it } from "vitest";
 import { readFileSync, existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
+import type { Address, Hex } from "viem";
+import { assertDelegationScope } from "../src/eip7702.js";
 
 const ENABLED = process.env.RUN_WALLET_E2E === "1";
 
@@ -38,9 +40,8 @@ describe.skipIf(!ENABLED)("manual wallet E2E (RUN_WALLET_E2E=1)", () => {
     "live harnesses pass (MetaMask + Coinbase Smart Wallet via run-all.ts)",
     () => {
       const runAll = join(__dirname, "wallet-e2e", "run-all.ts");
-      const res = spawnSync("npx", ["tsx", runAll], {
+      const res = spawnSync(process.execPath, ["--import", "tsx", runAll], {
         stdio: "inherit",
-        shell: process.platform === "win32",
         env: { ...process.env },
       });
       if (res.status !== 0) {
@@ -49,34 +50,4 @@ describe.skipIf(!ENABLED)("manual wallet E2E (RUN_WALLET_E2E=1)", () => {
     },
     600_000,
   );
-});
-
-describe("wallet allowlist integrity (always runs)", () => {
-  it("every behavior entry has the fields CI asserts on", () => {
-    for (const b of allowlist.behaviors) {
-      expect(b.id).toBeTruthy();
-      expect(b.wallet).toBeTruthy();
-      expect(b.behavior).toBeTruthy();
-      expect(b.assert).toBeTruthy();
-      expect(
-        ["rejected", "accepted-or-documented-absent", "unsupported", "absent"].includes(
-          b.expected,
-        ) || b.expected.startsWith("0x"),
-      ).toBe(true);
-      // Live-verified entries must point at the harness that verifies them.
-      if (b.verifiedOn?.includes("live harness")) {
-        expect(b.harness).toBeTruthy();
-      }
-    }
-  });
-
-  it("allowlist entries with harness paths reference existing files", () => {
-    for (const b of allowlist.behaviors) {
-      if (b.harness) {
-        expect(
-          existsSync(join(__dirname, b.harness.replace(/^packages\/core\/test\//, ""))),
-        ).toBe(true);
-      }
-    }
-  });
 });

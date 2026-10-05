@@ -12,6 +12,18 @@ import {SessionKeyManager} from "../src/SessionKeyManager.sol";
 ///      the multi-chain requirement from the build plan. Fails loudly if the proxy is
 ///      missing rather than silently deploying at a different address class.
 ///
+/// @dev WHAT THE ADDRESS ACTUALLY DEPENDS ON. The address is
+///      `keccak256(0xff ++ DEPLOYER_PROXY ++ salt ++ keccak256(initCode))[12:]`, and
+///      `initCode = type(SessionKeyManager).creationCode ++ abi.encode(owner)`. So it depends on
+///      (salt, owner) **and on the compiled initCode** — the `SessionKeyManager` bytecode, and
+///      therefore the compiler version and build settings. Two chains running the SAME source
+///      with the SAME (salt, owner) agree; a chain where that contract was rebuilt with a
+///      different solc, metadata, or optimizer setting does NOT land on the same address even
+///      though the proxy exists there. "Identical across every chain" is therefore a statement
+///      about identical BUILDS, not about identical source: pin the compiler (see
+///      `foundry.toml`'s `solc` pin) and rebuild from the same revision before reading a
+///      cross-chain address mismatch as a deployment bug.
+///
 /// Usage:
 ///   SIGILKIT_OWNER_ADDRESS=0xSafe… SIGILKIT_CREATE2_SALT=0x… \
 ///     SIGILKIT_OWNER_KEY=<funded deployer key> forge script contracts/script/DeployDeterministic.s.sol --rpc-url <url> --broadcast

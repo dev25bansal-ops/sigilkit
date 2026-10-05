@@ -15,18 +15,54 @@ contract Account7579 {
     error ExecutionFailed();
     error UnsupportedCallType(bytes1 callType);
 
+    /// @dev ERC-7579 module type ids, 1-indexed exactly as the spec numbers them:
+    ///      Validation (1) / Execution (2) / Fallback (3) / Hooks (4). Spelled out HERE,
+    ///      in the account, on purpose: the account is the party that has to know the
+    ///      numbering, so the constant belongs to the account rather than being read back
+    ///      out of the module it is checking. An account that derived the expected id from
+    ///      the module would re-introduce exactly the D-04 blind spot.
+    uint256 internal constant VALIDATION_MODULE = 1;
+    uint256 internal constant EXECUTION_MODULE = 2;
+
     SessionKey7579Module public module;
 
     constructor(SessionKey7579Module module_) {
         module = module_;
     }
 
+    /// @notice Installs a module the way a CONFORMING ERC-7579 account does: query the
+    ///         module's declared type first, and refuse anything that is not a VALIDATION
+    ///         module before touching state.
+    ///
+    /// @dev D-04 regression guard — this check is the whole point of this edit. The
+    ///      previous revision of this function called `module.onInstall(data)` directly.
+    ///      That BYPASSED module-type negotiation entirely, which is precisely why an
+    ///      executor claiming an unassigned id (`6`) survived: the mock account never
+    ///      asked, so `isModuleType` was never exercised on any E2E path and the whole
+    ///      suite stayed green against a module no real account would install. A mock
+    ///      that cannot fail cannot guard. The negotiation is now on the install path,
+    ///      so a future id regression fails HERE rather than in production.
+    ///
+    ///      Note this mirrors the real check but cannot fully replace one: a production
+    ///      account would also consult its own module REGISTRY (dedup, enable/disable,
+    ///      per-type limits). This mock covers the type-negotiation step only, which is
+    ///      the step D-04 broke.
+    error NotAValidationModule();
+
     function install(bytes memory data) external {
+        if (!module.isModuleType(VALIDATION_MODULE)) revert NotAValidationModule();
         module.onInstall(data);
     }
 
     function uninstall() external {
         module.onUninstall("");
+    }
+
+    /// @notice Mirrors a real account's registry lookup: "is a VALIDATION module of this
+    ///         address installed?" Kept separate from `isModuleType` so the E2E flows
+    ///         assert installation the way an account would, not just module self-description.
+    function isInstalled() external view returns (bool) {
+        return module.isInitialized(address(this));
     }
 
     /// @notice Real accounts run validation modules in their own context, so the
@@ -266,4 +302,122 @@ contract Module7579AccountE2ETest is Test {
         vm.expectRevert(); // UnsupportedCallType via account routing
         account.execute(bogus);
     }
+
+    /// @dev A minimal in-range scope, for the install-rejection tests (which never get
+    ///      far enough to use it — the point is that rejection happens BEFORE any scope
+    ///      is read, so the payload contents are irrelevant by construction).
+    function _scope() internal pure returns (SessionKey7579Module.Scope memory) {
+        return SessionKey7579Module.Scope({
+            expiresAt: EXPIRES_AT,
+            windowSeconds: WINDOW_SECONDS,
+            perActionCap: 0.5 ether,
+            perWindowCap: 1 ether,
+            merkleRoot: bytes32(0)
+        });
+    }
+
+    // ------------------------------------------------------------------
+    // D-04 regression: module-type negotiation on the install path
+    // ------------------------------------------------------------------
+
+    /// @notice The account reports itself installed only AFTER negotiating the type.
+    ///         This is the positive half of the guard; the negative half is
+    ///         `test_Install_RefusesNonValidationModule` below.
+    function test_Negotiation_InstallSucceedsForValidationModule() public view {
+        assertTrue(module.isModuleType(1), "validator must claim type 1");
+        assertTrue(account.isInstalled(), "account must report the validator installed");
+    }
+
+    /// @notice The guard must be able to FAIL, or it proves nothing.
+    ///
+    /// @dev This is the negative control for the whole D-04 fix. A guard that cannot
+    ///      reject is indistinguishable from no guard at all — which is the state the
+    ///      suite was in before D-04 (the mock account called `onInstall` directly, so
+    ///      `isModuleType` was never consulted and an unassigned id passed unnoticed).
+    ///
+    ///      `WrongTypeModule` claims only the EXECUTOR id (2), exactly as a real
+    ///      executor does. A conforming account MUST refuse it, because installing an
+    ///      executor where a validator is expected would let a module that performs
+    ///      calls sit in the validation slot.
+    function test_Install_RefusesNonValidationModule() public {
+        WrongTypeModule wrong = new WrongTypeModule();
+        Account7579 fresh = new Account7579(SessionKey7579Module(address(wrong)));
+
+        // Sanity: the decoy really is a non-validator, and really does claim type 2.
+        assertFalse(wrong.isModuleType(1), "decoy must NOT claim VALIDATION");
+        assertTrue(wrong.isModuleType(2), "decoy claims EXECUTION");
+
+        vm.expectRevert(Account7579.NotAValidationModule.selector);
+        fresh.install(abi.encode(key, _scope()));
+
+        // Nothing was installed: the rejection happened BEFORE onInstall.
+        assertFalse(wrong.isInitialized(address(fresh)), "rejected module must not be initialized");
+    }
+
+    /// @notice An unassigned id — the literal shape of the original D-04 bug — must be
+    ///         refused for the same reason a wrong-but-assigned id is.
+    function test_Install_RefusesUnassignedModuleId() public {
+        UnassignedIdModule bogus = new UnassignedIdModule();
+        Account7579 fresh = new Account7579(SessionKey7579Module(address(bogus)));
+
+        // The decoy DOES claim `6` — that is what makes it a faithful reproduction of the
+        // original defect. The property under test is the ACCOUNT's refusal, not the
+        // module's honesty: `6` lies outside {1,2,3,4} under the spec's 1-indexed set and
+        // outside {0,1,2,3,4} under the 0-indexed variant, so a conforming account has no
+        // reason to accept it in the validation slot.
+        assertTrue(bogus.isModuleType(6), "decoy must faithfully reproduce the `6` claim");
+        assertFalse(bogus.isModuleType(1), "`6` must not also answer VALIDATION");
+
+        vm.expectRevert(Account7579.NotAValidationModule.selector);
+        fresh.install(abi.encode(key, _scope()));
+
+        // Rejected BEFORE onInstall, so the decoy recorded nothing.
+        assertFalse(bogus.isInitialized(address(fresh)), "rejected module must not be initialized");
+    }
+}
+
+/// @dev A module that claims ONLY the EXECUTOR id (2). Used as a decoy: a conforming
+///      account must refuse it in the validation slot, so this doubles as proof that the
+///      negotiation check in `Account7579.install` can actually reject something.
+contract WrongTypeModule {
+    function isModuleType(uint256 moduleTypeId) external pure returns (bool) {
+        return moduleTypeId == 2; // EXECUTOR
+    }
+
+    function onInstall(bytes memory) external {
+        initialized[msg.sender] = true;
+    }
+
+    function onUninstall(bytes memory) external {
+        delete initialized[msg.sender];
+    }
+
+    function isInitialized(address account) external view returns (bool) {
+        return initialized[account];
+    }
+
+    mapping(address => bool) public initialized;
+}
+
+/// @dev Reproduces the ORIGINAL D-04 defect shape: claims an id assigned by neither the
+///      spec's 1-indexed set {1,2,3,4} nor the 0-indexed variant {0,1,2,3,4}.
+///      The account must refuse it — which is the property D-04's fix restored.
+contract UnassignedIdModule {
+    function isModuleType(uint256 moduleTypeId) external pure returns (bool) {
+        return moduleTypeId == 6;
+    }
+
+    function onInstall(bytes memory) external {
+        initialized[msg.sender] = true;
+    }
+
+    function onUninstall(bytes memory) external {
+        delete initialized[msg.sender];
+    }
+
+    function isInitialized(address account) external view returns (bool) {
+        return initialized[account];
+    }
+
+    mapping(address => bool) public initialized;
 }

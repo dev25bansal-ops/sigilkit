@@ -69,6 +69,17 @@ function requestCase(name, chainId, request) {
 
 const actionrequest = {
   _doc: "Golden vectors for the ActionRequest EIP-712 digest. Consumers: packages/core/test/vectors.test.ts (SDK equality) and contracts/test/GoldenVectors.t.sol (on-chain equality). Regenerate: npm run vectors:generate.",
+  _provenance: {
+    // Digests come from @sigilkit/core's own `actionRequestDigest` — the very function
+    // under test. This corpus is therefore SELF-CERTIFIED: it can show that the SDK
+    // still agrees with itself and with the Solidity suite, but it cannot disprove a
+    // bug in the SDK, because a broken SDK would simply regenerate different-but-still-
+    // self-consistent digests. Correctness rests on the compiler, the JSON schema and
+    // the preflight gate, not on any external authority. Contrast eip7702.json, which
+    // is anchored to viem and can falsify a bug.
+    generator: "@sigilkit/core",
+    externallyAnchored: false,
+  },
   casesCount: 0, // filled below (Foundry parseJson cannot evaluate .length paths)
   cases: [
     requestCase("zero-value-empty-data", 31337, {
@@ -85,7 +96,12 @@ const actionrequest = {
       agentId: ("0x" + "ab".repeat(32)),
       target: "0x0000000000000000000000000000000000009001",
       selector: "0xa9059cbb",
-      value: ("0x" + "1".padEnd(64, "0")).slice(0, 66),
+      // 2^252. uint fields accept a bigint, a non-negative safe integer or a DECIMAL
+      // string; a 0x-prefixed hex string is rejected by uintField (BUG-01), which is
+      // what this vector used to pass. The hex literal is kept as the source of truth
+      // and parsed with BigInt(), so the number — and therefore the digest — is
+      // unchanged; only the representation handed to the SDK differs.
+      value: BigInt("0x" + "1".padEnd(64, "0")),
       nonce: 7n,
       expiry: 1_900_000_000,
       rationaleHash: ("0x" + "cd".repeat(32)),
@@ -95,8 +111,14 @@ const actionrequest = {
       agentId: ("0x" + "00".repeat(32)),
       target: "0x0000000000000000000000000000000000000000",
       selector: "0x00000000",
-      value: "0x" + "3".padEnd(64, "0"),
-      nonce: ("0x" + "f".repeat(64)).slice(0, 66),
+      // 3 * 2^252 and 2^256 - 1. Same rule as above: uint fields take a bigint, a
+      // non-negative safe integer or a decimal string, never a 0x hex string (BUG-01).
+      // These two deliberately exceed Number.MAX_SAFE_INTEGER, so a decimal *string*
+      // would be the alternative — but a plain `number` literal would silently lose
+      // precision, which is precisely what uintField's safe-integer guard exists to
+      // catch. BigInt() is the form that is exact for the whole uint256 range.
+      value: BigInt("0x" + "3".padEnd(64, "0")),
+      nonce: BigInt(("0x" + "f".repeat(64)).slice(0, 66)),
       expiry: 2 ** 48 - 1,
       rationaleHash: ("0x" + "ff".repeat(32)),
       data: "0xdeadbeef",
@@ -119,6 +141,14 @@ const actionrequest = {
 // ---------------------------------------------------------------------------
 const eip7702 = {
   _doc: "Golden vectors for EIP-7702 authorization digests. Digests are generated with viem's hashAuthorization — the canonical signer implementation — NOT with @sigilkit/core, so the SDK test pins our encoder to go-ethereum semantics.",
+  _provenance: {
+    // The only corpus produced by code OUTSIDE this repository. Because the digests come
+    // from a third-party signer rather than from the SDK under test, this corpus can
+    // actually falsify a bug: a regression in our RLP encoder changes the SDK's output
+    // and the test fails, instead of the vectors being quietly rewritten to match.
+    generator: "viem:hashAuthorization",
+    externallyAnchored: true,
+  },
   casesCount: 0, // filled below
   cases: [
     { name: "revocation-zero-address", chainId: "1", contractAddress: "0x0000000000000000000000000000000000000000", nonce: "0" },
@@ -175,6 +205,16 @@ const proofs = treeLeaves.map((leaf) => ({
 
 const merkleV2 = {
   _doc: "Golden vectors for whitelist leaf format v2 (pinned + wildcard leaves) and a 3-leaf sorted-pair tree with odd-node promotion. Consumers: both language suites.",
+  _provenance: {
+    // Leaves, root and proofs all come from @sigilkit/core's own `targetLeaf`,
+    // `merkleRoot` and `merkleProof` — the SDK under test. SELF-CERTIFIED for the same
+    // reason as actionrequest.json: it proves the SDK still agrees with itself, and the
+    // independent MerkleWhitelist.verify implementation in the Foundry suite is what
+    // actually challenges it. Correctness depends on the compiler, the JSON schema and
+    // the preflight gate, not on an external authority.
+    generator: "@sigilkit/core",
+    externallyAnchored: false,
+  },
   leafCases: leaves,
   trees: [
     {

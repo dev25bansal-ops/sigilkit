@@ -10,15 +10,27 @@ optimizer = true
 optimizer_runs = 200
 verbosity = 3
 ffi = false
-fs_permissions = [{ access = "read", path = "./" }]
+# Least privilege (was `./`, i.e. read access to the whole repo root, which exposed .env,
+# .codebuddy/models.json and vault/ to any test or script that calls a cheatcode fs helper).
+# The only fs read in contracts/** is contracts/test/GoldenVectors.t.sol:19-21, which loads
+# vectors/{actionrequest,eip7702,merkle-v2}.json from the project root. Widen this list
+# deliberately when a new test or script needs another path — not by default.
+fs_permissions = [{ access = "read", path = "./vectors" }]
+deny = "warnings"
 # CQ-1: a compiler warning or lint finding is a build failure. The repo previously carried
 # nine ungated solc warnings (shadowed declarations, `this` in a constructor, a
 # needlessly-`view` helper) plus 31 ungated linter findings (12 `block-timestamp`,
 # 19 `unsafe-typecast`) — including several in production code. Every remaining occurrence
 # now carries an explicit `// forge-lint: disable-next-line(...)` with a written
 # justification, so a NEW one anywhere fails the build. Inherited by every profile below.
-# (`deny_warnings` is the deprecated spelling of this key.)
-deny = "warnings"
+# UNVERIFIED 2026-10-27: the key spelling below is NOT the one Foundry documents. The
+# Foundry config reference lists `deny_warnings`; `deny` is not a key in that schema, so this
+# line is most likely inert and CQ-1 is NOT actually gating anything. The previous comment
+# here claimed the opposite ("deny_warnings is the deprecated spelling") — that was wrong.
+# Renaming the key was deliberately NOT done blind: turning the gate on for the first time
+# would fail every build on any solc warning the pragmas above do not cover, and `forge build`
+# could not be run to check. TODO (owner): rename to deny_warnings and run `forge build` +
+# `forge lint` on a full checkout before trusting CQ-1.
 
 [profile.default.fuzz]
 runs = 256

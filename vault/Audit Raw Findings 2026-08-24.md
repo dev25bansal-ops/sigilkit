@@ -1,3 +1,28 @@
+> [!CAUTION] SUPERSEDED SNAPSHOT — NOT A DISCLOSURE, NOT A ROADMAP (added 2026-10-16)
+>
+> This file is the raw, unedited output of a multi-agent review round dated 2026-08-24,
+> kept as a historical record only (see `docs/VAULT-AUDIT-2026-09-26.md`, item F4:
+> "SPENT — keep as record"). For anything actionable read
+> `docs/Issues-Catalog-2026-09-11.md` instead: every item below was re-verified there
+> item-by-item and carries its current status.
+>
+> **The findings below are historical, not live.** The two High-severity contract findings
+> called out here are already remediated in the committed code: `validateUserOp` now
+> enforces `msg.sender != userOp.sender` (SessionKey7579Module.sol:316,
+> `NotAuthorizedCaller`) and the uninstalled-account gate (`:320`, `NotInitialized`).
+> Always re-verify against source before repeating any of this text as current.
+>
+> Per `vault/README.md`, where this note and the code/catalog disagree, the code and
+> catalog win. Proof-of-concept sketches are retained for internal traceability only —
+> do not run them against systems you are not authorised to test, and do not quote them
+> externally.
+>
+> ⚠️ External citations that point at a line number *inside* this file shifted downward
+> by 25 lines when this block was prepended on 2026-10-16 (old :2 is now :27).
+
+<!-- AUDIT 2026-10-16 ci-security-3: added the supersession banner above and corrected two
+     stale ci.yml assertions at the old :120 and :125. Kept as CRLF, line content otherwise
+     byte-identical so the historical record stays auditable. -->
 
 ########## AGENT afb545fde8 | findings=7 strengths=6 opps=7
 
@@ -117,12 +142,12 @@
 
 [High] (3h) Both nightly CI jobs are dead code: no schedule trigger exists, and the Echidna condition can never be true even with one
   area: CI pipeline
-  desc: The `on:` block (ci.yml:3-7) contains only push(main)/pull_request/workflow_dispatch — there is no `schedule:` key (verified by grep). Therefore `echidna-nightly` (`if: github.event.schedule == 'nightly'`, :73) and `forge-fork-base` (`if: github.event_name == 'schedule'`, :83) can never run. The echidna condition is doubly broken: for schedule events GitHub sets `github.event.schedule` to the cron expression string (e.g. '17 3 * * *'), never the literal 'nightly'. Even if triggered, forge-fork-b
+  desc: The `on:` block (ci.yml:3-7) contains only push(main)/pull_request/workflow_dispatch — there is no `schedule:` key (verified by grep). [CORRECTED 2026-10-16 — STALE ASSERTION: the current .github/workflows/ci.yml DOES define `schedule:`, with three cron entries (nightly 03:17 UTC, weekly Monday 04:23 UTC, monthly 1st 04:43 UTC) at ci.yml:7-13, and both echidna-nightly and forge-fork-base now gate on `github.event.schedule` matching those cron strings, so they are reachable. Everything after this point describes the 2026-08-24 state only.] Therefore `echidna-nightly` (`if: github.event.schedule == 'nightly'`, :73) and `forge-fork-base` (`if: github.event_name == 'schedule'`, :83) can never run. The echidna condition is doubly broken: for schedule events GitHub sets `github.event.schedule` to the cron expression string (e.g. '17 3 * * *'), never the literal 'nightly'. Even if triggered, forge-fork-b
   fix : Add `schedule: [{cron: '17 3 * * *'}]`; change echidna's condition to `github.event_name == 'schedule'`; write at least one contracts/test/*Fork.t.sol (e.g. deploy on a Base fork, exercise DOMAIN_SEPARATOR chainId binding) or delete the job; guard `${{ secrets.RPC_BASE != '' }}`; implement a real echidna.yaml + properties contract porting the invariant ghost bookkeeping.
 
 [High] (0.5h) Pushes to the repo's only/default branch (master) trigger no CI, and no remote exists — none of these workflows have ever run
   area: CI pipeline
-  desc: ci.yml:5 triggers pushes only on `branches: [main]`, but the repository's only branch is master (git branch -a -> '* master'; recent commits live there) and there is no main branch. There is also no git remote configured (git remote -v is empty), so no workflow has ever executed anywhere. Every 'PR gate' framing in ci.yml comments, README.md:48 ('8-layer CI'), and whitepaper ('8-job CI', docs/WHITEPAPER-v2.1.md:65) describes infrastructure that has never processed a single commit — which is pres
+  desc: ci.yml:5 triggers pushes only on `branches: [main]` [CORRECTED 2026-10-16 — STALE ASSERTION: the current ci.yml:5 uses `branches: [main, master]`, so pushes to master do now trigger CI; and a remote IS configured (`github.com/dev25bansal-ops/sigilkit`), unlike the 2026-08-24 state described here.], but the repository's only branch is master (git branch -a -> '* master'; recent commits live there) and there is no main branch. There is also no git remote configured (git remote -v is empty), so no workflow has ever executed anywhere. Every 'PR gate' framing in ci.yml comments, README.md:48 ('8-layer CI'), and whitepaper ('8-job CI', docs/WHITEPAPER-v2.1.md:65) describes infrastructure that has never processed a single commit — which is pres
   fix : Create/rename to main (or change the filter to master + add branch protection), add the GitHub remote, push, and iterate until the first fully-green run including fixed slither/halmos jobs. Treat 'first green CI run' as the actual definition of v0.1.0 verification status.
 
 [Medium] (3h) validateUserOp succeeds for UNINSTALLED accounts with leftover non-revoked scopes — untested lifecycle path contradicts module-removal expectations

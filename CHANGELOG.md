@@ -5,6 +5,107 @@ All notable changes to SigilKit are documented here. Format based on
 
 ## [Unreleased]
 
+### 2026-10-04 — Review-driven fixes: build unblocked, 3 real defects corrected
+
+A full-codebase review surfaced six blockers and a number of correctness defects. Fixed here:
+
+**Build / release (both had never been exercised — CI has not run on this branch):**
+- `package-lock.json` had no entry for `packages/agent`, so `npm ci` failed outright. Lockfile regenerated; `npm ci` now exits 0. This gated `ci.yml` and `publish.yml` at every install step.
+- `publish.yml` ran `npm run test:coverage --workspaces` with no `--if-present`, and `packages/agent` had no `test:coverage` script — npm aborted the whole release. Added the script and a `vitest.config.ts` with real coverage floors.
+
+**Correctness defects (each had a regression test added that fails without the fix):**
+- `packages/indexer/src/indexer.ts` — `sleep(ms)` called `setTimeout(cb)` without passing `ms`, so the delay was dropped and the watch loop polled ~290× faster than `pollMs`. Existing lifecycle tests could not catch this (they use `pollMs` of 5–60 000 and pass either way).
+- `packages/agent/src/agent-runner.ts` — the request nonce was read from the session key's **EOA transaction count** instead of the manager's per-key `getNonce`. The two diverge from the first action onward, so every proposal would have been rejected on-chain. The package could not have worked end to end.
+- `packages/agent/src/agent-runner.ts` — `state.tick` was read and initialised but never assigned, so any brain gating on phase (`tick % period`) could never reach its fire condition. Now advanced once per attempt in a `finally`.
+
+**Test integrity:**
+- `packages/agent/test/local-model-brain.test.ts` asserted `result.amount` — a field that does not exist on `ActionRequest` (it is `value`) — behind an `if (!result) return` early exit, so the file's stated hard invariant was never evaluated. Rewritten with `forceSchedule` so the assertion always runs.
+- `packages/agent/test/mlp.test.ts` imported `./src/...`, which resolves only via a Vite root fallback; plain Node gives `ERR_MODULE_NOT_FOUND`. Corrected to `../src/...`.
+- New `packages/agent/test/agent-runner.test.ts` (15 cases) covers the guardrails, the tick counter, Merkle binding and `adoptGrant` receipt validation. Package coverage rose from **50.75% → 85.64%** lines (7 → 25 tests).
+- `packages/indexer` and `packages/mcp` tsconfigs excluded `test/**`, so five real type errors shipped unchecked (Vitest strips types without checking). Added `tsconfig.typecheck.json` to both and fixed the errors. The agent tsconfig excluded tests too and was hiding the errors above.
+- `contracts/test/SessionKeyManager.invariant.t.sol` — `toggleDenylistRandom` called `vm.prank(owner)` then passed `!skm.isSelectorDenied(sel)` as an argument. That inner staticcall consumed the prank, so the outer call ran as the test contract and reverted `NotOwner` on 100% of invocations: the un-deny path had zero coverage and the INV-4-deny oracle branch was dead code.
+
+**Gates that could not fail:**
+- `scripts/check-doc-counts.mjs` hardcoded `["core", "indexer", "mcp", "demo-agent"]`, so the newest workspace was invisible to the count check — the root cause of both the 951-vs-actual drift and the publish-gate failure. Both lists are now derived from `package.json`'s `workspaces` glob.
+
+**Type exports:** `packages/agent/src/index.ts` exported `forward`/`trainMlp` but not the types in their signatures; `Sample` is a required argument of `trainMlp`, so the call could not be written at all. All seven are now exported and verified from a clean consumer compile.
+
+**Totals:** 977 TS tests across five packages (was 951 across four) — core 573, indexer 163, mcp 131, demo-agent 85, agent 25. Foundry 225 unchanged.
+
+### 2026-10-04 — Build ordering, a silent no-emit build, and a process-tree kill that missed
+
+Found by actually running CI (the first push opened PR #5) rather than by review:
+
+- **`npm run build --workspaces` compiled `@sigilkit/agent` before `@sigilkit/core`** — npm walks
+  workspaces alphabetically, and `agent` imports `core`, so from a clean tree every one of its
+  imports failed TS2307. `indexer`, `mcp` and `demo-agent` survive only because their names sort
+  after `core`. New `scripts/build-workspaces.mjs` derives the order from each workspace's actual
+  dependencies (Kahn's algorithm, cycle-detecting) and is used by the root `build` script, both
+  workflows, and the Dockerfile.
+- **A stale `.tsbuildinfo` made `tsc` emit nothing and still exit 0.** `packages/agent` sets
+  `composite: true`, so tsc trusted a buildinfo file that had been committed; it then skipped all
+  output — no `.js`, no `.d.ts` — while reporting success. That is how `check-package-artifacts`
+  came to report all five agent entry targets missing. `tsBuildInfoFile` is now pinned inside
+  `dist/` so it is untracked and removed by `npm run clean`, and the committed file is untracked.
+- **`verify.mjs` killed only the direct child on POSIX.** The Windows branch uses `taskkill /T /F`
+  precisely because a bare kill leaves grandchildren running, but the POSIX path sent SIGTERM to
+  the direct child alone — so a hung `npm run build` (npm → tsc → esbuild) left that tree alive
+  after the gate reported failure. Steps now spawn `detached` and the timeout signals the whole
+  process group. This surfaced as an intermittently red `workflow lint` job: its test asserts the
+  grandchild is gone, and it was measuring OS reaping latency against a 3s budget.
+- **`Dockerfile` never copied `packages/agent/package.json`** into either stage, so the image
+  could not see the newest workspace.
+- **`spendByAgent` has no row ceiling, deliberately** — it is an aggregation, so a LIMIT would
+  silently under-count. Documented rather than "fixed", with the reasoning inline.
+
+### 2026-10-04 — agent runtime: the advisory path could never fire
+
+Two defects found by testing the package's behaviour rather than its coverage number.
+
+- **`LocalModelBrain` proposed nothing, ever.** `safeAmountWei` returns
+  `min(cap x usageFraction, window remaining, balance)`, and `propose()` passed
+  `perWindowCap: 0n` alongside `windowSpendRemaining` straight from the context — so the
+  minimum was always zero and `if (amount === 0n) return null` fired on every call.
+  Measured: **0 proposals across 50 ticks at threshold 0.** Every existing test used
+  `forceSchedule: true`, which returns before the amount is computed, so this was invisible.
+  The cap property the file claimed to guard was never at risk; liveness was simply broken.
+- **`buildContext()` hardcoded `windowSpendRemaining: 0n`** rather than reading the manager's
+  `getWindowState`. Since that field feeds the minimum above, it was the second half of the
+  same failure. It now reads on-chain state, applies the same fixed-window rollover rule the
+  SDK uses (an elapsed window frees the whole cap again), saturates at zero rather than
+  underflowing when a re-granted cap is lower than prior spend, and fails closed to zero if
+  the read throws.
+
+The RPC stub in `agent-runner.test.ts` was dispatching every `readContract` to one answer,
+which would have passed for the wrong reason once the second call existed; it now dispatches by
+function name and refuses an unstubbed one.
+
+New: `local-model-brain-liveness.test.ts` (4 cases) and 7 window-state cases including the
+rollover. Package coverage 85.64% -> 88.37% lines; 7 -> 36 tests. Both fixes verified
+load-bearing by reverting each and watching the tests go red.
+
+Totals: 1016 TS tests across five packages — core 581, indexer 165, mcp 132, demo-agent 85,
+agent 36.
+
+### 2026-10-03 — Ralph loop iteration 1: full E2E verification + README polish
+
+**Verification performed (all commands reproducible locally with CI-pinned toolchain):**
+- ✅ **225/225 Foundry tests** pass (`forge test --no-match-contract ".*Invariant|.*Fork"`) on **Foundry 1.7.1** (CI pin per `SECURITY.md:201`)
+- ✅ **951/951 TypeScript tests** pass across all four packages: core (573), indexer (162), mcp (131), demo-agent (85)
+- ✅ **All 14 Node gate scripts** pass (`check-doc-location`, `check-waivers`, `check-doc-counts`, etc.)
+- ✅ **Build clean** across all workspaces under TypeScript 7.0.2 targeting Node 24
+- ⚠️ **Toolchain sensitivity finding**: Foundry **1.8.4 fails 12 gas-budget guards** (all in `GasBudget.t.sol` / `Gas7579Scaling.t.sol` / `GasUncoveredPaths.t.sol`); the **same tests all pass on 1.7.1**. This proves the CI pin is load-bearing: a naive version bump would silently turn green budget-guards red. Correct practice: re-baseline the budget constants or gate to `vm.snapshot` before relaxing the pin.
+
+**Documentation:**
+- Added `docs/VERIFIED-E2E-2026-10-03.md` — a dated, machine-verified snapshot (Foundry 225 / TS 951 / Node gates), with an explicit "what is deliberately not in this snapshot" section (Halmos/Echidna/Slither/wallet-e2e/invariant/fork are reconciled by count, not re-executed here). Cross-referenced in `docs/STATUS.md` as an L2 record.
+- Rewrote the README's opening with an honest status banner (✅ test-ready / ❌ pre-audit / ❌ npm scope unavailable / ❌ repo not public) and a "Verify in one command" section so a reviewer can reproduce the run in <2 minutes.
+- Added a "Known blockers" table naming the three things that gate launch: OD-2 (npm scope collision), audit (by design, pre-audit banner active), repo visibility (clone URL 404s). This is transparency, not apology — it tells an auditor exactly what's done and what isn't.
+- "What you can do today" section: four concrete paths (read specs, run local Anvil demo, inspect harnesses, audit docs) that bypass none of the blockers.
+
+**Honest limits:**
+- This is a test-ready snapshot, **not an audit**. The pre-audit banner (`docs/WHITEPAPER-v2.1.md`, `SECURITY.md`, `docs/COMPLIANCE-2026-09-26.md` §7) still binds.
+- The 12 gas-budget failures on 1.8.4 are a **toolchain-version artifact** (gas-cost attribution drift), not a logic bug. The same tests pass on the pinned version. CI's Foundry pin is what makes the green run the ground truth.
+
 ### 2026-09-15 — production readiness (developer experience, configuration, validation, docs)
 
 Everything a new user or operator needs to install, configure, run and troubleshoot the
@@ -122,8 +223,15 @@ project without reading the source.
   first and restores it afterwards, and `spawnAnvil()` announces reuse instead of silently
   attaching to a dirty chain.
 - `scripts/verify.mjs` and `scripts/bootstrap.mjs` passed an args array together with
-  `shell: true`, which Node 24 deprecates (`DEP0190`). They now build a command string when
-  a shell is required.
+  `shell: true`, which Node 24 deprecates (`DEP0190`) — and, more seriously, re-parsed every
+  argument as shell *syntax* rather than data. Part of each script's argv is derived from
+  repository files (workspace names come from `package.json`, which a pull request can edit),
+  so `;`, a backtick, `$(…)` or `|` in any of those elements executed. An intermediate fix
+  built a single command string; **the fix that ships removes the shell entirely.** npm is now
+  run through its resolved JavaScript entry point (`npm-cli.js`) with the current `node`, so a
+  real argv array works end to end and the Windows `.cmd` shim is never involved — it has to be
+  *bypassed* rather than accommodated, because Node refuses to spawn a `.cmd` without a shell
+  (the CVE-2024-27980 mitigation). **No step in either script now uses a shell.** (SEC-11)
 - `scripts/bootstrap.mjs` gains `--install`, for environments where `npm ci` cannot replace
   `node_modules` (Windows file locks, restricted sandboxes). `npm ci` remains the default,
   and its failure message points at the flag.
@@ -143,9 +251,15 @@ project without reading the source.
   they cannot drift apart again.
 
 **Tests**
-- `@sigilkit/core` +83 (validation 18, CLI 30, config 16, logger 19) → 180 passed (+1 skipped).
+- `@sigilkit/core` +83 (validation 18, CLI 30, config 16, logger 19) → 358 passed (+1 skipped).
 - `@sigilkit/mcp` +33 (25 tool-argument + 8 stdio-transport) → 40 passed.
-- Suites: core 180 (+1 skipped) · indexer 12 · mcp 40 · demo-agent 12.
+- **Correction (re-measured 2026-10-02, supersedes the 2026-09-15 per-package totals below).**
+  The four TypeScript totals recorded in this entry were a snapshot taken on 2026-09-15 and
+  were never refreshed. A real `vitest run` per workspace against the current tree reports
+  Suites: core 573 · indexer 162 · mcp 131 · demo-agent 85. `npm run
+  check:docs:full` now guards these figures, so the numbers in the next bullet are kept
+  verbatim as that release's record rather than rewritten.
+- Suites: core 569 (+1 skipped) · indexer 87 · mcp 65 · demo-agent 36. _(as measured on 2026-09-15; retained as the record of that release)_
 - Coverage: core 92.5% stmts / 87.9% branches · indexer 72.8/70.9 · mcp 90.7/73.9 ·
   demo-agent 95.8/78.9 — all above their configured floors.
 

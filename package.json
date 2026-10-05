@@ -5,6 +5,7 @@
   "license": "MIT",
   "private": true,
   "type": "module",
+  "packageManager": "npm@11.18.0",
   "workspaces": [
     "packages/*"
   ],
@@ -15,15 +16,20 @@
     "setup": "node scripts/bootstrap.mjs",
     "verify": "node scripts/verify.mjs",
     "verify:quick": "node scripts/verify.mjs --quick",
-    "build": "npm run build --workspaces --if-present",
-    "test": "forge test --no-match-contract '.*Invariant|.*Fork' && npm run test --workspaces --if-present",
-    "test:full": "forge test --no-match-contract '.*Fork' && npm run test --workspaces --if-present",
+    "build": "node scripts/build-workspaces.mjs --if-present",
+    "test": "forge test --no-match-contract \".*Invariant|.*Fork\" && npm run test --workspaces --if-present",
+    "test:full": "forge test --no-match-contract \".*Fork\" && npm run test --workspaces --if-present",
     "test:coverage": "npm run test:coverage --workspaces --if-present",
     "lint": "npm run lint:workflows && npm run lint:docker && npm run lint --workspaces --if-present",
     "lint:workflows": "node scripts/validate-workflows.mjs",
     "lint:docker": "node scripts/check-dockerfile.mjs",
+    "check:artifacts": "node scripts/check-package-artifacts.mjs",
+    "check:facts": "node scripts/sync-facts.mjs --check",
+    "test:helpers": "node scripts/verify.mjs --only=helpers",
     "check:docs": "node scripts/check-doc-counts.mjs",
     "check:docs:full": "node scripts/check-doc-counts.mjs --with-ts",
+    "check:doc-location": "node scripts/check-doc-location.mjs",
+    "test:doc-location": "node --test scripts/check-doc-location.test.mjs",
     "clean": "node scripts/clean.mjs",
     "vectors:generate": "node scripts/generate-vectors.mjs",
     "demo": "npm run demo --workspace @sigilkit/demo-agent --",
@@ -34,5 +40,8 @@
     "@playwright/test": "^1.62.1",
     "@vitest/coverage-v8": "^5.0.0",
     "yaml": "^2.9.1"
+  },
+  "overrides": {
+    "@types/node": "^24.13.3"
   }
 }

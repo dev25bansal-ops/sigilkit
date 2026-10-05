@@ -15,8 +15,14 @@ updates:
     schedule:
       interval: weekly
       day: monday
-    # Group everything so one review session covers the weekly drift; security bumps
-    # still arrive as their own (urgent) PRs via the default security-updates lane.
+    # Group everything so one review session covers the weekly drift.
+    #
+    # CORRECTION (2026-10-04): this comment previously claimed "security bumps still arrive
+    # as their own (urgent) PRs via the default security-updates lane". That lane does not
+    # exist here — the GitHub API reports `Dependabot alerts are disabled for this repository`
+    # (HTTP 403; a private repo needs GitHub Advanced Security). Version-update PRs do run, so
+    # a security fix arriving as an ordinary grouped PR is the ONLY path an advisory has.
+    # `ci.yml`'s `npm audit` gate is what makes that visible; this file cannot.
     groups:
       minor-and-patch:
         update-types:
@@ -28,8 +34,17 @@ updates:
         update-types:
           - "major"
     open-pull-requests-limit: 10
-    reviewers:
-      - sigilkit/leads
+    # NO `reviewers:` BLOCK, deliberately (2026-10-04).
+    #
+    # This file asked for review from `sigilkit/leads`, a team slug that does not exist —
+    # `GET /teams/sigilkit/leads` returns 404, and the org has no teams at all. GitHub does
+    # NOT error on an unresolvable reviewer: it silently drops the request, so every
+    # dependency PR was asking nobody to review it while the config read as though it had an
+    # owner. That is worse than no reviewer line, because it looks assigned.
+    #
+    # The `needs-ci` label below is what actually routes these — it is the same signal the
+    # human triage path uses. Add a `reviewers:` entry only once the team exists, and check
+    # it with: gh api teams/<slug> (a 404 means the slug is wrong, not that review is optional).
     labels:
       - "dependencies"
       - "needs-ci"

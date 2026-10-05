@@ -1,40 +1,106 @@
 # SigilKit
 
 Open-source (MIT) toolkit for **agent-native wallets** — EIP-7702 hardened delegation,
-session-key management with on-chain spend caps, and a mandatory audit trail per action.
+session-key management with on-chain spend caps, and a mandatory audit trail per action
+(unconditional on the manager path; on the ERC-7579 path the trail is conditional — it
+requires `ActionLog7579Executor` installed with an `agentId` bound, else `execute` reverts).
+
+> **Current status (2026-10-03):** ✅ **test-ready** — all functional tests pass on the CI toolchain; ❌ **not publicly reachable yet**; ❌ **npm scope unavailable** (`@sigilkit/core` collides with another project); ❌ **pre-audit** (no external security review has completed). See [`docs/VERIFIED-E2E-2026-10-03.md`](docs/VERIFIED-E2E-2026-10-03.md) for the machine-verified snapshot and [`docs/STATUS.md`](docs/STATUS.md) for the document authority model.
 
 > This is the implementation repo. The research + strategy behind it lives in
 > [`vault/`](vault/) (an Obsidian knowledge base built from an Aug-2026 worldwide
-> research sweep of the original whitepaper). The whitepaper's framing is corrected there:
-> several specific claims were fabricated/stale and shared infra already exists — SigilKit's
-> differentiator is the **cross-wallet conformance + on-chain audit-per-call + formal verification**
-> bundle, not "the standard library nobody built."
+> research sweep of the original whitepaper). That sweep found several v2.0 claims to be
+> fabricated or stale, and shared infra already exists — SigilKit's differentiator is the
+> **cross-wallet conformance + on-chain audit-per-call + formal verification of the
+> spend-policy core** bundle, not "the standard library nobody built."
+>
+> Read [`docs/WHITEPAPER-v2.1.md`](docs/WHITEPAPER-v2.1.md) for the corrected whitepaper.
+> The original `SigilKit_Whitepaper.txt` is **superseded and must not be cited** — see
+> [`docs/STATUS.md`](docs/STATUS.md) for the document authority model.
 
 ## Components
 
 | # | Component | Status | What it does |
 |---|-----------|--------|--------------|
-| 1 | **EIP-7702 Wallet Library** | **Core implemented** | `signAuthorization` / `signRevocation` / `validateAuthorization` with cast-verified RLP digests + viem↔ethers byte-identical signing parity (first cell of the conformance matrix). Live MetaMask 12.5.0 + Coinbase Smart Wallet Playwright harnesses in [`packages/core/test/wallet-e2e/`](packages/core/test/wallet-e2e/README.md) — runnable locally, and wired into CI as the weekly (non-blocking) wallet-conformance job. |
-| 2 | **ERC-7579 module** (replaces the bespoke Diamond) | **Implemented** | `SessionKey7579Module.sol` — a VALIDATION module for Kernel/Safe{Core} accounts: scoped session-key userOp authorization with per-action + batch-aware window caps, Merkle whitelists (proofs ride in the signature blob), selector denylists, account-bound EIP-712 domains. |
+| 1 | **EIP-7702 Wallet Library** | **Core implemented** | `signAuthorization` / `signRevocation` / `validateAuthorization` with cast-verified RLP digests + viem↔ethers byte-identical signing parity (first cell of the conformance matrix). Live MetaMask 13.49.0 + Coinbase Smart Wallet Playwright harnesses in [`packages/core/test/wallet-e2e/`](packages/core/test/wallet-e2e/README.md) — runnable locally, and wired into CI as the weekly (non-blocking) wallet-conformance job. |
+| 2 | **ERC-7579 module** (replaces the bespoke Diamond) | **Implemented** | `SessionKey7579Module.sol` — a VALIDATION module for Kernel/Safe{Core} accounts: scoped session-key userOp authorization with per-action + batch-aware window caps, Merkle whitelists (proofs ride in the signature blob), selector denylists, account-bound EIP-712 domains. It emits NO `ActionLogged` itself: an audit trail on this path requires the paired `ActionLog7579Executor` installed with an `agentId` bound (else `execute` reverts). |
 | 3 | **Multi-RPC Provider** | Deferred | viem already covers WS reconnect + retry; use viem directly. |
-| 4 | **Agent Session-Key Manager** | **Implemented + formally verified** | `SessionKeyManager.sol` + `SpendPolicy.sol` + `ActionLogger.sol` + `MerkleWhitelist.sol` with on-chain spend caps, per-window rate limits, Merkle target whitelists, and a mandatory `ActionLogged` event per call. |
+| 4 | **Agent Session-Key Manager** | Implemented · formally verified for the spend-policy core and parts of the auth paths | `SessionKeyManager.sol` + `SpendPolicy.sol` + `ActionLogger.sol` + `MerkleWhitelist.sol` with on-chain spend caps, per-window rate limits, Merkle target whitelists, and a mandatory `ActionLogged` event per call. |
+
+> **Scope of the "formally verified" label.** Verification is real but **partial, and
+> pre-audit**: the 11 Halmos symbolic specs cover the spend-cap core and *parts* of the
+> auth paths. Both vacuity findings that `docs/ISSUES-CATALOG-2026-09-25.md` §A recorded
+> have since been **fixed** — P0-1 (5 of the 11 Halmos auth specs were trivially
+> satisfiable via a free `block.timestamp`) and P0-2 (2 of the 4 Echidna properties
+> passed vacuously with no funding), each now guarded by a regression test or a
+> falsifiable rewrite. Coverage is still layered rather than exhaustive, so this remains
+> **verification tooling, not an audit** — no third party has reviewed these contracts.
+> See the pre-audit banner in
+> [`docs/WHITEPAPER-v2.1.md`](docs/WHITEPAPER-v2.1.md#abstract) and
+> [`docs/VERIFICATION-STRATEGY-2026-09-25.md`](docs/VERIFICATION-STRATEGY-2026-09-25.md)
+> for the layer-by-layer strategy.
 
 **Component 4 is the moat and is built first** — see [`vault/Risk & De-risk Plan.md`](vault/Risk%20%26%20De-risk%20Plan.md).
+
+---
+
+### Verify in one command (local, with CI toolchain)
+
+This reproduces the test run from [`docs/VERIFIED-E2E-2026-10-03.md`](docs/VERIFIED-E2E-2026-10-03.md):
+
+```bash
+# Install Foundry 1.7.1 (CI pin per SECURITY.md)
+curl -L https://foundry.paradigm.xyz | bash
+foundryup --install v1.7.1
+
+# Run on-chain tests with pinned toolchain
+export PATH="$PATH:~/.foundry/bin"
+forge test --no-match-contract ".*Invariant|.*Fork"
+# Expected output: "225 tests passed, 0 failed"
+
+# Run TS tests (requires Node >=24; Windows native recommended due to node:sqlite requirement)
+npm run build --workspaces --if-present && npm run test --workspaces --if-present
+# Expected output: core 573 tests, demo-agent 85, indexer 162, mcp 131 → all pass
+```
+
+---
+
+### What you can do today (with no blockers bypassed)
+
+1. **Read the specs:** `contracts/src/` (Solidity implementation) + [`packages/core/src/`](packages/core/src/) (SDK). The code *is* the spec (L1 layer per [`docs/STATUS.md`](docs/STATUS.md)).
+2. **Run local Anvil:** deploy the manager, grant a session key, sign an action request, execute it. Observe the `ActionLogged` event emitted. The [`packages/demo-agent/`](packages/demo-agent/) directory provides examples.
+3. **Inspect the conformance harnesses:** MetaMask 13.49.0 / Coinbase Smart Wallet Playwright fixtures live in [`packages/core/test/wallet-e2e/`](packages/core/test/wallet-e2e/README.md). They require a real extension profile and persistent Chromium.
+4. **Audit the docs:** [`SECURITY.md`](SECURITY.md) (threat map + triage), [`packages/core/test/WALLET_BEHAVIOR_ALLOWLIST.json`](packages/core/test/WALLET_BEHAVIOR_ALLOWLIST.json) (wallet-conformance record), [`docs/WHITEPAPER-v2.1.md`](docs/WHITEPAPER-v2.1.md) (corrected whitepaper, no fabricated claims).
+
+---
+
+### Known blockers (what prevents launch)
+
+| ID | Blocker | Status | Notes |
+|---|---|---|---|
+| **OD-2** | `@sigilkit/core` npm scope collides with unrelated MIT project | ❌ blocking | Can't publish under `@sigilkit` scope without acquiring it or renaming packages |
+| **OD-3** | `.well-known/security.txt` lacks `Encryption:` field | ❌ minor | Needs OpenPGP key generation and resolution before public launch |
+| **TD-6** | `wallet-e2e-weekly` runs `continue-on-error: true`, has no green history | ⚠️ monitored | Expiry 2026-10-12; needs written postmortem if a red run occurs |
+| **None** | External security audit completed | ❌ blocking (by design) | Pre-audit banner still active; no third-party review finished yet |
+| **N/A** | GitHub repo publicly reachable | ❌ current state | Clone URL 404s; visibility decision pending |
+
+After these are resolved, the next step is commissioning an external audit via the Arbitrum Audit Program bounty pool (per `vault/Funding Audit Bounty.md`). That's the longest lead-time dependency — everything else can be addressed independently.
+
 
 ## Verification status
 
 | Layer | Status |
 |---|---|
-| Foundry unit + fuzz | ✅ 101 tests across 10 suites (manager 25 · 7579 module 25 · executor 11 · delegator 10 · graduated authority 9 · governance 5 · ERC-1271 keys 4 · account-execute E2E 4 · golden vectors 4 · gas budget 4) |
-| Echidna property fuzzing | ✅ 4 properties (independent second fuzzer, nightly) |
+| Foundry unit + fuzz | ✅ 229 tests across 18 suites (7579 module 43 · manager 34 · gas uncovered paths 33 · native transfer authorization 14 · executor 12 · gas budget 11 · graduated authority 11 · ERC-1271 keys 10 · delegator 10 · denylist coverage 10 · E11 watchlist read 9 · account-execute E2E 7 · SEC-10 window rotation 6 · 7579 gas scaling 5 · governance recovery 5 · golden vectors 4 · scope watchlist multi-token 4 · Halmos auth meta-test 1) |
+| Echidna property fuzzing | ✅ 4 properties (independent second fuzzer, nightly) — all four are falsifiable: funding is pulled into the wallet through a public `refill()` + `_ensureFunded`, so the `value > 0` paths are reachable instead of reverting on balance; `echidna_attackerNeverSucceedsAtAdmin` (replaces the tautological `echidna_ownerImmutableByFuzzer`) probes all 6 admin functions as a genuine non-owner and fails if `onlyOwner` is ever bypassed; `echidna_scopesMatchOwnerActions` now requires each on-chain scope to be one of three genuinely distinct granted shapes. Fixed in BUG-18 — see [`docs/ISSUES-CATALOG-2026-09-25.md`](docs/ISSUES-CATALOG-2026-09-25.md) §A P0-2 |
 | Foundry invariant (INV-1/2/4, handler-only fuzzing incl. admin transitions) | ✅ 4 invariants in 1 suite × 256 runs × 500 calls |
 | Fork smoke (Base) | ✅ 1 test — runs nightly against a live Base fork (chainid + chain-bound domain separator + live state) |
-| Halmos symbolic (spend-cap core + Merkle boundaries + auth paths) | ✅ 11 specs (`halmos --match-contract Halmos`) — replay, nonce accounting, request expiry, denylist gating, window-cap |
+| Halmos symbolic (spend-cap core + Merkle boundaries + auth paths) | ✅ 11 specs, all **now executing and non-vacuous** (`halmos --match-contract Halmos`) — P0-1 is **fixed**: the 5 auth specs (replay, nonce accounting, request expiry, denylist gating, window-cap) no longer pass on the trivial false branch, because the harness (a) encodes the call with the **exact 4-argument production arity** and (b) constrains the modelled clock into the granted window via an `atLiveClock` modifier that solc inlines into every spec body. A meta-test, `test_HalmosAuth_ArityIsFour`, **guards the harness itself** (3-arg encoding must fail to decode; 4-arg in-scope request must succeed through the same `_execute` helper), so the arity defect cannot silently return. Strategy: [`docs/VERIFICATION-STRATEGY-2026-09-25.md`](docs/VERIFICATION-STRATEGY-2026-09-25.md) |
 | Account-execute E2E (7579 convention) | ✅ validate → execute → value lands, window charged once |
 | Slither static analysis | ✅ run; all findings triaged in [`SECURITY.md`](SECURITY.md) |
 | TS SDK vs on-chain E2E (Anvil) | ✅ sign → relay → enforce → `ActionLogged` verified in receipt |
 | Cross-wallet signing parity | ✅ viem ↔ ethers ↔ hand-rolled reference encoder, byte-identical digests + signatures |
-| CI | ✅ 13 jobs across 2 workflows — `ci.yml` (12): a workflow-lint gate, secret scanning, and 4 PR-gated jobs (unit, invariant, Slither, TS+coverage); nightly (deep fuzz, Base fork, Echidna); weekly (live wallet harnesses); monthly (Foundry canary); release (Halmos). `publish.yml` (1): tag-gated npm publish with provenance. Counts are verified against CI output by `npm run check:docs` (which also guards the whitepaper's prose counts) |
+| CI | ✅ 14 jobs across 2 workflows — `ci.yml` (12): a workflow-lint gate, secret scanning, and 4 PR-gated jobs (unit, invariant, Slither, TS+coverage); nightly (deep fuzz, Base fork, Echidna); weekly (live wallet harnesses); monthly (Foundry canary); release (Halmos). `publish.yml` (2): tag-gated npm publish with provenance. Counts are verified against CI output by `npm run check:docs` (which also guards the whitepaper's prose counts) |
 
 ## Repository layout
 
@@ -67,7 +133,7 @@ sigilkit/
 ## Quick start
 
 ```bash
-git clone https://github.com/sigilkit/sigilkit.git && cd sigilkit
+git clone https://github.com/dev25bansal-ops/sigilkit.git && cd sigilkit
 npm run setup      # Node/Foundry check → install from lockfile → build all packages
 npm run verify     # full gate: lint, doc counts, contract tests, TS tests
 ```
@@ -86,12 +152,42 @@ Deploys SessionKeyManager + a Counter target, funds the wallet, grants a 1-hour 
 (0.01 ETH/action, 0.05 ETH/window), and fires two on-chain rebalance actions — each signed by
 the agent's session key, enforced on-chain, and audited via `ActionLogged`.
 
+### Prove the enforcement (no setup, exits non-zero on failure)
+
+```bash
+bash scripts/proof-demo.sh
+```
+
+One command: starts its own Anvil, deploys, grants, runs the agent, then **tries to make the
+agent exceed its scope** and prints what stopped it. It exits 0 only if the whole sequence
+held, so it is safe to run in front of a reviewer rather than merely read.
+
+```
+· control: an action INSIDE the granted scope
+    accepted on-chain — the key is genuinely able to act.
+✓ spend 10,000 ETH — a million times the per-action cap      PerActionCapExceeded
+✓ call transferOwnership — owner-only — via the session key  TargetNotAllowed
+✓ replay a nonce this key already spent                       NonceUsed
+✓ use a request that expired a minute ago                     RequestExpired
+```
+
+Two details make those verdicts mean something:
+
+- **Every attempt carries a real EIP-712 signature.** An unsigned request dies at
+  signature recovery, so a rejection would prove nothing about the *policy*.
+- **The control runs first.** Four refusals alone cannot distinguish "the policy works" from
+  "this key cannot do anything at all" — a broken deployment would pass all four. The control
+  proves the key genuinely can act, so the refusals are the policy working.
+- **The guard must match.** A refusal by some *other* guard counts as a failure, so a script
+  that merely checked "something reverted" cannot report a false PASS. (Verified: pointing an
+  expectation at a non-existent guard makes the run exit 1.)
+
 ### Contracts (Foundry)
 
 ```bash
 forge install foundry-rs/forge-std   # or: git clone --depth 1 https://github.com/foundry-rs/forge-std lib/forge-std
 forge build
-npm test                             # 101 unit + fuzz tests + full TS suite (excludes invariants + fork smoke)
+npm test                             # 229 unit + fuzz tests + full TS suite (excludes invariants + fork smoke)
 forge test --match-contract '.*Invariant'   # invariant suite (4 invariants × 256 runs)
 forge test --match-contract '.*Fork' --fork-url $RPC_BASE   # fork smoke (Base)
 ```
@@ -122,7 +218,7 @@ npm test --workspace @sigilkit/core    # cross-language conformance vs. Anvil
 > package. Until the scope is resolved, consume these from a clone:
 >
 > ```bash
-> git clone https://github.com/sigilkit/sigilkit.git && cd sigilkit && npm run setup
+> git clone https://github.com/dev25bansal-ops/sigilkit.git && cd sigilkit && npm run setup
 > ```
 
 ```bash
@@ -134,6 +230,14 @@ node packages/indexer/dist/cli.js spend --agent 0x<32-byte-agent-id> --json
 node packages/mcp/dist/cli.js --help
 ```
 
+> **The MCP `audit_query` tool is inert until you allowlist a directory.** It refuses *every*
+> database path with `DB_NOT_ALLOWED` until you set `SIGILKIT_AUDIT_DB_ROOT` to the absolute
+> directory holding your audit database(s) (`;`-separated for several roots), e.g.
+> `SIGILKIT_AUDIT_DB_ROOT=/var/lib/sigilkit`. The variable is read **once at startup**, so
+> restart the server after changing it. If you see `DB_NOT_ALLOWED`, see
+> [`docs/TROUBLESHOOTING.md` → *`audit_query` returns `DB_NOT_ALLOWED`*](docs/TROUBLESHOOTING.md#audit_query-returns-db_not_allowed),
+> which also explains how it differs from a genuinely missing file (`DATABASE_NOT_FOUND`).
+
 ## Documentation
 
 | Document | Contents |
@@ -144,7 +248,9 @@ node packages/mcp/dist/cli.js --help
 | [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Symptom → cause → fix for common failures |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Dev setup, conventions, change recipes, PR process |
 | [SECURITY.md](SECURITY.md) | Threat model, Slither triage, disclosure policy |
-| [docs/STATUS.md](docs/STATUS.md) | Which planning document is authoritative |
+| [docs/STATUS.md](docs/STATUS.md) | The four-layer document authority model (L1 code → L2 record → L3 plan → L4 context) and which file wins a conflict |
+| [docs/WHITEPAPER-v2.1.md](docs/WHITEPAPER-v2.1.md) | **Current** technical whitepaper (v2.1, corrected) — read this, not the v2.0 file below |
+| [SigilKit_Whitepaper.txt](SigilKit_Whitepaper.txt) | v2.0 whitepaper — **SUPERSEDED, do not cite**; kept as history, opens with a correction banner |
 | [CHANGELOG.md](CHANGELOG.md) | Release history |
 
 One-command entry points:
@@ -177,8 +283,18 @@ cumulative `ActionLogged` records. See [`SECURITY.md`](SECURITY.md).
 
 ## Verification status
 
-See the table at the top of this README (kept current from CI output). External audit pending —
-route: Cantina/Sherlock contest + private review, offset with the Arbitrum Audit Program.
+See the table at the top of this README (kept current from CI output, and machine-checked
+by `npm run check:docs`). Read it as **verification tooling, not an audit**: no third party
+has reviewed these contracts, and while the previously documented vacuity gaps in the two
+property layers (Halmos auth paths, Echidna) have been remediated, coverage remains layered
+rather than exhaustive — see
+[`docs/ISSUES-CATALOG-2026-09-25.md`](docs/ISSUES-CATALOG-2026-09-25.md) and
+[`docs/VERIFICATION-STRATEGY-2026-09-25.md`](docs/VERIFICATION-STRATEGY-2026-09-25.md). The
+governing pre-audit warning is in
+[`docs/WHITEPAPER-v2.1.md`](docs/WHITEPAPER-v2.1.md#abstract).
+
+External audit pending — route: Cantina/Sherlock contest + private review, offset with the
+Arbitrum Audit Program.
 
 ## License
 

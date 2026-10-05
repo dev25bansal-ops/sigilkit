@@ -1,5 +1,9 @@
 {
   "_doc": "Golden vectors for whitelist leaf format v2 (pinned + wildcard leaves) and a 3-leaf sorted-pair tree with odd-node promotion. Consumers: both language suites.",
+  "_provenance": {
+    "generator": "@sigilkit/core",
+    "externallyAnchored": false
+  },
   "leafCases": [
     {
       "name": "pinned-transfer",

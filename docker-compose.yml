@@ -34,6 +34,9 @@ services:
     # extra_hosts: ["host.docker.internal:host-gateway"]
     healthcheck:
       # The store must exist and be readable. Cheap, and catches a wedged volume.
+      # NOTE: this probes STORE READINESS, not process liveness — it says the file is
+      # reachable, not that the indexer is making progress. Keep it that cheap; a real
+      # liveness signal belongs in the RPC/metrics path, not in a 5s Docker probe.
       test: ["CMD", "node", "-e", "require('node:fs').accessSync(process.env.SIGILKIT_DB_PATH)"]
       interval: 30s
       timeout: 5s
@@ -44,12 +47,20 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: sigilkit-indexer:local
+    # Same build context and Dockerfile as the indexer, but a distinct tag so the
+    # two services stay independently buildable and never overwrite each other.
+    image: sigilkit-mcp:local
     entrypoint: ["node", "packages/mcp/dist/cli.js"]
     command: ["--log-level", "${SIGILKIT_LOG_LEVEL:-info}"]
     environment:
       SIGILKIT_DB_PATH: /data/audit.db
       SIGILKIT_LOG_LEVEL: ${SIGILKIT_LOG_LEVEL:-info}
+      # audit_query is fail-closed: with SIGILKIT_AUDIT_DB_ROOT unset the MCP server
+      # refuses EVERY database path (packages/mcp/src/server.ts readAuditDbRoots), so
+      # without this line the containerised server ships with the tool permanently inert.
+      # Must be an ABSOLUTE directory; relative entries are dropped with a warning.
+      # The store lives at SIGILKIT_DB_PATH=/data/audit.db inside the mounted volume.
+      SIGILKIT_AUDIT_DB_ROOT: ${SIGILKIT_AUDIT_DB_ROOT:-/data}
     volumes:
       # Read-only: audit_query never writes, so it cannot corrupt the store.
       - sigilkit-data:/data:ro

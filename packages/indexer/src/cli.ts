@@ -148,8 +148,11 @@ await runCli(SPEC, process.argv.slice(2), async (args, command) => {
             if (closing) return;
             closing = true;
             log.info(`received ${signal}, shutting down`);
-            stop();
-            resolve();
+            // A7: await the watch loop's drain, not a fire-and-forget stop(). The
+            // disposer resolves once the in-flight tick has actually finished, so the
+            // `finally { indexer.close() }` below can never close the database under a
+            // tick that is mid-write.
+            void stop().then(resolve, resolve);
           };
           process.on("SIGINT", () => shutdown("SIGINT"));
           process.on("SIGTERM", () => shutdown("SIGTERM"));
@@ -204,7 +207,10 @@ await runCli(SPEC, process.argv.slice(2), async (args, command) => {
         process.stdout.write(`${SigilIndexer.formatWei(totalWei.toString())} ETH total spend\n`);
       }
     } else if (command === "actions") {
-      const rows = indexer.actionsForAgent(agentId as Hash, filter).slice(-limit);
+      // A6: `--limit` threads all the way into the query layer instead of a
+      // caller-side `.slice(-limit)` — the SQL fetches the newest N rows through the
+      // index and never materialises the rest.
+      const rows = indexer.actionsForAgent(agentId as Hash, filter, limit);
       if (json) {
         process.stdout.write(JSON.stringify({ agentId, chainId: filter ?? null, count: rows.length, actions: rows }) + "\n");
       } else {
@@ -239,4 +245,19 @@ await runCli(SPEC, process.argv.slice(2), async (args, command) => {
   } finally {
     indexer.close();
   }
+}, {
+  // AC-33: Node 24's experimental node:sqlite aborts on Windows when process.exit
+  // interrupts the loop with a sqlite finalization queued (`Assertion failed:
+  // !(handle->flags & UV_HANDLE_CLOSING)` — reproduced even when the exit is deferred one
+  // macrotask; measured child exit 0xC0000409). Set the exit code and let the loop drain
+  // naturally; an unref'd 5s watchdog force-exits if a transport keeps the loop alive.
+  io: {
+    stdout: (line) => process.stdout.write(line + "\n"),
+    stderr: (line) => process.stderr.write(line + "\n"),
+    exit: (code) => {
+      process.exitCode = code;
+      const watchdog = setTimeout(() => process.exit(code), 5_000);
+      watchdog.unref();
+    },
+  },
 });

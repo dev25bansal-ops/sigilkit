@@ -4,5 +4,7 @@ testMode: property
 testLimit: 50000
 corpusDir: echidna-corpus
 coverage: true
-sequenceLength: 100
-shrinkingSequenceLength: 5000
+# Echidna 2.x config keys are camelCase forms of the CLI flags (--seq-len,
+# --shrink-limit); "sequenceLength"/"shrinkingSequenceLength" are silently ignored.
+seqLen: 100
+shrinkLimit: 5000

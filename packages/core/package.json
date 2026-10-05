@@ -40,14 +40,18 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
+    "pretest": "npm run build",
     "test": "vitest run",
+    "pretest:coverage": "npm run build",
     "test:coverage": "vitest run --coverage",
-    "lint": "tsc --noEmit && tsc -p tsconfig.wallet-e2e.json --noEmit"
+    "lint": "tsc --noEmit && tsc -p tsconfig.wallet-e2e.json --noEmit",
+    "prepack": "npm run build"
   },
   "dependencies": {
     "viem": "^2.55.19"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.1",
     "@types/node": "^24.13.3",
     "@vitest/coverage-v8": "^5.0.0",
     "ethers": "^6.17.0",
@@ -56,10 +60,12 @@
   },
   "files": [
     "dist",
-    "README.md"
+    "src",
+    "README.md",
+    "LICENSE"
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/sigilkit/sigilkit.git"
+    "url": "git+https://github.com/dev25bansal-ops/sigilkit.git"
   }
 }

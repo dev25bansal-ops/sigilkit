@@ -35,6 +35,19 @@ data
 *.db-shm
 *.db-wal
 
+# Local assistant-tool configuration (SK-01): carries credential fields and is
+# never needed inside an image build context.
+.codebuddy/models.json
+
+# Root scratch and local-only documents. None of these are inputs to any COPY above;
+# `_*.txt` / `.tmp-*` at the root are throwaway audit scratch that can contain real failure
+# transcripts, and they should never reach a build context (or an image layer).
+/_*.txt
+/.tmp-*
+PROJECT-MAP.md
+FILE-MANIFEST.md
+outputs/
+
 # Docs and research that the runtime does not need
 vault
 *.pdf

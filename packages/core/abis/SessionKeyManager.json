@@ -55,6 +55,19 @@
   },
   {
     "type": "function",
+    "name": "adminSelectorDigest",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "digest",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "pure"
+  },
+  {
+    "type": "function",
     "name": "executeWithSessionKey",
     "inputs": [
       {
@@ -821,6 +834,17 @@
         "name": "selector",
         "type": "bytes4",
         "internalType": "bytes4"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "UnreadableWatchToken",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
       }
     ]
   },

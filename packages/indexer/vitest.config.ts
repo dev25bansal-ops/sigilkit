@@ -2,6 +2,10 @@ import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   test: {
+    // Scope discovery to the package's own tests. Without an `include`, vitest's default
+    // glob sweeps the repo-root `outputs/` scratch area (gitignored, where review agents and
+    // one-off probes land) and collection fails on files that are not part of this package.
+    include: ["test/**/*.test.ts"],
     coverage: {
       provider: "v8",
       include: ["src/**/*.ts"],

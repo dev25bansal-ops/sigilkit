@@ -9,8 +9,10 @@ body:
         Thanks for the report. Please fill this in as completely as you can — the fields
         below are the ones that usually decide whether a bug is reproducible.
 
-        **Do not report security vulnerabilities here.** See
-        [SECURITY.md](https://github.com/sigilkit/sigilkit/blob/master/SECURITY.md).
+        **Do not report security vulnerabilities here.** Use a private channel instead:
+        [SECURITY.md](https://github.com/dev25bansal-ops/sigilkit/blob/master/SECURITY.md)
+        or, while the repository is not yet publicly reachable, email dev25bansal@gmail.com.
+        See `.well-known/security.txt` for the full disclosure policy.
 
   - type: dropdown
     id: area

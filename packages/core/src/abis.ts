@@ -68,6 +68,10 @@ export const SIGILKIT_ERRORS_ABI = [
       { name: "balanceAfter", type: "uint256" },
       { name: "declared", type: "uint256" },
     ] },
+  // E11-S1: a watchlist entry's `balanceOf` was unreadable (reverted, or returned a
+  // non-canonical short payload), so the E11 delta check could not be evaluated and the
+  // execution is refused. Fail-CLOSED by design — see `_erc20BalanceOf`.
+  { type: "error", name: "UnreadableWatchToken", inputs: [{ name: "token", type: "address" }] },
   // SessionKey7579Module
   { type: "error", name: "AlreadyInitialized", inputs: [] },
   { type: "error", name: "NotInitialized", inputs: [] },

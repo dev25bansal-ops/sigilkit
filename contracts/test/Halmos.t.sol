@@ -164,10 +164,48 @@ contract HalmosTest is Test {
     // Merkle boundary behavior
     // ------------------------------------------------------------------
     /// @dev With an empty proof, verification reduces to identity: leaf == root.
+    ///
+    ///      That first assertion on its own is a PIN, not a discovery: it restates the
+    ///      library's empty-`proof.length` branch, so it can only fail if that branch is
+    ///      edited — it cannot tell us the branch is right. The pair below is what makes the
+    ///      spec falsifiable on its own terms, and it drives the LOOP in `verify` instead of
+    ///      short-circuiting past it.
+    ///
+    ///      Sound under Halmos: keccak is uninterpreted, so `foldedRoot` below is built with
+    ///      the SAME uninterpreted function on the SAME inputs `_hashPair` will use — exactly
+    ///      the technique `check_merkle_SingleLevel_ProofCompleteness` already relies on. No
+    ///      keccak-inequality claim is made: `leaf != foldedRoot` follows from keccak being
+    ///      injective over 32-byte words, which is a property of the encoding rather than of
+    ///      any particular hash value.
     function check_merkle_EmptyProof_IsIdentity(bytes32 leaf, bytes32 root) public pure {
         bytes32[] memory noProof = new bytes32[](0);
         bool result = MerkleWhitelist.verify(noProof, root, leaf);
         assertTrue(result == (leaf == root), "empty-proof verification must be identity");
+
+        // A root reachable ONLY by folding an element must be refused when no proof is
+        // supplied — so the empty branch really compares against `root` and does not
+        // return a constant. Fails on a `return true` or `return false` regression.
+        bytes32 foldedRoot = keccak256(abi.encodePacked(leaf, leaf));
+        // The third assertion below needs `foldedRoot != leaf`. A keccak fixpoint where
+        // `leaf == keccak256(leaf, leaf)` makes the empty proof LEGITIMATELY accept the
+        // foldable root (identity holds on it), so unguarded this assertion is unsound.
+        // Halmos found it as a live counterexample: leaf = 0x8000…00 hashes to itself
+        // against the uninterpreted function when paired as (leaf, leaf) through the
+        // sponge construction. Exclude that degenerate input, as the sibling
+        // check_merkle_SingleLevel_ProofCompleteness excludes leaf == sibling.
+        vm.assume(leaf != foldedRoot);
+        assertTrue(
+            !MerkleWhitelist.verify(noProof, foldedRoot, leaf),
+            "an empty proof must not accept a root that requires a fold"
+        );
+        // ...and the SAME root is accepted once the folding element is supplied, which is
+        // the only way this spec proves the loop body actually ran.
+        bytes32[] memory selfProof = new bytes32[](1);
+        selfProof[0] = leaf;
+        assertTrue(
+            MerkleWhitelist.verify(selfProof, foldedRoot, leaf),
+            "the folded root must be accepted once the element is supplied"
+        );
     }
 
     /// @dev A one-level proof recomputes the root exactly (sorted-pair hashing).

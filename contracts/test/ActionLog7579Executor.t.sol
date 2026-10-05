@@ -78,9 +78,34 @@ contract ActionLog7579ExecutorTest is Test {
         assertEq(executor.agentId(address(user)), AGENT_ID);
     }
 
-    function test_IsModuleType6() public view {
-        assertTrue(executor.isModuleType(6));
-        assertFalse(executor.isModuleType(1));
+    /// @dev D-04: this executor is ERC-7579 module type 2 (EXECUTOR). It was 6, which is
+    ///      not a valid id under any numbering convention — a conforming account would
+    ///      refuse to install it, so the 7579 path would emit no `ActionLogged` and the
+    ///      INV-3 audit guard would be silently absent. See `SECURITY.md` D-04.
+    ///
+    ///      The `assertFalse(isModuleType(1))` is load-bearing, not filler: the two SigilKit
+    ///      modules must occupy DIFFERENT ids, and type 1 is the validator that
+    ///      `SessionKey7579Module` claims. If the two ever collided, one account would
+    ///      satisfy both roles and a validator-only scope could be executed as a validator.
+    function test_IsModuleType_Executor() public view {
+        assertTrue(executor.isModuleType(2), "executor must claim ERC-7579 type 2 (EXECUTOR)");
+        assertFalse(executor.isModuleType(1), "executor must NOT claim type 1 (reserved for the validator)");
+        assertFalse(executor.isModuleType(3), "must not claim FALLBACK");
+        assertFalse(executor.isModuleType(4), "must not claim HOOK");
+    }
+
+    /// @dev Convention-independent guard. The specific literal is pinned by the test above;
+    ///      this one pins the PROPERTY that made the bug possible in the first place —
+    ///      that the value returned for "my type" is a member of the ERC-7579 id set.
+    ///      It holds under either the 1-indexed spec reading or a 0-indexed convention,
+    ///      so it keeps guarding the invariant even while the numbering question is open.
+    function test_IsModuleType_ReturnsAKnownErc7579Id() public view {
+        uint256[4] memory known = [uint256(1), 2, 3, 4];
+        bool matched = false;
+        for (uint256 i = 0; i < known.length; ++i) {
+            if (executor.isModuleType(known[i])) matched = true;
+        }
+        assertTrue(matched, "isModuleType must accept exactly one id from the ERC-7579 set {1,2,3,4}");
     }
 
     function test_Execute_ForwardsCall_EmitsActionLogged() public {

@@ -1,0 +1,48 @@
+{
+  "name": "@sigilkit/agent",
+  "version": "0.1.0",
+  "description": "Real agent runtime for SigilKit — pluggable decision brains that propose actions through an MCP client, with on-chain scope guardrails.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./stub-brain": {
+      "types": "./dist/brain/stub-brain.d.ts",
+      "default": "./dist/brain/stub-brain.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest run",
+    "pretest": "npm run build",
+    "test:coverage": "vitest run --coverage",
+    "lint": "tsc -p tsconfig.typecheck.json"
+  },
+  "dependencies": {
+    "@sigilkit/core": "^0.1.0",
+    "viem": "^2.55.19"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.3",
+    "@vitest/coverage-v8": "^5.0.0",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.0"
+  },
+  "private": false
+}

@@ -20,10 +20,16 @@ Node alone. It is required for `contracts/`, the demo agent, and the e2e smoke t
 ## 1. Install
 
 ```bash
-git clone https://github.com/sigilkit/sigilkit.git
+git clone https://github.com/dev25bansal-ops/sigilkit.git
 cd sigilkit
 npm run setup
 ```
+
+> **Audit note (2026-10-01):** the clone URL above was corrected in this documentation audit from the
+> `github.com/sigilkit/sigilkit` organisation URL, which `docs/COMPLIANCE-2026-09-26.md:26` (L-1) and
+> `docs/COMPLIANCE-2026-09-26.md:80` of this audit's own document set record as returning **HTTP 404
+> anonymously** and "NOT this repo". The replacement string is quoted verbatim from those two lines; it was
+> **not** re-verified against the live remote in this pass (no network access was made).
 
 `npm run setup` checks your Node version and Foundry, installs dependencies from the
 lockfile, and builds all four packages. It prints a summary of what it found and what to

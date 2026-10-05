@@ -150,12 +150,23 @@ describe("TS↔Solidity conformance", () => {
     expect(digest).not.toBe(otherChainDigest);
   });
 
-  it("merkle root is deterministic and leaf-shaped correctly", () => {
-    const leaf = targetLeaf("0x0000000000000000000000000000000000000009", "0x12345678");
-    const root1 = merkleRoot([leaf]);
-    const root2 = merkleRoot([leaf]);
+  it("merkle root is deterministic, order-independent and leaf-shaped correctly", () => {
+    // A one-leaf tree reduces `merkleRoot` to the identity function, so it asserted nothing
+    // about the pairing scheme. Three leaves exercise the first real sorted-pair level.
+    const leaves = [
+      targetLeaf("0x0000000000000000000000000000000000000009", "0x12345678"),
+      targetLeaf("0x000000000000000000000000000000000000000a", "0x12345678"),
+      targetLeaf("0x000000000000000000000000000000000000000b", "0x87654321"),
+    ];
+    const root1 = merkleRoot(leaves);
+    const root2 = merkleRoot(leaves);
     expect(root1).toBe(root2);
     expect(root1).toMatch(/^0x[0-9a-f]{64}$/);
+    // The level is sorted before pairing, so a permuted leaf set MUST give the same root —
+    // that is the property which lets an off-chain builder match the on-chain verifier.
+    expect(merkleRoot([leaves[2]!, leaves[0]!, leaves[1]!])).toBe(root1);
+    // And the builder is not the identity: a different leaf set must change the root.
+    expect(merkleRoot([leaves[0]!, leaves[1]!])).not.toBe(root1);
   });
 
   it("signActionRequest returns 65-byte signature", async () => {

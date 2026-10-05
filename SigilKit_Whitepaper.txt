@@ -1,4 +1,69 @@
-TECHNICAL WHITEPAPER · V2.0 · REVISED SCOPE
+================================================================================
+  *** SUPERSEDED DOCUMENT -- DO NOT CITE ***
+================================================================================
+
+  This file is the ORIGINAL v2.0 whitepaper (SigilKit Protocol Research, July
+  2026). It has been FULLY SUPERSEDED by:
+
+      docs/WHITEPAPER-v2.1.md   (current technical whitepaper, Sept 2026)
+
+  It is retained for historical reasons only. It contains claims that a later
+  verification sweep (Aug 2026, 8 streams against live sources: GitHub API, npm
+  registry, arXiv, DefiLlama, official program pages) showed to be FABRICATED,
+  FALSE, or STALE. Do not quote, cite, link to, or reproduce any part of this
+  document -- doing so will import known-false statements into your own work.
+
+  KNOWN-FALSE OR STALE CLAIMS IN THIS FILE INCLUDE (not exhaustive):
+
+    1. FABRICATED delegation address "0xcc...SecurityControl" cited for EIP-7702
+       threat material. No such contract address exists.
+    2. A quotation attributed to the IC3 survey that does not appear in the
+       paper.
+    3. viem discussion #3285 described as having "~25 upvotes". It has 0
+       reactions.
+    4. Optimism Mission Request #274 described as open for applications. Its
+       submission window closed in April 2025.
+    5. Free RPC endpoints base.llamarpc.com and blastapi.io presented as usable.
+       Both were dead as of Aug 2026.
+    6. Audit, Immunefi, Certora and UUPS-related claims that do not reflect any
+       real engagement, listing, or deployment.
+    7. Certora Prover formal verification of INV-1 through INV-4 as a
+       pre-mainnet release gate (845-853). No CVL specification, no Certora
+       config and no Certora run exists in this repository; the symbolic
+       verification actually present is Halmos (contracts/test/Halmos.t.sol).
+    8. "Both use the UUPS proxy pattern" (496). Contradicted by
+       SECURITY.md:46 -- the manager is immutable-by-design pre-mainnet and
+       has no proxy/UUPS upgrade path.
+    9. "All contract-layer components ... use the UUPS proxy pattern" (885),
+       and the 2-of-3 Gnosis Safe / TimelockController upgrade machinery
+       around it. Contradicted by SECURITY.md:46.
+   10. "an Immunefi bug bounty program is live" (472). Contradicted by
+       SECURITY.md:166 -- "There is no formal paid bounty program yet".
+   11. "Built on Solidity 0.8.24" (415, 494) and the sample pragma at 595.
+       foundry.toml:7 pins solc = "0.8.36".
+   12. The entire EIP-2535 Diamond component (418-421, 583-618), including
+       the named files Diamond.sol, DiamondStorage.sol, FacetCutLib.sol,
+       LoupeFacet.sol and DiamondHarness.t.sol. None of them exists;
+       contracts/src holds only ActionLog7579Executor.sol, ActionLogger.sol,
+       MerkleWhitelist.sol, SessionKey7579Module.sol, SessionKeyManager.sol,
+       SigilKitDelegator.sol and SpendPolicy.sol.
+   13. Tenderly, Dune and The Graph operational tooling (898-899). None of
+       the three is configured, deployed or referenced by any script.
+   14. Import paths @sigilkit/eip-7702, @sigilkit/rpc, @sigilkit/diamonds and
+       @sigilkit/sdk (558, 597-598, 633-634, 959). No such packages exist.
+       The shipped package is @sigilkit/core, whose API is
+       signAuthorization() and signRevocation() (packages/core/src/eip7702.ts).
+
+  FULL CORRECTION LIST (read this instead of anything below):
+
+      docs/WHITEPAPER-v2.1.md            <- authoritative corrections
+      vault/Whitepaper Corrections.md    <- per-claim evidence trail
+
+  Everything from the original title line onward is superseded content.
+
+================================================================================
+
+TECHNICAL WHITEPAPER Â· V2.0 Â· REVISED SCOPE
 
 SigilKit
 
@@ -21,10 +86,10 @@ and OpenZeppelin have each declined to build.
 
 Engineering Team
 
-SigilKit Protocol Research · July 2026
+SigilKit Protocol Research Â· July 2026
 
-          JULY 2026                     BASE · ETHEREUM · ARBITRUM
-SigilKit · Technical Whitepaper v2.0
+          JULY 2026                     BASE Â· ETHEREUM Â· ARBITRUM
+SigilKit Â· Technical Whitepaper v2.0
 
 Table of Contents
 
@@ -86,8 +151,8 @@ Table of Contents
 
 8.1 The Eight Testing Layers . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 21
 
-Z.ai Engineering · July 2026              Page 1
-SigilKit · Technical Whitepaper v2.0
+Z.ai Engineering Â· July 2026              Page 1
+SigilKit Â· Technical Whitepaper v2.0
 
 9. Deployment & Operations            23
 
@@ -109,8 +174,8 @@ Z.ai Engineering · July 2026              Page 1
 
 10.4 Grant and Funding Strategy . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 26
 
-Z.ai Engineering · July 2026          Page 2
-SigilKit · Technical Whitepaper v2.0
+Z.ai Engineering Â· July 2026          Page 2
+SigilKit Â· Technical Whitepaper v2.0
 
 1. Executive Summary
 
@@ -133,9 +198,9 @@ Z.ai Engineering · July 2026          Page 2
 
        KEY METRICS
 
-      4 components shipped as a unified toolkit · 3 of 4 address the literal most-upvoted open issues in the EVM
-      ecosystem · 1 addresses an academic gap (0 peer-reviewed papers exist) · 1 EF Mission Request directly
-      closed · 100% MIT-licensed, audited, with an Immunefi bug bounty
+      4 components shipped as a unified toolkit Â· 3 of 4 address the literal most-upvoted open issues in the EVM
+      ecosystem Â· 1 addresses an academic gap (0 peer-reviewed papers exist) Â· 1 EF Mission Request directly
+      closed Â· 100% MIT-licensed, audited, with an Immunefi bug bounty
 
  The four components are: (1) an EIP-7702 wallet library with a hardened signAuthorization() flow,
  revocation handling, and a cross-wallet conformance test harness that runs against viem, ethers, MetaMask,
@@ -154,8 +219,8 @@ Z.ai Engineering · July 2026          Page 2
  (474 stars) -- every one of which has had to roll its own wallet primitive because no canonical library exists.
  SigilKit is the canonical library.
 
-Z.ai Engineering · July 2026  Page 3
-SigilKit · Technical Whitepaper v2.0
+Z.ai Engineering Â· July 2026  Page 3
+SigilKit Â· Technical Whitepaper v2.0
 
        THESIS
 
@@ -164,8 +229,8 @@ Z.ai Engineering · July 2026  Page 3
       Coinbase Smart Wallet could import SigilKit and inherit four production-grade primitives for free. A new
       agent-wallet startup could build on top of SigilKit and skip six weeks of foundational integration work.
 
-Z.ai Engineering · July 2026                                                                                    Page 4
-SigilKit · Technical Whitepaper v2.0
+Z.ai Engineering Â· July 2026                                                                                    Page 4
+SigilKit Â· Technical Whitepaper v2.0
 
 2. Problem Statement & Market Context
 
@@ -214,8 +279,8 @@ Z.ai Engineering · July 2026                                                    
  The 2025-2026 GitHub trending list is unambiguous: agent-native on-chain primitives are the dominant
  new-repo wave. Sphere SDK (created January 2026, 5,400 stars) describes itself as "an SDK for autonomous
 
-Z.ai Engineering · July 2026  Page 5
-SigilKit · Technical Whitepaper v2.0
+Z.ai Engineering Â· July 2026  Page 5
+SigilKit Â· Technical Whitepaper v2.0
 
  economic agents -- gives an agent an identity, a wallet, and the ability to transact". Helix (created March 2026,
  823 stars) is "self-healing infrastructure for AI-agent payments". Sandboxed.sh (created December 2025, 474
@@ -262,8 +327,8 @@ onboarding
 Ecosystem licensing           Fragmented; some closed-source; some GPL Unified MIT, audited, Immunefi bounty
                               Table 2.1 -- Current state vs target state across the four component gaps.
 
-Z.ai Engineering · July 2026                                                                                    Page 6
-SigilKit · Technical Whitepaper v2.0
+Z.ai Engineering Â· July 2026                                                                                    Page 6
+SigilKit Â· Technical Whitepaper v2.0
 
 3. Evidence: Research & Gap Analysis
 
@@ -317,8 +382,8 @@ OpenZeppelin, Safe, the ERC-4337 reference implementation, and Pimlico packages 
 and comments -- revealed the most-engaged open issues in the ecosystem. Three of SigilKit's four
 components map directly to top-ten open issues. The fourth component (session keys) maps to a trending-repo
 
-Z.ai Engineering · July 2026                                                                                         Page 7
-SigilKit · Technical Whitepaper v2.0
+Z.ai Engineering Â· July 2026                                                                                         Page 7
+SigilKit Â· Technical Whitepaper v2.0
 
  signal rather than an open issue, because no canonical library exists for users to file issues against.
 
@@ -347,8 +412,8 @@ of the US-Mexico corridor). Nigeria's eNaira CBDC has 98.5% inactive wallets, wh
 adoption has reached $59 billion -- decentralized stablecoins appear to be winning over state CBDCs in
 emerging markets.
 
-Z.ai Engineering · July 2026                                                                              Page 8
-SigilKit · Technical Whitepaper v2.0
+Z.ai Engineering Â· July 2026                                                                              Page 8
+SigilKit Â· Technical Whitepaper v2.0
 
  The implication for SigilKit is that the toolkit must be globally relevant: it cannot assume US-only regulatory
  context, US-only RPC providers, or English-only documentation. The four components are universally needed.
@@ -357,8 +422,8 @@ Z.ai Engineering · July 2026                                                    
  same audited Diamond module. The toolkit's composability and open-source licensing are not just ethical
  choices -- they are functional requirements for global adoption.
 
-Z.ai Engineering · July 2026  Page 9
-SigilKit · Technical Whitepaper v2.0
+Z.ai Engineering Â· July 2026  Page 9
+SigilKit Â· Technical Whitepaper v2.0
 
 4. Solution Overview & Design Principles
 
@@ -391,8 +456,8 @@ Z.ai Engineering · July 2026  Page 9
  per call. Exports SessionKeyManager.sol, SpendPolicy.sol, ActionLogger.sol, grantSessionKey(), and
  rotateSessionKey(). Fills an academic gap with zero peer-reviewed precedent.
 
-Z.ai Engineering · July 2026  Page 10
-SigilKit · Technical Whitepaper v2.0
+Z.ai Engineering Â· July 2026  Page 10
+SigilKit Â· Technical Whitepaper v2.0
 
                                Figure 4.1 -- SigilKit four-component architecture with evidence annotations.
 
@@ -418,8 +483,8 @@ event containing the agent identifier, target contract, value transferred, a has
 block timestamp. This is not an optional log line; it is enforced in the contract. The result is that the entire
 history of an agent's on-chain actions is reconstructable from on-chain data alone.
 
-Z.ai Engineering · July 2026          Page 11
-SigilKit · Technical Whitepaper v2.0
+Z.ai Engineering Â· July 2026          Page 11
+SigilKit Â· Technical Whitepaper v2.0
 
  Conformance-tested Against Real Wallets. Component 1's conformance harness is not a unit test against an
  idealised wallet -- it is a CI job that exercises viem, ethers, MetaMask, and Coinbase Wallet against the same
@@ -437,8 +502,8 @@ Z.ai Engineering · July 2026          Page 11
  emerging-market developers. Documentation is English-first but the community is encouraged to contribute
  translations. No KYC, no geographic gating, no assumption of US banking rails.
 
-Z.ai Engineering · July 2026  Page 12
-SigilKit · Technical Whitepaper v2.0
+Z.ai Engineering Â· July 2026  Page 12
+SigilKit Â· Technical Whitepaper v2.0
 
 5. System Architecture
 
@@ -484,8 +549,8 @@ Z.ai Engineering · July 2026  Page 12
  paid (sponsored via paymaster), action ID, and signed audit proof. End-to-end latency on Base is typically
  under 1.2 seconds.
 
-Z.ai Engineering · July 2026  Page 13
-SigilKit · Technical Whitepaper v2.0
+Z.ai Engineering Â· July 2026  Page 13
+SigilKit Â· Technical Whitepaper v2.0
 
                      Figure 5.1 -- End-to-end sequence: agent transaction flowing through all four SigilKit components.
 
@@ -498,8 +563,8 @@ Z.ai Engineering · July 2026  Page 13
  coupling is deliberate: it allows adopters to mix and match, importing only the components they need without
  being forced into a monolithic stack.
 
-Z.ai Engineering · July 2026  Page 14
-SigilKit · Technical Whitepaper v2.0
+Z.ai Engineering Â· July 2026  Page 14
+SigilKit Â· Technical Whitepaper v2.0
 
 6. Component Specifications
 
@@ -549,8 +614,8 @@ Z.ai Engineering · July 2026  Page 14
  DiamondHarness.t.sol (the Echidna + Foundry property-test harness). The module ships as a Foundry library
  that can be imported via forge install.
 
-Z.ai Engineering · July 2026  Page 15
-SigilKit · Technical Whitepaper v2.0
+Z.ai Engineering Â· July 2026  Page 15
+SigilKit Â· Technical Whitepaper v2.0
 
        // SPDX-License-Identifier: MIT
        pragma solidity 0.8.24;
@@ -586,8 +651,8 @@ Z.ai Engineering · July 2026  Page 15
  endpoint becomes unresponsive. The WebSocket implementation reconnects automatically on close, with
  exponential backoff and jitter, closing the ethers.js #1053 bug that has been open for 5.8 years.
 
-Z.ai Engineering · July 2026  Page 16
-SigilKit · Technical Whitepaper v2.0
+Z.ai Engineering Â· July 2026  Page 16
+SigilKit Â· Technical Whitepaper v2.0
 
        // TypeScript API -- drop-in replacement for viem transports
        import { createPublicClient } from 'viem';
@@ -625,8 +690,8 @@ Z.ai Engineering · July 2026  Page 16
  selectors, maximum gas per call, maximum spend per call, and an expiry timestamp. The scope is enforced in
  the contract, not the SDK, so a compromised SDK cannot bypass it.
 
-Z.ai Engineering · July 2026  Page 17
-SigilKit · Technical Whitepaper v2.0
+Z.ai Engineering Â· July 2026  Page 17
+SigilKit Â· Technical Whitepaper v2.0
 
        struct SessionKey {
        address[] allowedTargets; // Whitelist; empty = allow all
@@ -650,14 +715,14 @@ Z.ai Engineering · July 2026  Page 17
 
  The SpendPolicy contract enforces per-action and per-window spend caps. The per-action cap is checked on
  every call: if the call's msg.value plus any internal transfers exceeds the cap, the call reverts. The per-window
- cap is checked against a rolling window: the policy stores a spentThisWindow counter and a windowStart
+ cap is checked against a fixed (tumbling) window: the policy stores a spentThisWindow counter and a windowStart
  timestamp, with automatic window rollover. The ActionLogger contract emits an ActionLogged event
  unconditionally after every successful call -- there is no execution path that produces a state change without a
  corresponding audit event. This is the structural guarantee that makes agent actions reconstructable from
  on-chain data alone.
 
-Z.ai Engineering · July 2026  Page 18
-SigilKit · Technical Whitepaper v2.0
+Z.ai Engineering Â· July 2026  Page 18
+SigilKit Â· Technical Whitepaper v2.0
 
 7. Security Architecture & Threat Model
 
@@ -709,8 +774,8 @@ Privilege          (upgrade, revoke, withdraw-all).                the stored ow
 
 7.2 Agent-Specific Attack Vectors
 
-Z.ai Engineering · July 2026                                                                               Page 19
-SigilKit · Technical Whitepaper v2.0
+Z.ai Engineering Â· July 2026                                                                               Page 19
+SigilKit Â· Technical Whitepaper v2.0
 
  Beyond the standard STRIDE categories, agent-controlled wallets face three attack vectors that have no
  analogue in human-user wallets. Prompt injection is the most discussed: an attacker embeds instructions in
@@ -750,8 +815,8 @@ Z.ai Engineering · July 2026                                                    
       INV-4: Owner-only functions cannot be invoked through executeWithSessionKey regardless of session-key
       scope.
 
-Z.ai Engineering · July 2026  Page 20
-SigilKit · Technical Whitepaper v2.0
+Z.ai Engineering Â· July 2026  Page 20
+SigilKit Â· Technical Whitepaper v2.0
 
 8. Testing & Quality Assurance Strategy
 
@@ -800,8 +865,8 @@ Z.ai Engineering · July 2026  Page 20
  Coinbase Wallet (via Anvil fork). Asserts byte-for-byte identical behaviour across all four wallets. Catches
  wallet-side regressions before users do.
 
-Z.ai Engineering · July 2026  Page 21
-SigilKit · Technical Whitepaper v2.0
+Z.ai Engineering Â· July 2026  Page 21
+SigilKit Â· Technical Whitepaper v2.0
 
  Formal verification (Certora, pre-mainnet gate). Beyond the eight runtime testing layers, the most critical
  invariants -- specifically the four security invariants listed in Chapter 7 (INV-1 through INV-4) -- are
@@ -815,8 +880,8 @@ Z.ai Engineering · July 2026  Page 21
 
                               Figure 8.1 -- CI/CD pipeline with eight testing stages and mainnet launch gates.
 
-Z.ai Engineering · July 2026                                                                                    Page 22
-SigilKit · Technical Whitepaper v2.0
+Z.ai Engineering Â· July 2026                                                                                    Page 22
+SigilKit Â· Technical Whitepaper v2.0
 
 9. Deployment & Operations
 
@@ -864,8 +929,8 @@ Z.ai Engineering · July 2026                                                    
 
  9.4 Deployment Runbook
 
-Z.ai Engineering · July 2026  Page 23
-SigilKit · Technical Whitepaper v2.0
+Z.ai Engineering Â· July 2026  Page 23
+SigilKit Â· Technical Whitepaper v2.0
 
 The runbook below documents the step-by-step procedure for a mainnet deployment of the contract-layer
 components. Each step has a responsible party, an expected output, and a rollback plan. The runbook is
@@ -903,8 +968,8 @@ ep
 
                                       Table 9.1 -- Mainnet deployment runbook with rollback plans.
 
-Z.ai Engineering · July 2026                                                                                           Page 24
-SigilKit · Technical Whitepaper v2.0
+Z.ai Engineering Â· July 2026                                                                                           Page 24
+SigilKit Â· Technical Whitepaper v2.0
 
 10. Roadmap & Milestones
 
@@ -953,8 +1018,8 @@ Z.ai Engineering · July 2026                                                    
  rewards, Base mainnet deployment live and stable for 7 days, and at least one external dApp (Sphere SDK,
  Helix, or Sandboxed.sh) integrated with SigilKit in production.
 
-Z.ai Engineering · July 2026  Page 25
-SigilKit · Technical Whitepaper v2.0
+Z.ai Engineering Â· July 2026  Page 25
+SigilKit Â· Technical Whitepaper v2.0
 
 Week-by-week breakdown: Week 9 -- submit contracts to external auditor (Spearbit or Code4rena
 competitive audit), open Immunefi bug bounty scope. Week 10 -- receive audit report, remediate findings,
@@ -996,5 +1061,5 @@ path is the external audit in Horizon 3 -- audit firms typically have 4-8 week b
 engagement should be booked at the start of Horizon 2 to ensure the audit slot is available when Horizon 3
 begins. If the audit slips, the mainnet deployment slips; there is no path to mainnet that bypasses the audit gate.
 
-Z.ai Engineering · July 2026                                                                                  Page 26
+Z.ai Engineering Â· July 2026                                                                                  Page 26
 

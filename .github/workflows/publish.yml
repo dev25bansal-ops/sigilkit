@@ -8,38 +8,85 @@ concurrency:
   group: publish-${{ github.ref }}
   cancel-in-progress: false
 
-# `--provenance` needs an OIDC token; contents:read is the minimum for checkout.
 permissions:
   contents: read
-  id-token: write
 
 env:
   FOUNDRY_VERSION: "v1.7.1"
+  FOUNDRY_PROFILE: ci
 
 jobs:
-  publish:
-    name: Publish packages (tag-gated)
+  # Required evidence is produced in this tag run, never borrowed from branch CI.
+  # RPC forks, wallet E2E, Echidna and the nightly toolchain canary are not release gates.
+  assurance:
+    name: Required assurance for publishing commit
     runs-on: ubuntu-latest
-    environment: npm
+    outputs:
+      sha: ${{ steps.identity.outputs.sha }}
     steps:
-      - uses: actions/checkout@v4
-        with: { submodules: recursive }
-      - uses: foundry-rs/foundry-toolchain@v1
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with: { ref: "${{ github.sha }}", submodules: recursive, fetch-depth: 0 }
+      - name: Validate release identity
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFileSync } from 'node:fs';
+          const tag = process.env.GITHUB_REF_NAME;
+          if (process.env.GITHUB_REF_TYPE !== 'tag' || !/^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(tag ?? '')) {
+            throw new Error('Release requires a v-prefixed package version tag');
+          }
+          for (const p of ['core', 'indexer', 'mcp']) {
+            const manifest = JSON.parse(readFileSync(`packages/${p}/package.json`, 'utf8'));
+            if (manifest.private || `v${manifest.version}` !== tag) {
+              throw new Error(`Tag/version mismatch for ${p}: ${tag} versus ${manifest.version}`);
+            }
+          }
+          NODE
+      - name: Bind checkout to triggering commit
+        run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+      - uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1.9.1
         with: { version: "${{ env.FOUNDRY_VERSION }}" }
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with: { node-version: "24", cache: npm, registry-url: "https://registry.npmjs.org" }
       - run: npm ci
 
-      # ---- full gate: nothing ships unless the whole repo is green for THIS tag ----
-      - name: Validate workflows and documented counts
+      - name: Full local gate (build before dependent typechecks)
+        run: npm run verify
+      - name: Required deep fuzz and invariants
+        env:
+          FOUNDRY_PROFILE: deep
+        run: forge test --no-match-contract '.*Fork'
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with: { python-version: "3.12" }
+      - name: Install required security tools
+        run: pip install slither-analyzer==0.11.6 halmos==0.3.3
+      - name: Required Slither analysis
+        run: slither contracts/src --fail-high
+      - name: Required Halmos verification
+        env:
+          HALMOS_ALLOW_DOWNLOAD: "1"
+        run: halmos --match-contract Halmos
+      - name: Install and run required secret scan
         run: |
-          node scripts/validate-workflows.mjs
-          node scripts/check-doc-counts.mjs
-      - run: forge test --no-match-contract '.*Invariant|.*Fork'
-      - run: forge test --match-contract '.*Invariant'
-      - run: npm run lint --workspaces
-      - run: npm run build --workspaces
-      - run: npm test --workspaces --if-present
+          set -euo pipefail
+          # The installer prints the absolute path of the verified binary (it installs into
+          # $RUNNER_TEMP, not the repo root, so the ~40MB blob never enters the worktree).
+          gitleaks_bin="$(bash scripts/install-gitleaks.sh)"
+          "$gitleaks_bin" detect --config .gitleaks.toml --redact --no-banner
+      - name: Required workspace coverage thresholds
+        # `--if-present` is load-bearing, not defensive: without it, any workspace lacking a
+        # `test:coverage` script aborts the whole release before a byte is published. That
+        # is exactly how `packages/agent` (added 2026-10-04, no script at the time) turned
+        # this workflow red. Every workspace now HAS the script; the flag keeps a future
+        # workspace from re-breaking the release the same way.
+        run: npm run test:coverage --workspaces --if-present
+      - name: Required ABI drift check
+        run: |
+          while IFS= read -r c; do
+            c="${c%%#*}"; c="$(echo "$c" | tr -d '[:space:]')"
+            [ -z "$c" ] && continue
+            forge inspect "contracts/src/$c.sol:$c" abi --json > "packages/core/abis/$c.json"
+          done < scripts/abi-targets.txt
+          git diff --exit-code packages/core/abis
 
       # TD-4/TD-10: the whitepaper's prose counts are what an auditor or grant reviewer
       # reads, and they cannot be derived without running the suites — so verify them here,
@@ -57,6 +104,38 @@ jobs:
             npm pack --dry-run --workspace "@sigilkit/$p"
             echo "::endgroup::"
           done
+
+      - name: Record successfully tested commit
+        id: identity
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          echo "sha=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+
+  publish:
+    name: Publish assured commit
+    needs: assurance
+    if: ${{ needs.assurance.result == 'success' && needs.assurance.outputs.sha == github.sha }}
+    runs-on: ubuntu-latest
+    environment: npm
+    # Overrides the top-level block to add OIDC (`npm publish --provenance` attests the
+    # build to the registry and needs an OIDC token). Scoped to this job only — the
+    # assurance job above runs the full gate and needs nothing beyond contents: read.
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with: { ref: "${{ github.sha }}", submodules: recursive }
+      - name: Verify checkout matches assurance
+        env:
+          ASSURED_SHA: ${{ needs.assurance.outputs.sha }}
+        run: |
+          test "$ASSURED_SHA" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD)" = "$ASSURED_SHA"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with: { node-version: "24", cache: npm, registry-url: "https://registry.npmjs.org" }
+      - run: npm ci
+      - run: npm run build
 
       # Preflight: a package name can already exist on the registry without belonging to us.
       # `@sigilkit/core` is exactly that case — it is published by a different project, so
@@ -77,8 +156,15 @@ jobs:
               continue
             fi
             owners="$(npm view "$pkg" maintainers --json 2>/dev/null | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{try{console.log(JSON.parse(s).map(m=>m.name).join(' '))}catch{console.log('')}})")"
+            # An existing package whose maintainers cannot be read is UNRESOLVED ownership,
+            # not resolved ownership. Continuing here published under a scope we had not proven
+            # we own, on the strength of a JSON parse failure — the guard passing on exactly
+            # the condition it exists to catch. npm failing mid-publish is a loud, recoverable
+            # E403; shipping someone else's name is not.
             if [ -z "$owners" ]; then
-              echo "warn     $pkg exists but its maintainers could not be read"
+              echo "::error title=Unresolved ownership::$pkg exists on npm but its maintainers could not be read"
+              echo "::error::Publishing as '$me' would be an unverified claim on the scope. Re-run with a token that can read $pkg, or confirm ownership manually, then publish."
+              status=1
               continue
             fi
             case " $owners " in

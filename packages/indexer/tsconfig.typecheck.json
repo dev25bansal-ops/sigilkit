@@ -1,0 +1,16 @@
+{
+  // Typecheck-only config: includes the test suite so `npm run lint` can see it.
+  //
+  // WHY THIS EXISTS — the build tsconfig sets `rootDir: "src"` and emits `dist/`, so test
+  // files cannot simply be added to its `include` (their emitted paths would fall outside
+  // rootDir). Until this config was added, `tsc --noEmit` typechecked only `src`, and the
+  // five real type errors in `test/` shipped unnoticed — Vitest's esbuild transform strips
+  // types without checking them, so the suite still ran green.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": ".",
+    "declaration": false
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts"]
+}

@@ -26,7 +26,7 @@ pnpm workspace + Foundry lib as sibling package. `forge install sigilkit/contrac
 | 1 | Foundry unit | `forge-test-unit` | PR |
 | 2 | Foundry fuzz (256 runs) | `forge-test-fuzz` | PR |
 | 3 | Foundry invariant | `forge-test-invariant` | PR |
-| 4 | Slither 6.2.4 | `slither` | PR (fail high) |
+| 4 | Slither 0.11.6 | `slither` | PR (fail high) |
 | 5 | Echidna nightly | `echidna-nightly` | nightly |
 | 6 | Base fork | `foundry-fork-base` | nightly |
 | 7 | 7702 conformance | `conformance-harness` | PR (post API-pin) |

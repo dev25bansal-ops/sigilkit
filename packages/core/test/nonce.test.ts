@@ -58,6 +58,35 @@ describe("NonceGate", () => {
     await expect(gate.run(KEY_A, async () => "ok")).resolves.toBe("ok");
   });
 
+  it("serializes equivalent address casing without retaining completed queues", async () => {
+    const gate = new NonceGate();
+    let finish!: () => void;
+    const held = new Promise<void>((resolve) => { finish = resolve; });
+    const order: string[] = [];
+    const first = gate.run(KEY_A, async () => {
+      order.push("first");
+      await held;
+      order.push("finished");
+    });
+    const second = gate.run("0x00000000000000000000000000000000000000AA", async () => {
+      order.push("second");
+    });
+    await Promise.resolve();
+    expect(order).toEqual(["first"]);
+    finish();
+    await Promise.all([first, second]);
+    expect(order).toEqual(["first", "finished", "second"]);
+    expect(gate["chains"].size).toBe(0);
+  });
+
+  it("removes completed queues after failures", async () => {
+    const gate = new NonceGate();
+    await expect(gate.run(KEY_A, async () => { throw new Error("synthetic failure"); })).rejects.toThrow("synthetic failure");
+    expect(gate["chains"].size).toBe(0);
+    await expect(gate.run(KEY_A, async () => "retry")).resolves.toBe("retry");
+    expect(gate["chains"].size).toBe(0);
+  });
+
   it("propagates the wrapped result value", async () => {
     const gate = new NonceGate();
     const result = await gate.run(KEY_A, async () => ({ audited: true }));
@@ -65,7 +94,108 @@ describe("NonceGate", () => {
   });
 });
 
-import { InMemoryLeaseStore } from "../src/index.js";
+import { InMemoryLeaseStore, type ExecutionGuard, type LeaseStore } from "../src/index.js";
+import { afterEach, vi } from "vitest";
+
+afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
+
+describe("owned run lifecycle", () => {
+  it("renews slow work and invalidates its context without leaking timers", async () => {
+    vi.useFakeTimers();
+    const store = new InMemoryLeaseStore();
+    const renew = vi.spyOn(store, "renew");
+    const gate = new NonceGate(store, { ttlMs: 100 });
+    let context!: ExecutionGuard;
+    let finish!: () => void;
+    const body = new Promise<void>((resolve) => { finish = resolve; });
+    const run = gate.run(KEY_A, async (guard) => { context = guard; await body; return 7; });
+    await vi.advanceTimersByTimeAsync(350);
+    expect(renew).toHaveBeenCalledTimes(7);
+    expect(store.acquire(KEY_A, 100)).toBeNull();
+    await context.assertCurrent();
+    finish();
+    expect(await run).toBe(7);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(context.signal.aborted).toBe(true);
+    await expect(context.assertCurrent()).rejects.toThrow("finished");
+    expect(store.acquire(KEY_A, 100)).not.toBeNull();
+  });
+
+  it.each([false, "throw"])("cooperatively aborts on renewal failure %s without releasing a running body", async (mode) => {
+    vi.useFakeTimers();
+    const store = new InMemoryLeaseStore();
+    vi.spyOn(store, "renew").mockImplementation(() => {
+      if (mode === "throw") throw new Error("synthetic I/O");
+      return false;
+    });
+    const release = vi.spyOn(store, "release");
+    const gate = new NonceGate(store, { ttlMs: 100 });
+    let context!: ExecutionGuard;
+    let finish!: () => void;
+    const body = new Promise<void>((resolve) => { finish = resolve; });
+    const run = gate.run(KEY_A, async (guard) => { context = guard; await body; });
+    const result = expect(run).rejects.toThrow("superseded");
+    await vi.advanceTimersByTimeAsync(50);
+    expect(context.signal.aborted).toBe(true);
+    await expect(context.assertCurrent()).rejects.toThrow("superseded");
+    expect(release).not.toHaveBeenCalled();
+    finish();
+    await result;
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("joins a pending renewal before release and never overlaps renewals", async () => {
+    vi.useFakeTimers();
+    const store = new InMemoryLeaseStore();
+    let renewed!: (value: boolean) => void;
+    const renewal = new Promise<boolean>((resolve) => { renewed = resolve; });
+    const renew = vi.fn(() => renewal);
+    const release = vi.spyOn(store, "release");
+    const adapter: LeaseStore = {
+      version: 2, acquire: store.acquire.bind(store), renew,
+      isCurrent: store.isCurrent.bind(store), release: store.release.bind(store),
+    };
+    let finish!: () => void;
+    const body = new Promise<void>((resolve) => { finish = resolve; });
+    const run = new NonceGate(adapter, { ttlMs: 1000 }).run(KEY_A, async () => { await body; });
+    await vi.advanceTimersByTimeAsync(600);
+    finish();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(release).not.toHaveBeenCalled();
+    expect(renew).toHaveBeenCalledTimes(1);
+    renewed(true);
+    await run;
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("rejects legacy, partial, and malformed adapters before callback invocation", async () => {
+    expect(() => new NonceGate({ acquire: () => true, release: () => undefined } as unknown as LeaseStore)).toThrow("v2");
+    expect(() => new NonceGate({ version: 2 } as LeaseStore)).toThrow("v2");
+    const base = new InMemoryLeaseStore();
+    const callback = vi.fn();
+    vi.spyOn(base, "acquire").mockReturnValue(true as unknown as ReturnType<InMemoryLeaseStore["acquire"]>);
+    await expect(new NonceGate(base).run(KEY_A, callback)).rejects.toThrow("invalid v2 lease token");
+    expect(callback).not.toHaveBeenCalled();
+  });
+
+  it.each(["acquire", "release"] as const)("reports %s errors without poisoning the queue", async (method) => {
+    const store = new InMemoryLeaseStore();
+    const gate = new NonceGate(store);
+    const original = store[method].bind(store);
+    if (method === "acquire") {
+      vi.spyOn(store, "acquire").mockImplementationOnce(() => { throw new Error("synthetic I/O"); });
+    } else {
+      vi.spyOn(store, "release").mockImplementationOnce((token) => {
+        (original as InMemoryLeaseStore["release"])(token);
+        throw new Error("synthetic I/O");
+      });
+    }
+    await expect(gate.run(KEY_A, async () => 1)).rejects.toThrow("synthetic I/O");
+    await expect(gate.run(KEY_A, async () => 2)).resolves.toBe(2);
+  });
+});
 
 describe("NonceGate with a LeaseStore (E18: cross-worker coordination seam)", () => {
   it("rejects a run when another worker holds the lease", async () => {
@@ -83,8 +213,8 @@ describe("NonceGate with a LeaseStore (E18: cross-worker coordination seam)", ()
 
   it("expired leases free the key (TTL safety net)", async () => {
     const store = new InMemoryLeaseStore();
-    expect(store.acquire(KEY_A, 10)).toBe(true);
+    expect(store.acquire(KEY_A, 10)).not.toBeNull();
     await new Promise((r) => setTimeout(r, 15));
-    expect(store.acquire(KEY_A, 10)).toBe(true); // expired → acquirable again
+    expect(store.acquire(KEY_A, 10)).not.toBeNull(); // expired → acquirable again
   });
 });

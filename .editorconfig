@@ -13,6 +13,9 @@ indent_size = 2
 
 [*.sol]
 indent_size = 4
+# NOT part of the EditorConfig core spec — a Checkstyle / editorconfig-checker extension.
+# Editors that only implement the core spec silently ignore this line, so it is a lint hint,
+# not an enforced limit. The Solidity line-length rule is enforced by the toolchain, not here.
 max_line_length = 120
 
 [*.{json,yml,yaml,md}]
