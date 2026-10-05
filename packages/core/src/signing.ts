@@ -870,6 +870,25 @@ export function validateAgainstScope(args: ValidateAgainstScopeArgs): SigilKitCh
         reason: `merkle proof too long (${args.merkleProof.length} > ${MAX_MERKLE_PROOF_ELEMENTS} elements, on-chain MAX_SINGLE_PROOF_ELEMENTS)`,
       };
     }
+    // Element-shape check, BEFORE the walk below. `sortedPairHash` calls `.toLowerCase()`
+    // on both operands, so a non-string element (a number or null arriving from JSON) threw
+    // a TypeError straight out of this function — which its own docblock promises never to
+    // do: "Never throws: every rejection comes back as `{ ok: false, reason }`, so a caller
+    // can branch without a try/catch." A caller following that contract got an exception
+    // instead of a policy decision.
+    //
+    // Odd-length and non-hex strings do NOT throw — `keccak256` accepts them and the
+    // resulting root simply fails to match — so only the type check is load-bearing here.
+    // It is a check and not a coercion: silently stringifying a number would be inventing a
+    // proof element the caller never supplied.
+    for (let i = 0; i < args.merkleProof.length; i++) {
+      if (typeof args.merkleProof[i] !== "string") {
+        return {
+          ok: false,
+          reason: `merkle proof element ${i} is not a hex string (got ${typeof args.merkleProof[i]})`,
+        };
+      }
+    }
     const leafMatches = (leaf: Hash): boolean => {
       let node = leaf;
       for (let i = 0; i < args.merkleProof!.length; i++) {

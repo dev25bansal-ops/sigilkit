@@ -248,6 +248,61 @@ describe("PERF-11 · Merkle builders are bounded", () => {
   });
 });
 
+describe("validateAgainstScope never throws, as its docblock promises", () => {
+  // The docblock states it plainly: "Never throws: every rejection comes back as
+  // `{ ok: false, reason }`, so a caller can branch without a try/catch." A non-string
+  // merkleProof element arriving from JSON made `sortedPairHash` call `.toLowerCase()` on a
+  // number or null, and the TypeError propagated straight out — so a caller following the
+  // documented contract got an exception instead of a policy decision.
+  const now = Math.floor(Date.now() / 1000);
+  const request = {
+    agentId: ("0x" + "22".repeat(32)) as Hash,
+    target: ("0x" + "33".repeat(20)) as Address,
+    selector: "0xdeadbeef" as Hex,
+    value: 0n, nonce: 0n, expiry: now + 600,
+    rationaleHash: ("0x" + "44".repeat(32)) as Hash,
+    data: "0x" as Hex,
+  };
+  // A REAL two-leaf tree, so the walk actually reaches every element rather than
+  // short-circuiting on a root mismatch.
+  const leaf = targetLeaf(request.target, request.selector);
+  const sibling = ("0x" + "ee".repeat(32)) as Hash;
+  const scope: Scope = {
+    expiresAt: now + 3600, windowSeconds: 600, perActionCap: 1000n, perWindowCap: 1000n,
+    merkleRoot: merkleRoot([leaf, sibling]), countersignAbove: 0n,
+    enforceNativeDelta: false, tokenWatchlist: [],
+  };
+  const good = merkleProof([leaf, sibling], leaf);
+
+  it("still accepts a valid proof", () => {
+    expect(validateAgainstScope({ request, scope, merkleProof: good }).ok).toBe(true);
+  });
+
+  it("returns ok:false — never throws — for a non-string proof element", () => {
+    for (const bad of [[7], [null], [undefined], [{}], [1n], [true]]) {
+      const result = validateAgainstScope({
+        request, scope, merkleProof: bad as unknown as Hex[],
+      });
+      // String(), not JSON.stringify(): one of the cases is a BigInt, and JSON.stringify
+      // throws on BigInt — which would fail the test for the wrong reason.
+      expect(result.ok, String(bad)).toBe(false);
+      expect(result.ok === false && result.reason).toMatch(/merkle proof element 0 is not a hex string/);
+    }
+  });
+
+  it("names the offending index, not just the fact", () => {
+    const result = validateAgainstScope({
+      request, scope, merkleProof: [good[0]!, 5] as unknown as Hex[],
+    });
+    expect(result.ok === false && result.reason).toMatch(/element 1/);
+  });
+
+  it("does not throw when the proof itself is absent or empty", () => {
+    expect(validateAgainstScope({ request, scope }).ok).toBe(false);
+    expect(validateAgainstScope({ request, scope, merkleProof: [] }).ok).toBe(false);
+  });
+});
+
 describe("SEC-13 · calldata is bounded at the parse boundary", () => {
   // `data` was the only unbounded field on ActionRequest, and `actionRequestDigest` keccaks
   // the whole payload. Measured on this toolchain, 512 KB hashed in ~30 ms and 1 MB in

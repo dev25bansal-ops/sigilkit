@@ -33,7 +33,17 @@ export default defineConfig({
     // the manual gates — invoke the underlying runner directly instead:
     // `cd packages/core/test/wallet-e2e && npx tsx run-all.ts` (the same command the
     // weekly wallet-conformance CI job runs).
-    exclude: ["node_modules/**", "test/wallet-e2e/**", "test/wallet-e2e.manual.test.ts"],
+    // `outputs/**` is excluded because it is the repo's gitignored scratch area — review
+    // agents and one-off probes drop `*.test.ts` there. Without this, vitest's default
+    // glob sweeps those in and the package suite fails to even collect ("FAIL
+    // outputs/repro.test.ts [ ... ]"), which reads as a broken repo rather than a stray
+    // scratch file. `outputs/` holds nothing tracked (verified with `git ls-files outputs`).
+    exclude: [
+      "node_modules/**",
+      "outputs/**",
+      "test/wallet-e2e/**",
+      "test/wallet-e2e.manual.test.ts",
+    ],
     coverage: {
       provider: "v8",
       include: ["src/**/*.ts"],
