@@ -213,7 +213,12 @@ export class McpAgentRunner {
 
   private validateAgainstGuardrails(proposal: ActionRequest): { ok: boolean; reason?: string } {
     const nowSec = Math.floor(Date.now() / 1000);
-    if (proposal.expiry <= nowSec) {
+    // `<`, not `<=`. The package header promises identical acceptance/rejection to core,
+    // and both core (signing.ts, RequestExpired mirror) and the contract check
+    // `block.timestamp > request.expiry` — a request is valid THROUGH its expiry second.
+    // Using `<=` rejected a request one second early and diverges from every other
+    // authority in the stack; core's own docblock labels this exact boundary pair BUG-3.
+    if (proposal.expiry < nowSec) {
       return { ok: false, reason: "proposal expired" };
     }
     if (proposal.value > this.config.scope.perActionCap) {

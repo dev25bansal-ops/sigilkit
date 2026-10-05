@@ -167,7 +167,12 @@ export interface SigilIndexerOptions {
    * enough for Base-class finality assumptions; raise it for chains with deeper reorgs.
    */
   confirmations?: number;
-  /** Maximum block span per `eth_getLogs` call (PERF-5). Default 2_000. */
+  /**
+   * Maximum block span per `eth_getLogs` call (PERF-5). Default 2_000.
+   *
+   * Clamped to a minimum of 1 at the constructor — see the note there. A span of 0 or
+   * negative made the chunking loop never advance its cursor.
+   */
   maxBlockRange?: number;
   /** Base backoff in ms for a failed poll; doubles per attempt (ARCH-3). Default 1_000. */
   backoffMs?: number;
@@ -448,7 +453,15 @@ export class SigilIndexer {
     this.chainId = chainId;
     this.readOnly = options.readOnly === true;
     this.confirmations = options.confirmations ?? DEFAULT_OPTIONS.confirmations;
-    this.maxBlockRange = options.maxBlockRange ?? DEFAULT_OPTIONS.maxBlockRange;
+    // Guard at the LIBRARY boundary, not only in the CLI. `fetchLogsChunked` computes
+    // `end = cursor + span - 1` and `cursor = end + 1`, so a span of 0 or negative never
+    // advances the cursor and the while loop spins forever — reproduced arithmetically for
+    // span 0, -1 and -2000. The CLI validates with `args.int('--max-range', {min:1})`, but
+    // the constructor is public API and had no such floor.
+    this.maxBlockRange =
+      options.maxBlockRange === undefined
+        ? DEFAULT_OPTIONS.maxBlockRange
+        : Math.max(1, options.maxBlockRange);
     this.backoffMs = options.backoffMs ?? DEFAULT_OPTIONS.backoffMs;
     this.maxRetries = options.maxRetries ?? DEFAULT_OPTIONS.maxRetries;
     this.log = options.logger ?? createLogger({ scope: "indexer" });

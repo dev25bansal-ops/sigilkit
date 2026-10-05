@@ -125,6 +125,25 @@ prefix). An indexer can always distinguish "no real selector" from a real `0x000
 short payloads no longer collapse onto one another. Calls with 4+ bytes are audited with their
 true selector, unchanged.
 
+### Session keys can perturb the account's audit identity (documented, reviewed 2026-10-06)
+
+Under an allow-all scope (`merkleRoot == 0` — the documented dangerous configuration), a session
+key can make the ACCOUNT call `setAgentId` or `onUninstall` on its own executor, via ordinary
+7579 execution routing. Both are `msg.sender == account` operations, so the account executes
+them. This is not an authority breach — an allow-all scope means the key can already spend and
+call — but it does perturb attribution: the audit trail can be relabelled or unbound by the same
+key the scope was meant to bound. Consequences are exactly the ones this section already names:
+identity must be pinned at install and later `AgentBound` events are governance-relevant.
+
+This is deliberately NOT "fixed" by excluding the executor's address in
+`SessionKey7579Module`, because the module cannot know which executor the account will install —
+hardcoding a coupling between the validator and a specific executor implementation would break
+the module boundary that is the point of ERC-7579. The catalogued mitigation
+(`isValidatorInstalled` pre-check inside the executor) closes the unauthenticated-install path,
+not the session-key path. Operators using allow-all scopes must treat audit identity as
+modifiable by the key; operators that need tamper-proof attribution must pin the binding at
+install time and use a tight Merkle root that excludes the executor.
+
 ## EIP-7702 delegator: the implementation address must stay inert
 
 `SigilKitDelegator` is deployed **once per chain** as the canonical delegation target. Its

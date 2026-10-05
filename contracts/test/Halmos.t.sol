@@ -186,6 +186,14 @@ contract HalmosTest is Test {
         // supplied — so the empty branch really compares against `root` and does not
         // return a constant. Fails on a `return true` or `return false` regression.
         bytes32 foldedRoot = keccak256(abi.encodePacked(leaf, leaf));
+        // The third assertion below needs `foldedRoot != leaf`. A keccak fixpoint where
+        // `leaf == keccak256(leaf, leaf)` makes the empty proof LEGITIMATELY accept the
+        // foldable root (identity holds on it), so unguarded this assertion is unsound.
+        // Halmos found it as a live counterexample: leaf = 0x8000…00 hashes to itself
+        // against the uninterpreted function when paired as (leaf, leaf) through the
+        // sponge construction. Exclude that degenerate input, as the sibling
+        // check_merkle_SingleLevel_ProofCompleteness excludes leaf == sibling.
+        vm.assume(leaf != foldedRoot);
         assertTrue(
             !MerkleWhitelist.verify(noProof, foldedRoot, leaf),
             "an empty proof must not accept a root that requires a fold"

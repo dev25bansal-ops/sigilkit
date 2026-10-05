@@ -144,6 +144,17 @@ describe("McpAgentRunner — guardrails reject before any signature", () => {
     expect(result).toEqual({ executed: false, reason: "guardrail-rejected" });
   });
 
+  it("accepts a proposal valid THROUGH its expiry second (BUG-3 boundary)", async () => {
+    // The contract checks `block.timestamp > request.expiry`, and core mirrors it with `<`.
+    // This guardrail used `<=`, rejecting a proposal one second before anyone else would
+    // — the exact off-by-one core labels BUG-3. A proposal whose expiry equals the current
+    // second must pass the guardrail; the no-relayer dry-run path returns executed:true
+    // with a prepared payload, which is the observable proof the boundary held.
+    const runner = makeRunner(fixedBrain(proposal({ expiry: Math.floor(Date.now() / 1000) })));
+    const result = await runner.tick();
+    expect(result.executed).toBe(true);
+  });
+
   it("rejects when merkleRoot is non-zero but no leaves were supplied", async () => {
     // A non-zero root with no leaf set means the whitelist cannot be proven. Failing closed
     // here is the point: the alternative is executing an unproven target.
