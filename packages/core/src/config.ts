@@ -16,13 +16,21 @@
  * The full list is documented in `.env.example` and `docs/CONFIGURATION.md`.
  */
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import type { Address, Hex } from "viem";
 import { assertAddress, assertBigInt, assertOneOf, assertPrivateKey, assertUint, assertUrl, ValidationError } from "./validation.js";
 import { createLogger, LOG_FORMATS, LOG_LEVELS, type LogFormat, type Logger, type LogLevel } from "./logger.js";
 
 /**
- * Loads `.env` then `.env.local` from `cwd`, once per process.
+ * Loads `.env` then `.env.local`, once per process.
+ *
+ * The search starts at `cwd` and walks UP to the nearest ancestor holding a `.env`, so the
+ * documented `cp .env.example .env` (repo root) works even when the process is launched from
+ * a workspace directory. This matters because npm runs workspace scripts with
+ * `process.cwd()` = the workspace, not the root: `npm run demo`, `npm run mcp` and the
+ * indexer CLI would each miss the repo-root `.env` and silently fall back to defaults —
+ * verified both ways against the built packages before this walk existed. An explicit
+ * `cwd` argument remains authoritative and skips the walk.
  *
  * `cp .env.example .env` is the documented first step, so the file has to actually be read —
  * before this existed, a variable set there was silently ignored.
@@ -48,11 +56,15 @@ import { createLogger, LOG_FORMATS, LOG_LEVELS, type LogFormat, type Logger, typ
  * browser, worker, edge — so it is safe to call unconditionally. It only marks itself loaded
  * once the load has actually happened, so a caller may retry after a parse failure.
  */
-export function loadDotEnv(cwd: string = process.cwd()): string[] {
+export function loadDotEnv(cwd: string | undefined = undefined): string[] {
   // Replay the remembered list rather than a bare `[]`. Returning `[]` here used to be
   // indistinguishable from "there is no .env here", which is exactly the shape a caller
   // cannot act on: the files WERE loaded, and the answer to "did .env get read?" is yes.
   if (dotEnvLoaded) return [...dotEnvFiles];
+  // When no cwd was given, resolve it by walking UP from process.cwd() to the nearest
+  // ancestor that holds a `.env` or `.env.local`, falling back to process.cwd() itself.
+  // This is what makes the repo-root `.env` load under npm workspace scripts.
+  const resolvedCwd = cwd ?? findEnvDir(process.cwd());
   // The bare identifier must be tested FIRST. `typeof` only protects a bare identifier —
   // `typeof process.loadEnvFile` is a *member* expression, and in a realm with no `process`
   // it throws ReferenceError before `typeof` can report anything. Written the other way round
@@ -65,7 +77,7 @@ export function loadDotEnv(cwd: string = process.cwd()): string[] {
 
   const loaded: string[] = [];
   for (const name of [".env", ".env.local"]) {
-    const file = join(cwd, name);
+    const file = join(resolvedCwd, name);
     if (!existsSync(file)) continue;
     try {
       process.loadEnvFile(file);
@@ -88,6 +100,27 @@ export function loadDotEnv(cwd: string = process.cwd()): string[] {
 
 let dotEnvLoaded = false;
 /** Names of the files read by the first successful {@link loadDotEnv}; replayed afterwards. */
+
+/**
+ * Walks up from `start` to the nearest ancestor (inclusive) holding a `.env` or
+ * `.env.local`, returning that directory; returns `start` when none is found.
+ *
+ * Bounded by depth 16 so a deeply nested temp path cannot turn this into a long walk, and
+ * it stops at the filesystem root. The walk makes the repo-root `.env` load from npm
+ * workspace cwds without ever loading a DIFFERENT `.env`: the closest ancestor with one
+ * wins, matching the documented "in the working directory" mental model as closely as
+ * Node's own cwd-relative behaviour, minus the silent-miss.
+ */
+function findEnvDir(start: string): string {
+  let cur = start;
+  for (let depth = 0; depth < 16; depth++) {
+    if (existsSync(join(cur, ".env")) || existsSync(join(cur, ".env.local"))) return cur;
+    const parent = dirname(cur);
+    if (parent === cur) break;
+    cur = parent;
+  }
+  return start;
+}
 let dotEnvFiles: string[] = [];
 
 /** Forgets that `.env` was loaded — test-only escape hatch. */

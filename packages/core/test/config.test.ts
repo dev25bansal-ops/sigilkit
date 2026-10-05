@@ -20,8 +20,11 @@
 // caveat is retired. `viem` is installed in this workspace, which is what unblocked it.
 import { afterAll, describe, expect, it } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { dirname, join as joinPath, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+
 import {
   ANVIL_CHAIN_ID,
   DEFAULT_DB_PATH,
@@ -156,6 +159,8 @@ describe("loadServiceConfig", () => {
   });
 });
 
+const distConfigPath = joinPath(dirname(dirname(fileURLToPath(import.meta.url))), "dist", "config.js");
+
 describe("loadDotEnv", () => {
   const touched: string[] = [];
   const dirs: string[] = [];
@@ -177,6 +182,36 @@ describe("loadDotEnv", () => {
   afterAll(() => {
     for (const name of touched) delete process.env[name];
     for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("walks UP from a workspace cwd to find the .env at the repo root", () => {
+    // npm runs workspace scripts with process.cwd() = the workspace directory. The
+    // documented `cp .env.example .env` puts the file at the repo ROOT, so every workspace
+    // CLI silently missed it and fell back to defaults (reproduced for demo, mcp, indexer).
+    // With no explicit cwd, loadDotEnv must find the nearest ANCESTOR holding a .env.
+    const root = tempDir({ ".env": "SIGILKIT_TEST_WALK=from-root\n" });
+    const workspaceDir = join(root, "packages", "core");
+    mkdirSync(workspaceDir, { recursive: true });
+
+    // Fork a child with cwd = the workspace dir; it imports the BUILT dist and calls
+    // loadDotEnv() with no argument, exactly as the CLIs do.
+    const probePath = join(root, "probe.mjs");
+    writeFileSync(
+      probePath,
+      `import { loadDotEnv } from ${JSON.stringify(pathToFileURL(distConfigPath).href)};
+` +
+        `const r = loadDotEnv();
+` +
+        `if (process.env.SIGILKIT_TEST_WALK !== "from-root") { console.error("walk failed: no var"); process.exit(1); }
+` +
+        `console.log(r.join(","));
+`,
+    );
+    const out = execFileSync(process.execPath, [probePath], {
+      cwd: workspaceDir, encoding: "utf8",
+    });
+    expect(out.trim()).toBe(".env");
+    delete process.env.SIGILKIT_TEST_WALK;
   });
 
   it("returns an empty list when there is no .env", () => {
