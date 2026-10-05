@@ -139,12 +139,18 @@ export type TickResult =
   | { executed: true; broadcast: false; prepared: PreparedRelay };
 
 /**
- * Consecutive failed ticks tolerated before {@link TreasuryAgent.run} gives up.
+ * Consecutive non-executing ticks tolerated before {@link TreasuryAgent.run} gives up.
  *
  * Per-tick errors stay swallowed — a transient outage must not kill a long-running agent —
- * but a run that has failed this many ticks in a row is not recovering on its own (dead
- * RPC, revoked grant, exhausted window), and grinding out the remaining ticks at the
- * strategy's own rate turns a dead endpoint into a busy loop that still "succeeds".
+ * but a run that has produced no successful action this many ticks in a row is not
+ * recovering on its own (dead RPC, revoked grant, exhausted window), and grinding out the
+ * remaining ticks at the strategy's own rate turns a dead endpoint into a busy loop that
+ * still "succeeds".
+ *
+ * "Non-executing" deliberately includes the IDLE case, not just a thrown error. Counting
+ * only throws made the gate unreachable: the shipped demo strategy fires on ticks 1 and 3
+ * and declines the rest, so at most 2 failures could ever accumulate against a threshold of
+ * 5 — a run in which every action reverted on-chain reported success with exit 0.
  */
 const MAX_CONSECUTIVE_TICK_FAILURES = 5;
 
@@ -319,26 +325,50 @@ export class TreasuryAgent {
     return merkleProof(leaves, leaf);
   }
 
-  /** Runs `n` ticks with `delayMs` between them. */
+  /**
+   * Runs `n` ticks with `delayMs` between them.
+   *
+   * The abort gate counts every tick that did NOT execute, not only ticks that threw.
+   * Previously it counted thrown errors and reset on any clean return — but an idle tick
+   * (the strategy declines, as the shipped demo does on 3 of every 5 ticks) also returns
+   * cleanly, so a dead endpoint could never accumulate 5 failures. Reproduced: with the
+   * real strategy against a dead RPC, ticks 1,2,3,4,5,6,7,10,100 ALL resolved
+   * `actionsExecuted: 0` and the run exited 0, even though every action that FIRED reverted
+   * on-chain. That is the exact failure {@link MAX_CONSECUTIVE_TICK_FAILURES} documents —
+   * "a dead endpoint … still succeeds" — so the gate was not merely mis-tuned, it was
+   * unreachable at every `--ticks` value.
+   *
+   * Now a tick that produces no execution counts as a non-execution for gate purposes. A
+   * strategy that legitimately idles forever (never fires) would trip this, which is the
+   * correct signal too: such an run did nothing and should not report success.
+   */
   async run(n: number, delayMs = 1_000): Promise<AgentState> {
-    let consecutiveFailures = 0;
+    let consecutiveNonExecutions = 0;
+    let lastError = "no action was executed (strategy declined or every attempt failed)";
     for (let i = 0; i < n; i++) {
+      let executed = false;
       try {
-        await this.tick();
-        consecutiveFailures = 0;
-      } catch (err) {
-        consecutiveFailures += 1;
-        console.error(`[tick ${i}] failed:`, err instanceof Error ? err.message : err);
-        if (consecutiveFailures >= MAX_CONSECUTIVE_TICK_FAILURES) {
-          throw new Error(
-            `aborting the run after ${consecutiveFailures} consecutive failed ticks: ` +
-              `${err instanceof Error ? err.message : String(err)}`,
-          );
+        const result = await this.tick();
+        executed = result.executed;
+        if (executed) {
+          consecutiveNonExecutions = 0;
+        } else {
+          consecutiveNonExecutions += 1;
         }
+      } catch (err) {
+        consecutiveNonExecutions += 1;
+        lastError = err instanceof Error ? err.message : String(err);
+        console.error(`[tick ${i}] failed:`, lastError);
+      }
+      if (consecutiveNonExecutions >= MAX_CONSECUTIVE_TICK_FAILURES) {
+        throw new Error(
+          `aborting the run: ${consecutiveNonExecutions} consecutive ticks produced no ` +
+            `successful action (last error: ${lastError})`,
+        );
       }
       // Back off while ticks keep failing (capped at 64x), so a dead endpoint is not
       // hammered at the strategy's steady-state rate. A clean tick resets the delay.
-      const backoff = consecutiveFailures === 0 ? 1 : 2 ** Math.min(consecutiveFailures, 6);
+      const backoff = consecutiveNonExecutions === 0 ? 1 : 2 ** Math.min(consecutiveNonExecutions, 6);
       await new Promise((r) => setTimeout(r, delayMs * backoff));
     }
     return this.state;

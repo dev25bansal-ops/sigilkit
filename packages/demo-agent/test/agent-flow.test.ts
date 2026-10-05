@@ -592,7 +592,9 @@ describe("run() — the loop the CLI drives", () => {
       ...SCOPE,
       perActionCap: 1n,
     });
-    await expect(agent.run(6, 1)).rejects.toThrow(/aborting the run after 5 consecutive failed ticks/);
+    await expect(agent.run(6, 1)).rejects.toThrow(
+      /aborting the run: 5 consecutive ticks produced no successful action/,
+    );
     expect(agent.state.actionsExecuted).toBe(0);
   });
 
@@ -606,9 +608,17 @@ describe("run() — the loop the CLI drives", () => {
   it("passes an incrementing tick number to the strategy across a run", async () => {
     // The demo's strategy keys off the tick number ("fires on ticks 1 and 3"), so a
     // non-monotonic tick would silently change which actions fire.
+    //
+    // The strategy here EXECUTES on every tick, because `run()` now counts a tick that
+    // produces no action toward the abort gate — a strategy that declines forever would
+    // trip it after 5 and the run would throw before reaching tick 5. Requesting 5 ticks
+    // with a strategy that only acts on some of them is therefore an abort, not a run.
     const seen: number[] = [];
-    const agent = agentWith((tick) => { seen.push(tick); return null; });
-    await agent.run(5, 1);
+    const agent = agentWith((tick) => { seen.push(tick); return action(); }, RELAYER_KEY);
+    // The stub RPC returns no ActionLogged, so every executed tick fails the INV-3 audit
+    // assertion and the abort gate fires on the 5th. That is correct behaviour and does not
+    // affect what this test is about, so absorb the abort and assert on `seen`.
+    await agent.run(5, 1).catch(() => {});
     expect(seen).toEqual([0, 1, 2, 3, 4]);
   });
 });
