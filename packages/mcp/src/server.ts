@@ -772,15 +772,40 @@ export const TOOLS: ToolDef[] = [
         for (const t of targets) leafKinds.push(t.data === undefined ? "wildcard" : "pinned");
         root = merkleRoot(leaves);
       }
+      const perActionCap = assertBigInt(
+        args.perActionCap,
+        "perActionCap",
+        { min: 0n },
+      ).toString();
+      const perWindowCap = assertBigInt(
+        args.perWindowCap,
+        "perWindowCap",
+        { min: 0n },
+      ).toString();
+      // Mirror the contract's InvalidScope() conditions, not merely the field shapes.
+      // Assembly with perActionCap == 0 or perWindowCap < perActionCap reverts on-chain
+      // (SessionKeyManager.sol:513-514), and core's encode7579InstallData throws on the
+      // same two (accounts.ts:137,143) — so a scope the tool assembles must not be one the
+      // chain refuses. Rejecting here gives the agent the cause at build time instead of a
+      // revert at execution.
+      if (BigInt(perActionCap) === 0n) {
+        throw new ValidationError("perActionCap", "must be greater than zero");
+      }
+      if (BigInt(perWindowCap) < BigInt(perActionCap)) {
+        throw new ValidationError("perWindowCap", "must be >= perActionCap");
+      }
       return {
         scope: {
           expiresAt: assertUint(args.expiresAt, "expiresAt", { min: 1 }),
           windowSeconds: args.windowSeconds === undefined ? 600 : assertUint(args.windowSeconds, "windowSeconds", { min: 1 }),
-          perActionCap: assertBigInt(args.perActionCap, "perActionCap", { min: 0n }).toString(),
-          perWindowCap: assertBigInt(args.perWindowCap, "perWindowCap", { min: 0n }).toString(),
+          perActionCap,
+          perWindowCap,
           merkleRoot: root,
           countersignAbove: args.countersignAbove === undefined ? "0" : assertBigInt(args.countersignAbove, "countersignAbove", { min: 0n }).toString(),
-          enforceNativeDelta: Boolean(args.enforceNativeDelta ?? false),
+          enforceNativeDelta:
+            args.enforceNativeDelta === undefined
+              ? false
+              : coerceBoolean(args.enforceNativeDelta, "enforceNativeDelta"),
           tokenWatchlist: [],
         },
         leaves,

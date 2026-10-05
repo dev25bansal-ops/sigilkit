@@ -185,6 +185,49 @@ describe("build_scope validation", () => {
     expect(text).toContain("targets[0].target");
   });
 
+  // The scope the tool assembles must be one the CHAIN accepts. SessionKeyManager.sol
+  // reverts InvalidScope on perActionCap == 0 and perWindowCap < perActionCap, and core's
+  // encode7579InstallData throws on the same two — a scope assembled here that dies at
+  // grant time wastes the agent's effort and hides the cause. These pin the mirror.
+  it("rejects a zero perActionCap, which the chain would refuse at grant time", async () => {
+    const { isError, text } = await callTool("build_scope", {
+      ...base, perActionCap: "0", perWindowCap: "50",
+      targets: [{ target: ALICE, selector: "0x12345678" }],
+    });
+    expect(isError).toBe(true);
+    expect(text).toContain("perActionCap");
+  });
+
+  it("rejects perWindowCap below perActionCap — unexecutable on-chain", async () => {
+    const { isError, text } = await callTool("build_scope", {
+      ...base, perActionCap: "50", perWindowCap: "10",
+      targets: [{ target: ALICE, selector: "0x12345678" }],
+    });
+    expect(isError).toBe(true);
+    expect(text).toContain("perWindowCap");
+  });
+
+  it('rejects enforceNativeDelta given as the JSON STRING "false"', async () => {
+    // The tool previously built this field with a bare Boolean(), which reads the
+    // string "false" as TRUE — silently turning balance-delta enforcement ON where the
+    // caller asked for it off, and diverging from validate_request's typed refusal.
+    // Now both paths use coerceBoolean: a non-boolean is an error, never a guess.
+    const { isError, text } = await callTool("build_scope", {
+      ...base, enforceNativeDelta: "false",
+      targets: [{ target: ALICE, selector: "0x12345678" }],
+    });
+    expect(isError).toBe(true);
+    expect(text).toContain("enforceNativeDelta");
+  });
+
+  it("still accepts enforceNativeDelta as a real boolean", async () => {
+    const { isError } = await callTool("build_scope", {
+      ...base, enforceNativeDelta: true,
+      targets: [{ target: ALICE, selector: "0x12345678" }],
+    });
+    expect(isError).toBe(false);
+  });
+
   it("requires a 4-byte selector", async () => {
     const { isError, text } = await callTool("build_scope", { ...base, targets: [{ target: ALICE, selector: "0x12" }] });
     expect(isError).toBe(true);

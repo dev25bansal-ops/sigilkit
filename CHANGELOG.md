@@ -84,7 +84,7 @@ New: `local-model-brain-liveness.test.ts` (4 cases) and 7 window-state cases inc
 rollover. Package coverage 85.64% -> 88.37% lines; 7 -> 36 tests. Both fixes verified
 load-bearing by reverting each and watching the tests go red.
 
-Totals: 999 TS tests across five packages — core 581, indexer 165, mcp 132, demo-agent 85,
+Totals: 1015 TS tests across five packages — core 581, indexer 165, mcp 132, demo-agent 85,
 agent 36.
 
 ### 2026-10-03 — Ralph loop iteration 1: full E2E verification + README polish
