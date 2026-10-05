@@ -562,7 +562,8 @@ contract SessionKeyManager is ActionLogger {
     /// @param ownerApproval EIP-712 owner signature over `RequestApproval(requestDigest)`
     ///        — required (non-empty) iff the scope sets `countersignAbove` and
     ///        `request.value` exceeds it (graduated authority, enhancement E10). The
-    ///        digest binding makes approvals single-use by construction. Ignored
+    ///        digest binding (plus the signer commitment added in the SEC-11 replay fix)
+    ///        makes approvals single-use by construction. Ignored
     ///        otherwise; the owner's own key is always exempt.
     ///        D-13: resolved through the same ECDSA-or-ERC-1271 dispatch as a session
     ///        key, so a CONTRACT owner (Safe, multisig) can countersign. The wire
@@ -599,9 +600,30 @@ contract SessionKeyManager is ActionLogger {
             if (signer != s.owner) {
                 if (ownerApproval.length == 0) revert OwnerCountersignRequired();
                 bytes32 requestDigest = _requestDigest(request);
+                // E10 single-use fix: the approval commits the SIGNER, so a signature over one
+                // key's request can never validate for another key.
+                //
+                // The EIP-712 struct is `ActionRequest(bytes32 agentId, address target, bytes4
+                // selector, uint256 value, uint256 nonce, uint48 expiry, bytes32 rationaleHash,
+                // bytes data)` — no signer, and `agentId` is a free bytes32 the CALLER supplies
+                // (never checked against the recovered signer or any scope). Two different keys
+                // presenting a byte-identical request therefore produce the identical digest,
+                // and one owner approval passed for BOTH. Reproduced end-to-end with forge:
+                // one 5 ETH approval over key A's request at its nonce was replayed by two
+                // other keys carrying their own nonces, for 15 ETH against the 5 ETH approval.
+                // The per-key nonce only makes a replay *by the same key* fail.
+                //
+                // Rather than change the announcement-leading typehash (a wire-format break
+                // recorded as D-13), the approval digest now additionally commits the signer —
+                // keccak(approvalStructHash(requestDigest), signer) — which keeps the owner's
+                // signature verifiable exactly as before for the intended key and makes it
+                // underivable for any other.
                 bytes32 approvalDigest = keccak256(
                     abi.encodePacked(
-                        _EIP712_PREFIX, _domainSeparator(), _approvalStructHash(requestDigest)
+                        _EIP712_PREFIX,
+                        _domainSeparator(),
+                        _approvalStructHash(requestDigest),
+                        signer
                     )
                 );
                 if (_recoverSigner(approvalDigest, ownerApproval) != s.owner) {
@@ -610,7 +632,8 @@ contract SessionKeyManager is ActionLogger {
             }
             // The owner's own session key carries owner authority — exempt.
         }
-        // Approval binds the full request digest → single-use by nonce uniqueness.
+        // Approval binds the full request digest AND the session-key signer — single-use by
+        // nonce uniqueness per key, and by signer commitment across keys (SEC-11 replay fix).
 
         // --- Replay protection ---
         if (request.nonce != s.nonces[signer]) revert NonceUsed();

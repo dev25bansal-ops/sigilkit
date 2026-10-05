@@ -16,7 +16,7 @@ Safe{Core} accounts.
 
 > **⚠ Audit status — read this before relying on any security claim.** SigilKit has **not** been
 > externally audited. No third party has reviewed these contracts. What exists today is
-> *verification tooling*, not an audit: 228 Foundry unit/fuzz tests, a handler-only invariant suite
+> *verification tooling*, not an audit: 229 Foundry unit/fuzz tests, a handler-only invariant suite
 > (INV-1..4), an independent Echidna property fuzzer, 11 Halmos symbolic specs over the spend-cap
 > core and auth paths, Slither triage, and gas budgets on the enforcement hot path. An external
 > audit (Cantina/Sherlock contest plus a private review) is outstanding and is a prerequisite for
@@ -42,7 +42,7 @@ on-chain audit-per-call + formal verification of the spend-policy core, under MI
 >   「the whitepaper's "installable via `forge install`" is not possible」。两份文件 mtime 同为
 >   2026-09-26（WHITEPAPER 12:28Z，DEPLOYMENT 16:07Z），各自声明的检查日期分别是
 >   2026 年 8 月与 2026-09-15，**无法据日期判定谁取代谁**；两段原文均保留。
-> - 同段上方「228 Foundry unit/fuzz tests」**已复测**：`forge test --list` 实测 228 tests across 18
+> - 同段上方「229 Foundry unit/fuzz tests」**已复测**：`forge test --list` 实测 229 tests across 18
 >   suites，与本文件表述一致。同段上方「11 Halmos symbolic specs」**仍未复测**：11 个 Halmos 规格与
 >   `docs/ONBOARDING-2026-09-26.md` 附录 B 的「11 Halmos specs」一致，但与该文件同处记录的「158 tests」
 >   属于**不同计数口径**，两者不可互相替代。**Unverified as of 2026-10-01：Halmos 规格数未复测，勿引用。**
@@ -87,7 +87,7 @@ on-chain audit-per-call + formal verification of the spend-policy core, under MI
 ## Implementation status
 
 Locally-buildable scope is **implemented** (see `CHANGELOG.md`): contracts + ERC-7579
-module, TS SDK with three-way digest conformance, live demo agent, **228 Foundry unit/fuzz tests
+module, TS SDK with three-way digest conformance, live demo agent, **229 Foundry unit/fuzz tests
 across 18 suites** (7579 module 39 · manager 34 · gas uncovered paths 33 · native transfer authorization 14 · executor 12 · gas budget 11 · graduated authority 11 · ERC-1271 keys 10 · delegator 10 · denylist coverage 10 · E11 watchlist read 9 · account-execute E2E 7 · SEC-10 window rotation 6 · 7579 gas scaling 5 · governance recovery 5 · golden vectors 4 · scope watchlist multi-token 4 · Halmos auth 1)
 (plus an invariant suite of 4 invariants and a Base fork smoke test), **TypeScript: `@sigilkit/core` 591,
 `@sigilkit/indexer` 165, `@sigilkit/mcp` 132, `@sigilkit/demo-agent` 85, `@sigilkit/agent` 38** (incl.

@@ -413,7 +413,8 @@ contract GasBudgetTest is Test {
             abi.encodePacked(
                 "\x19\x01",
                 skm.DOMAIN_SEPARATOR(),
-                keccak256(abi.encode(skm.REQUEST_APPROVAL_TYPEHASH(), requestDigest))
+                keccak256(abi.encode(skm.REQUEST_APPROVAL_TYPEHASH(), requestDigest)),
+                vm.addr(AGENT_KEY)
             )
         );
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(OWNER_KEY, approvalDigest);

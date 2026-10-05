@@ -55,9 +55,26 @@ function currentTests() {
 /** Test names recorded in the snapshot file, normalized to `Contract:test_Name()`. */
 function snapshotTests() {
   const names = new Set();
-  for (const line of readFileSync(SNAPSHOT, "utf8").split(/\r?\n/)) {
-    const m = /^(\S+):(\S+?)\(/.exec(line.trim());
-    if (m) names.add(`${m[1]}:${m[2]}()`);
+  // A non-global per-line match means a second entry concatenated onto a valid line
+  // (`(gas: N)GhostTest:...`) is INVISIBLE: the anchored regex sees a valid first entry
+  // and the appended junk rides along undetected, so a stale entry committed that way
+  // never showed up as stale. That exact concatenation was introduced by an earlier run
+  // of this workflow when the snapshot lacked a trailing newline and forge appended onto
+  // the last line. Match the WHOLE line shape and fail on anything else, so a
+  // concatenated tail is an error, not something the parser silently absorbs.
+  for (const raw of readFileSync(SNAPSHOT, "utf8").split(/\r?\n/)) {
+    const line = raw.trim();
+    if (line === "") continue;
+    const m =
+      /^(\S+):(\S+?)\((?:[^)]*)\)(?: \(gas: (\d+)\))?(?: \(runs: \d+, μ: \d+, ~: \d+\))?$/.exec(line);
+    if (!m) {
+      throw new Error(
+        `gas snapshot: unparseable line: ${JSON.stringify(line.slice(0, 120))}. ` +
+          "This usually means two entries were concatenated because the file lost its " +
+          "trailing newline; regenerate with forge snapshot.",
+      );
+    }
+    names.add(`${m[1]}:${m[2]}()`);
   }
   return names;
 }

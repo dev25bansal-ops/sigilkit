@@ -83,8 +83,22 @@ contract GraduatedAuthorityTest is Test {
     }
 
     /// @dev Owner approval over the request digest (E10): the digest binds the whole
-    ///      request, so the approval is single-use by nonce uniqueness.
+    ///      request PLUS THE SESSION-KEY SIGNER. The signer commitment is the replay fix:
+    ///      the `ActionRequest` struct carries no signer and `agentId` is caller-supplied,
+    ///      so two different keys presenting an identical request previously produced the
+    ///      identical digest and one approval validated for both (one 5 ETH approval
+    ///      replayed by three keys for 15 ETH). Single-use-by-nonce still holds per key;
+    ///      this makes it cross-key: the owner signs (request, key), so an approval names
+    ///      exactly the key it authorizes.
     function _signApproval(SessionKeyManager.ActionRequest memory req, uint256 signerKey)
+        internal
+        view
+        returns (bytes memory)
+    {
+        return _signApprovalOver(req, agent, signerKey);
+    }
+
+    function _signApprovalOver(SessionKeyManager.ActionRequest memory req, address sessionKey, uint256 signerKey)
         internal
         view
         returns (bytes memory)
@@ -101,7 +115,8 @@ contract GraduatedAuthorityTest is Test {
             abi.encodePacked(
                 "\x19\x01",
                 skm.DOMAIN_SEPARATOR(),
-                keccak256(abi.encode(skm.REQUEST_APPROVAL_TYPEHASH(), requestDigest))
+                keccak256(abi.encode(skm.REQUEST_APPROVAL_TYPEHASH(), requestDigest)),
+                sessionKey
             )
         );
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(signerKey, approvalDigest);
@@ -166,7 +181,7 @@ contract GraduatedAuthorityTest is Test {
         return keccak256(abi.encodePacked("\x19\x01", m.DOMAIN_SEPARATOR(), structHash));
     }
 
-    function _approvalDigestFor(SessionKeyManager m, SessionKeyManager.ActionRequest memory req)
+    function _approvalDigestFor(SessionKeyManager m, SessionKeyManager.ActionRequest memory req, address signer)
         internal
         view
         returns (bytes32)
@@ -175,19 +190,22 @@ contract GraduatedAuthorityTest is Test {
             abi.encodePacked(
                 "\x19\x01",
                 m.DOMAIN_SEPARATOR(),
-                keccak256(abi.encode(m.REQUEST_APPROVAL_TYPEHASH(), _requestDigestFor(m, req)))
+                keccak256(abi.encode(m.REQUEST_APPROVAL_TYPEHASH(), _requestDigestFor(m, req))),
+                signer
             )
         );
     }
 
     /// @dev A raw 65-byte ECDSA approval — what the OLD (ECDSA-only) path required. Used
     ///      as the negative control: a contract owner can never satisfy it.
+    ///      The digest binds the SESSION KEY (the signer the contract recovers), not the
+    ///      owner: the owner signs (request, key), matching the contract's signer bind.
     function _signApprovalFor(SessionKeyManager m, SessionKeyManager.ActionRequest memory req, uint256 signerKey)
         internal
         view
         returns (bytes memory)
     {
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(signerKey, _approvalDigestFor(m, req));
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(signerKey, _approvalDigestFor(m, req, vm.addr(AGENT_KEY)));
         return abi.encodePacked(r, s, v);
     }
 
@@ -242,6 +260,59 @@ contract GraduatedAuthorityTest is Test {
         bytes memory badApproval = _signApproval(req, 0xDEAD);
         vm.expectRevert(SessionKeyManager.InvalidOwnerApproval.selector);
         skm.executeWithSessionKey(req, sig, new bytes32[](0), badApproval);
+    }
+
+    /// @dev SEC-11 replay regression. One owner approval must authorise exactly ONE key.
+    ///
+    ///      The `ActionRequest` struct carries no signer and `agentId` is caller-supplied,
+    ///      so two keys presenting a byte-identical request previously produced the
+    ///      identical digest — and one owner approval validated for both, because nonce
+    ///      replay protection is per-key. Reproduced end-to-end before the fix: one 5 ETH
+    ///      approval let THREE keys spend 15 ETH. The approval digest now commits the
+    ///      session-key signer, so the owner's signature over key A's request can never
+    ///      validate when key B presents it. This test pins exactly that: a valid approval
+    ///      for `agent` becomes `InvalidOwnerApproval` under a second granted key.
+    function test_Countersign_ApprovalDoesNotReplayAcrossKeys() public {
+        // Key A: the suite's standard agent, granted via the shared helper.
+        _grant(1 ether, false, new address[](0));
+
+        // Key B: a second granted key with the identical scope shape.
+        address secondKey = vm.addr(0x50DA);
+        vm.prank(vm.addr(OWNER_KEY));
+        skm.grantSessionKey(
+            secondKey,
+            SessionKeyManager.Scope({
+                expiresAt: uint48(block.timestamp + 1 days),
+                windowSeconds: 1 hours,
+                perActionCap: 5 ether,
+                perWindowCap: 10 ether,
+                merkleRoot: bytes32(0),
+                countersignAbove: 1 ether,
+                enforceNativeDelta: false,
+                tokenWatchlist: new address[](0)
+            })
+        );
+
+        // The request as key A (agent) would present it, at key A's nonce.
+        SessionKeyManager.ActionRequest memory req =
+            _request(address(0xBEEF), bytes4(0x12345678), 2 ether, "");
+        bytes memory approvalForAgent = _signApproval(req, OWNER_KEY);
+
+        // Key A succeeds with its own approval.
+        (bool okA,) = address(skm).call(
+            abi.encodeWithSelector(
+                skm.executeWithSessionKey.selector, req, _signRequest(req), new bytes32[](0), approvalForAgent
+            )
+        );
+        assertTrue(okA, "the approving key must execute with its own approval");
+
+        // Key B copies the identical request struct at ITS OWN nonce and reuses A's
+        // approval. Pre-fix this executed (the digest was identical); post-fix it must not.
+        SessionKeyManager.ActionRequest memory replay = req;
+        replay.nonce = skm.getNonce(secondKey);
+        bytes memory sigB = _signRequestWith(0x50DA, replay);
+        vm.expectRevert(SessionKeyManager.InvalidOwnerApproval.selector);
+        skm.executeWithSessionKey(replay, sigB, new bytes32[](0), approvalForAgent);
     }
 
     function test_Countersign_OwnerKeyExempt() public {
@@ -316,8 +387,10 @@ contract GraduatedAuthorityTest is Test {
             "a bare 65-byte ECDSA approval must NOT satisfy a contract owner"
         );
 
-        // The E17 wire format: address(owner) ‖ 1271 signature.
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(OWNER_KEY, _approvalDigestFor(manager, req));
+        // The E17 wire format: address(owner) ‖ 1271 signature. The approval digest commits
+        // the OWNER's address (the signer field the contract binds), which for a contract
+        // owner is the contract itself — not the key that will sign on its behalf.
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(OWNER_KEY, _approvalDigestFor(manager, req, agent));
         assertTrue(
             _tryExecute(manager, req, sig, abi.encodePacked(address(safe), r, s, v)),
             "D-13: a 1271 contract owner must be able to countersign"
@@ -359,7 +432,7 @@ contract GraduatedAuthorityTest is Test {
             _requestFor(manager, address(0xBEEF), bytes4(0x12345678), 2 ether, "");
         bytes memory sig = _signRequestFor(manager, AGENT_KEY, req);
 
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(0xDEAD, _approvalDigestFor(manager, req));
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(0xDEAD, _approvalDigestFor(manager, req, agent));
         bytes memory badApproval = abi.encodePacked(address(safe), r, s, v);
         vm.expectRevert(SessionKeyManager.InvalidSignature.selector);
         manager.executeWithSessionKey(req, sig, new bytes32[](0), badApproval);
@@ -367,7 +440,7 @@ contract GraduatedAuthorityTest is Test {
         // And the diagnosis is symmetric: a VALID 1271 signature by a contract that is
         // NOT the owner recovers fine, so it must fail at the owner comparison instead.
         MockSafeOwner impostor = new MockSafeOwner(vm.addr(0xDEAD));
-        (uint8 v2, bytes32 r2, bytes32 s2) = vm.sign(0xDEAD, _approvalDigestFor(manager, req));
+        (uint8 v2, bytes32 r2, bytes32 s2) = vm.sign(0xDEAD, _approvalDigestFor(manager, req, agent));
         vm.expectRevert(SessionKeyManager.InvalidOwnerApproval.selector);
         manager.executeWithSessionKey(
             req, sig, new bytes32[](0), abi.encodePacked(address(impostor), r2, s2, v2)

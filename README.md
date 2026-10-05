@@ -91,7 +91,7 @@ After these are resolved, the next step is commissioning an external audit via t
 
 | Layer | Status |
 |---|---|
-| Foundry unit + fuzz | ✅ 228 tests across 18 suites (7579 module 42 · manager 34 · gas uncovered paths 33 · native transfer authorization 14 · executor 12 · gas budget 11 · graduated authority 11 · ERC-1271 keys 10 · delegator 10 · denylist coverage 10 · E11 watchlist read 9 · account-execute E2E 7 · SEC-10 window rotation 6 · 7579 gas scaling 5 · governance recovery 5 · golden vectors 4 · scope watchlist multi-token 4 · Halmos auth meta-test 1) |
+| Foundry unit + fuzz | ✅ 229 tests across 18 suites (7579 module 43 · manager 34 · gas uncovered paths 33 · native transfer authorization 14 · executor 12 · gas budget 11 · graduated authority 11 · ERC-1271 keys 10 · delegator 10 · denylist coverage 10 · E11 watchlist read 9 · account-execute E2E 7 · SEC-10 window rotation 6 · 7579 gas scaling 5 · governance recovery 5 · golden vectors 4 · scope watchlist multi-token 4 · Halmos auth meta-test 1) |
 | Echidna property fuzzing | ✅ 4 properties (independent second fuzzer, nightly) — all four are falsifiable: funding is pulled into the wallet through a public `refill()` + `_ensureFunded`, so the `value > 0` paths are reachable instead of reverting on balance; `echidna_attackerNeverSucceedsAtAdmin` (replaces the tautological `echidna_ownerImmutableByFuzzer`) probes all 6 admin functions as a genuine non-owner and fails if `onlyOwner` is ever bypassed; `echidna_scopesMatchOwnerActions` now requires each on-chain scope to be one of three genuinely distinct granted shapes. Fixed in BUG-18 — see [`docs/ISSUES-CATALOG-2026-09-25.md`](docs/ISSUES-CATALOG-2026-09-25.md) §A P0-2 |
 | Foundry invariant (INV-1/2/4, handler-only fuzzing incl. admin transitions) | ✅ 4 invariants in 1 suite × 256 runs × 500 calls |
 | Fork smoke (Base) | ✅ 1 test — runs nightly against a live Base fork (chainid + chain-bound domain separator + live state) |
@@ -187,7 +187,7 @@ Two details make those verdicts mean something:
 ```bash
 forge install foundry-rs/forge-std   # or: git clone --depth 1 https://github.com/foundry-rs/forge-std lib/forge-std
 forge build
-npm test                             # 228 unit + fuzz tests + full TS suite (excludes invariants + fork smoke)
+npm test                             # 229 unit + fuzz tests + full TS suite (excludes invariants + fork smoke)
 forge test --match-contract '.*Invariant'   # invariant suite (4 invariants × 256 runs)
 forge test --match-contract '.*Fork' --fork-url $RPC_BASE   # fork smoke (Base)
 ```
